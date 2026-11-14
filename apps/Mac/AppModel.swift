@@ -122,6 +122,13 @@ final class AppModel {
     var pullBusy: String?
     var loadingPulls = false
 
+    // Menu bar panel (methods in MenuBar.swift)
+    /// Status of every working copy, refreshed when the panel opens.
+    var glance: [String: WorkingStatus] = [:]
+    /// Open pull requests of the selected repo, for the panel.
+    var glancePulls: [PullRequest] = []
+    var glancePullsNote: String?
+
     /// A short message for the last thing that went wrong, shown in the header.
     var notice: String?
 

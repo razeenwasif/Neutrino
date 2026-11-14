@@ -3,10 +3,20 @@ import SwiftUI
 
 @main
 struct NeutrinoMacApp: App {
-    @State private var model = AppModel()
+    static let mainWindow = "main"
+
+    @State private var model: AppModel
+    @AppStorage("menuBarIcon") private var showMenuBarIcon = true
+
+    init() {
+        let model = AppModel()
+        _model = State(initialValue: model)
+        // Connect at launch, so the menu bar item is live even before the window opens.
+        model.start()
+    }
 
     var body: some Scene {
-        WindowGroup("Neutrino") {
+        WindowGroup("Neutrino", id: Self.mainWindow) {
             RootView()
                 .environment(model)
                 .frame(minWidth: 1180, minHeight: 720)
@@ -20,6 +30,9 @@ struct NeutrinoMacApp: App {
                 Button("Add Repository…") { Task { await model.addRepository() } }
                     .keyboardShortcut("o")
                     .disabled(!model.isLive)
+            }
+            CommandGroup(after: .toolbar) {
+                Toggle("Show in Menu Bar", isOn: $showMenuBarIcon)
             }
             CommandMenu("Repository") {
                 Button("Reload") { Task { await model.reload() } }.keyboardShortcut("r")
@@ -35,5 +48,12 @@ struct NeutrinoMacApp: App {
                 Button("Split Diff") { model.layout = .split }.keyboardShortcut("s", modifiers: [.command, .option])
             }
         }
+
+        MenuBarExtra(isInserted: $showMenuBarIcon) {
+            MenuBarPanel().environment(model)
+        } label: {
+            MenuBarLabel().environment(model)
+        }
+        .menuBarExtraStyle(.window)
     }
 }
