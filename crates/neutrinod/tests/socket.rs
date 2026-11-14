@@ -125,7 +125,7 @@ async fn end_to_end() {
     assert!(matches!(c.recv().await, (0, Response::Error { .. })));
     // Cancelling something that already finished is harmless.
     c.send(22, &Request::Cancel { id: 14 }).await;
-    assert_eq!(c.call(23, Request::Ping).await, Response::Pong { protocol: 1 });
+    assert_eq!(c.call(23, Request::Ping).await, Response::Pong { protocol: neutrino_proto::PROTOCOL_VERSION });
 
     // The registry survives a restart.
     assert!(state.join("repos.json").exists());
@@ -161,4 +161,75 @@ async fn missing_folder_is_listed_with_a_reason() {
         other => panic!("{other:?}"),
     }
     assert!(matches!(daemon.handle(Request::AddRepo { path: "relative".into() }).await, Response::Error { .. }));
+}
+
+#[tokio::test]
+async fn working_copy_over_the_socket() {
+    use neutrino_proto::{Area, LineKind, LinePick};
+    let dir = tempfile::tempdir().unwrap();
+    // macOS reports FSEvents under the resolved path.
+    let work = dir.path().canonicalize().unwrap().join("wc");
+    std::fs::create_dir(&work).unwrap();
+    git(&work, &["init", "-q", "-b", "main"]);
+    std::fs::write(work.join("a.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "first"]);
+
+    let socket = dir.path().join("d.sock");
+    let daemon = neutrinod::Daemon::new(&dir.path().join("state")).unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn({
+        let socket = socket.clone();
+        async move { neutrinod::serve(daemon, &socket, async { stopped.await.ok(); }).await }
+    });
+    while !socket.exists() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (read, write) = UnixStream::connect(&socket).await.unwrap().into_split();
+    let mut c = Client { lines: BufReader::new(read).lines(), write };
+    assert!(matches!(c.call(1, Request::AddRepo { path: work.display().to_string() }).await, Response::Repo(_)));
+
+    // A second connection subscribes; editing a file reaches it.
+    let (read2, write2) = UnixStream::connect(&socket).await.unwrap().into_split();
+    let mut sub = Client { lines: BufReader::new(read2).lines(), write: write2 };
+    sub.send(50, &Request::Subscribe).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::write(work.join("a.txt"), "1\nTWO\n3\n4\n5\n6\n7\n8\n9\nTEN\n").unwrap();
+    let (id, ev) = sub.recv().await;
+    assert_eq!(id, 50);
+    assert!(matches!(&ev, Response::Event(e) if e.repo == "wc"), "{ev:?}");
+
+    match c.call(2, Request::Status { repo: "wc".into() }).await {
+        Response::Status(st) => assert_eq!(st.unstaged.len(), 1),
+        other => panic!("{other:?}"),
+    }
+    let pick = vec![LinePick { kind: LineKind::Removed, line: 2 }, LinePick { kind: LineKind::Added, line: 2 }];
+    assert!(matches!(c.call(3, Request::StageLines { repo: "wc".into(), path: "a.txt".into(), area: Area::Unstaged, lines: pick }).await, Response::Done { .. }));
+    match c.call(4, Request::CommitChanges { repo: "wc".into(), message: "Two".into(), amend: false }).await {
+        Response::Committed { sha, .. } => assert_eq!(sha.len(), 40),
+        other => panic!("{other:?}"),
+    }
+    match c.call(5, Request::Status { repo: "wc".into() }).await {
+        Response::Status(st) => {
+            assert!(st.staged.is_empty());
+            let a = &st.unstaged[0];
+            assert_eq!((a.additions, a.deletions), (1, 1), "only line 10's change is left");
+        }
+        other => panic!("{other:?}"),
+    }
+    // The commit moved refs, which subscribers hear as well.
+    let mut kinds = std::collections::HashSet::new();
+    while let Ok(Some(line)) = tokio::time::timeout(Duration::from_millis(800), sub.lines.next_line()).await.map(|r| r.unwrap()) {
+        if let Ok((_, Response::Event(e))) = decode_response(&line) {
+            kinds.insert(e.kind);
+        }
+    }
+    assert!(kinds.contains("refs"), "{kinds:?}");
+
+    // Cancelling the subscription ends it.
+    sub.send(51, &Request::Cancel { id: 50 }).await;
+    assert!(matches!(sub.recv().await, (50, Response::Cancelled)));
+
+    stop.send(()).unwrap();
+    server.await.unwrap().unwrap();
 }

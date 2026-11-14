@@ -24,8 +24,11 @@ struct NeutrinoMacApp: App {
             CommandMenu("Repository") {
                 Button("Reload") { Task { await model.reload() } }.keyboardShortcut("r")
                 Divider()
-                Button("History") { model.section = .history }.keyboardShortcut("1")
-                Button("Branches") { model.section = .branches }.keyboardShortcut("2")
+                Button("Changes") { model.section = .changes }.keyboardShortcut("1")
+                Button("History") { model.section = .history }.keyboardShortcut("2")
+                Button("Branches") { model.section = .branches }.keyboardShortcut("3")
+                Divider()
+                Button("Stage All") { Task { await model.stageAll() } }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(!model.isLive && model.status == nil)
                 Divider()
                 Button("Unified Diff") { model.layout = .unified }.keyboardShortcut("u", modifiers: [.command, .option])
                 Button("Split Diff") { model.layout = .split }.keyboardShortcut("s", modifiers: [.command, .option])

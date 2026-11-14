@@ -5,6 +5,7 @@
 //! registered repo and hands each request its own thread-local copy.
 
 pub mod graph;
+pub mod worktree;
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -144,6 +145,20 @@ fn count_walk(repo: &gix::Repository, tip: ObjectId, hidden: ObjectId) -> Result
     Ok(walk.take(MAX_AHEAD_BEHIND).filter(|c| c.is_ok()).count() as u32)
 }
 
+/// A local branch's upstream, and how far the branch is ahead of and behind it.
+pub(crate) fn upstream_of(repo: &gix::Repository, name: &gix::refs::FullNameRef) -> Result<(Option<String>, Option<u32>, Option<u32>)> {
+    let Some(Ok(tracking)) = repo.branch_remote_tracking_ref_name(name, gix::remote::Direction::Fetch) else {
+        return Ok((None, None, None));
+    };
+    let upstream = Some(tracking.as_ref().shorten().to_string());
+    let Ok(Some(mut up)) = repo.try_find_reference(tracking.as_ref()) else { return Ok((upstream, None, None)) };
+    let Ok(up_id) = up.peel_to_id() else { return Ok((upstream, None, None)) };
+    let Ok(Some(mut local)) = repo.try_find_reference(name) else { return Ok((upstream, None, None)) };
+    let Ok(sha) = local.peel_to_id() else { return Ok((upstream, None, None)) };
+    let (up_id, sha) = (up_id.detach(), sha.detach());
+    Ok((upstream, Some(count_walk(repo, sha, up_id)?), Some(count_walk(repo, up_id, sha)?)))
+}
+
 pub fn branches(repo: &gix::Repository) -> Result<Vec<Branch>> {
     let head_name = repo.head_name().ctx("reading HEAD")?;
     let refs = repo.references().ctx("reading refs")?;
@@ -161,19 +176,7 @@ pub fn branches(repo: &gix::Repository) -> Result<Vec<Branch>> {
             let time = commit.time().map(|t| t.seconds).unwrap_or(0);
             let is_head = head_name.as_ref().is_some_and(|h| h.as_ref() == r.name());
 
-            let (mut upstream, mut ahead, mut behind) = (None, None, None);
-            if kind == RefKind::Local {
-                if let Some(Ok(tracking)) = repo.branch_remote_tracking_ref_name(r.name(), gix::remote::Direction::Fetch) {
-                    upstream = Some(tracking.as_ref().shorten().to_string());
-                    if let Ok(Some(mut up)) = repo.try_find_reference(tracking.as_ref()) {
-                        if let Ok(up_id) = up.peel_to_id() {
-                            let up_id = up_id.detach();
-                            ahead = Some(count_walk(repo, sha, up_id)?);
-                            behind = Some(count_walk(repo, up_id, sha)?);
-                        }
-                    }
-                }
-            }
+            let (upstream, ahead, behind) = if kind == RefKind::Local { upstream_of(repo, r.name())? } else { (None, None, None) };
             out.push(Branch { name: short, kind, sha: sha.to_string(), subject, time, is_head, upstream, ahead, behind });
         }
     }

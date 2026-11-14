@@ -4,7 +4,13 @@ import Observation
 import SwiftUI
 
 enum Section: String, CaseIterable {
-    case history, branches
+    case changes, history, branches
+}
+
+/// A file in the Changes list, and which side of it is shown.
+struct ChangeRef: Hashable {
+    var path: String
+    var area: Area
 }
 
 enum HistoryScope: String {
@@ -35,7 +41,29 @@ final class AppModel {
         didSet { UserDefaults.standard.set(repoID, forKey: "repo") }
     }
 
-    var section: Section = .history
+    var section: Section = Section(rawValue: UserDefaults.standard.string(forKey: "section") ?? "") ?? .changes {
+        didSet { UserDefaults.standard.set(section.rawValue, forKey: "section") }
+    }
+
+    // Changes (the methods are in ChangesModel.swift)
+    var status: WorkingStatus?
+    var statusError: String?
+    var change: ChangeRef?
+    var workDiff: FileDiff?
+    var workDiffError: String?
+    /// Lines picked in the shown diff.
+    var picks: Set<LinePick> = []
+    var commitSummary = ""
+    var commitBody = ""
+    var amend = false
+    var committing = false
+    var lastCommit: (sha: String, output: String)?
+    /// A write is running; buttons that write are disabled meanwhile.
+    var writing = false
+    var statusGeneration = 0
+    var workDiffGeneration = 0
+    var eventsTask: Task<Void, Never>?
+    var refreshTask: Task<Void, Never>?
 
     // History
     var scope: HistoryScope = .current
@@ -108,6 +136,7 @@ final class AppModel {
             service = DemoService()
             connection = .demo(reason: error.localizedDescription)
         }
+        listen()
         await loadRepos()
     }
 
@@ -143,6 +172,9 @@ final class AppModel {
         rev = nil
         selectedSHA = nil
         selectedBranch = nil
+        change = nil
+        picks = []
+        lastCommit = nil
         await reload()
     }
 
@@ -177,7 +209,8 @@ final class AppModel {
     func reload() async {
         async let h: Void = reloadHistory()
         async let b: Void = loadBranches()
-        _ = await (h, b)
+        async let s: Void = loadStatus()
+        _ = await (h, b, s)
         if let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
             repos[i] = updated
         }
@@ -328,6 +361,11 @@ final class AppModel {
         section = .history
         selectedSHA = nil
         await reloadHistory()
+    }
+
+    /// Swap in a fresh copy of one repo (its HEAD may have moved).
+    func loadReposKeepingSelection(_ updated: Repo) async {
+        if let i = repos.firstIndex(where: { $0.id == updated.id }) { repos[i] = updated }
     }
 
     func copy(_ text: String) {

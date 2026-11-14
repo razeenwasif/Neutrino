@@ -63,7 +63,7 @@ struct DiffPane: View {
 
 /// A flat list of what the diff draws, so long diffs render lazily.
 private enum Row: Identifiable {
-    case hunk(Int, String)
+    case hunk(Int, Hunk)
     case line(Int, DiffLine)
     case pair(Int, DiffLine?, DiffLine?)
 
@@ -77,12 +77,24 @@ private enum Row: Identifiable {
 struct DiffBody: View {
     var diff: FileDiff
     var layout: DiffLayout
+    /// Lines picked for staging; empty and unused in read-only diffs.
+    var picks: Set<LinePick> = []
+    /// Set to make changed lines pickable.
+    var onPick: ((DiffLine) -> Void)? = nil
+    /// A button on each hunk header, e.g. "Stage hunk".
+    var hunkAction: String? = nil
+    var onHunk: ((Hunk) -> Void)? = nil
+
+    private func picked(_ l: DiffLine?) -> Bool {
+        guard let l, let p = LinePick(l) else { return false }
+        return picks.contains(p)
+    }
 
     private var rows: [Row] {
         var out: [Row] = []
         var n = 0
         for h in diff.hunks {
-            out.append(.hunk(n, h.header)); n += 1
+            out.append(.hunk(n, h)); n += 1
             if layout == .unified {
                 for l in h.lines { out.append(.line(n, l)); n += 1 }
                 continue
@@ -112,21 +124,27 @@ struct DiffBody: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(rows) { row in
                     switch row {
-                    case let .hunk(_, header):
-                        Text(header)
-                            .font(N.mono(12))
-                            .foregroundStyle(N.muted)
-                            .padding(.horizontal, 14)
-                            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-                            .background(N.accent.opacity(0.07))
-                            .padding(.top, 6)
+                    case let .hunk(_, h):
+                        HStack(spacing: 10) {
+                            Text(h.header).font(N.mono(12)).foregroundStyle(N.muted)
+                            if let hunkAction, let onHunk {
+                                Button(hunkAction) { onHunk(h) }
+                                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 20))
+                                    .font(.system(size: 11))
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+                        .background(N.accent.opacity(0.07))
+                        .padding(.top, 6)
                     case let .line(_, l):
-                        UnifiedLine(line: l)
+                        UnifiedLine(line: l, picked: picked(l), onPick: onPick)
                     case let .pair(_, a, b):
                         HStack(spacing: 0) {
-                            SideLine(line: a, number: a?.oldLine, isOld: true)
+                            SideLine(line: a, number: a?.oldLine, isOld: true, picked: picked(a), onPick: onPick)
                             Rectangle().fill(N.hairline).frame(width: 1)
-                            SideLine(line: b, number: b?.newLine, isOld: false)
+                            SideLine(line: b, number: b?.newLine, isOld: false, picked: picked(b), onPick: onPick)
                         }
                     }
                 }
@@ -134,9 +152,18 @@ struct DiffBody: View {
             // Rows span at least the visible width, so line colours reach the edge.
             .frame(minWidth: geo.size.width, alignment: .leading)
             .padding(.bottom, 14)
-            .textSelection(.enabled)
+            .modifier(SelectableText(on: onPick == nil))
         }
         }
+    }
+}
+
+/// Text selection, off where clicks pick lines instead.
+private struct SelectableText: ViewModifier {
+    var on: Bool
+
+    func body(content: Content) -> some View {
+        if on { content.textSelection(.enabled) } else { content.textSelection(.disabled) }
     }
 }
 
@@ -167,10 +194,14 @@ private func styled(_ line: DiffLine) -> AttributedString {
 
 private struct UnifiedLine: View {
     var line: DiffLine
+    var picked = false
+    var onPick: ((DiffLine) -> Void)? = nil
 
     var body: some View {
         let c = colors(line.kind)
+        let pickable = onPick != nil && line.kind != .context
         HStack(spacing: 0) {
+            Rectangle().fill(picked ? N.accent : .clear).frame(width: 3)
             Text(line.oldLine.map(String.init) ?? "").frame(width: 46, alignment: .trailing).foregroundStyle(N.faint)
             Text(line.newLine.map(String.init) ?? "").frame(width: 44, alignment: .trailing).foregroundStyle(N.faint)
             Text(line.kind == .added ? "+" : line.kind == .removed ? "−" : " ").frame(width: 22).foregroundStyle(c.sign)
@@ -182,7 +213,10 @@ private struct UnifiedLine: View {
         }
         .font(N.mono(12))
         .frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
-        .background(c.bg)
+        .background(picked ? N.accent.opacity(0.16) : c.bg)
+        .contentShape(Rectangle())
+        .onTapGesture { if pickable { onPick?(line) } }
+        .help(pickable ? (picked ? "Picked. Click to drop it." : "Click to pick this line") : "")
     }
 }
 
@@ -190,6 +224,8 @@ private struct SideLine: View {
     var line: DiffLine?
     var number: UInt32?
     var isOld: Bool
+    var picked = false
+    var onPick: ((DiffLine) -> Void)? = nil
 
     var body: some View {
         let c = line.map { colors($0.kind) } ?? (Color.white.opacity(0.015), N.faint, N.faint, .clear)
@@ -201,7 +237,10 @@ private struct SideLine: View {
         }
         .font(N.mono(12))
         .frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
-        .background(c.bg)
+        .background(picked ? N.accent.opacity(0.16) : c.bg)
+        .overlay(alignment: .leading) { if picked { Rectangle().fill(N.accent).frame(width: 3) } }
         .clipped()
+        .contentShape(Rectangle())
+        .onTapGesture { if let line, line.kind != .context { onPick?(line) } }
     }
 }

@@ -104,3 +104,56 @@ func liveDaemon() async throws {
     }
     await #expect(throws: ServiceError.self) { try await s.branches(repo: "no-such-repo") }
 }
+
+@Test func workingCopyRequests() throws {
+    let lines = try json(Wire.line(id: 3, .stageLines(repo: "r", path: "a.rs", area: .unstaged, lines: [LinePick(kind: .added, line: 4)])))
+    #expect(lines == ["id": 3, "method": "stage_lines", "params": ["repo": "r", "path": "a.rs", "area": "unstaged", "lines": [["kind": "added", "line": 4]]]] as NSDictionary)
+    let discard = try json(Wire.line(id: 4, .discardLines(repo: "r", path: "a.rs", lines: [LinePick(kind: .removed, line: 2)])))
+    #expect(discard == ["id": 4, "method": "discard_lines", "params": ["repo": "r", "path": "a.rs", "lines": [["kind": "removed", "line": 2]]]] as NSDictionary)
+    let commit = try json(Wire.line(id: 5, .commitChanges(repo: "r", message: "Fix", amend: false)))
+    #expect(commit == ["id": 5, "method": "commit_changes", "params": ["repo": "r", "message": "Fix", "amend": false]] as NSDictionary)
+    #expect(try json(Wire.line(id: 6, .subscribe)) == ["id": 6, "method": "subscribe"] as NSDictionary)
+    let branch = try json(Wire.line(id: 7, .createBranch(repo: "r", name: "x", start: nil, checkout: true)))
+    #expect(branch == ["id": 7, "method": "create_branch", "params": ["repo": "r", "name": "x", "checkout": true]] as NSDictionary)
+}
+
+@Test func workingCopyResponses() throws {
+    let status = #"{"id":2,"type":"status","data":{"head":{"kind":"branch","name":"main","sha":null},"upstream":"origin/main","ahead":1,"behind":0,"operation":"merge","staged":[{"path":"b","old_path":"a","status":"renamed","additions":0,"deletions":0,"binary":false}],"unstaged":[],"untracked":[{"path":"n.txt","old_path":null,"status":"untracked","additions":2,"deletions":0,"binary":false}],"conflicted":[{"path":"c","old_path":null,"status":"conflicted","additions":0,"deletions":0,"binary":false}]}}"#
+    guard case let .status(st) = try Wire.decode(Data(status.utf8)).1 else { Issue.record("not a status"); return }
+    #expect(st.operation == "merge" && st.ahead == 1)
+    #expect(st.staged[0].oldPath == "a" && st.untracked[0].status == .untracked && st.conflicted[0].status == .conflicted)
+    #expect(st.changeCount == 3 && !st.isClean)
+    #expect(try Wire.decode(Data(#"{"id":3,"type":"done","data":{"output":""}}"#.utf8)) == (3, .done(output: "")))
+    #expect(try Wire.decode(Data(#"{"id":4,"type":"committed","data":{"sha":"abc","output":"hook ran"}}"#.utf8)) == (4, .committed(sha: "abc", output: "hook ran")))
+    #expect(try Wire.decode(Data(#"{"id":9,"type":"event","data":{"repo":"r","kind":"worktree"}}"#.utf8)) == (9, .event(RepoEvent(repo: "r", kind: "worktree"))))
+    let added = DiffLine(kind: .added, oldLine: nil, newLine: 7, text: "x")
+    #expect(LinePick(added) == LinePick(kind: .added, line: 7))
+    #expect(LinePick(DiffLine(kind: .context, oldLine: 1, newLine: 1, text: "")) == nil)
+}
+
+@Test func demoWorkingCopy() async throws {
+    let demo = DemoService()
+    let st = try await demo.status(repo: "nexus")
+    #expect(st.staged.count == 2 && st.unstaged.count == 2 && st.untracked.count == 1)
+    let d = try await demo.workDiff(repo: "nexus", path: st.unstaged[0].path, area: .unstaged)
+    #expect(!d.hunks.isEmpty)
+}
+
+/// Stages a line, commits and watches events against a running neutrinod on a
+/// scratch repo, when NEUTRINO_LIVE_REPO names a registered repo you don't mind changing.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NEUTRINO_LIVE_REPO"] != nil))
+func liveWorkingCopy() async throws {
+    let repo = ProcessInfo.processInfo.environment["NEUTRINO_LIVE_REPO"]!
+    let s = SocketService()
+    let st = try await s.status(repo: repo)
+    let file = try #require(st.unstaged.first)
+    let diff = try await s.workDiff(repo: repo, path: file.path, area: .unstaged)
+    let pick = try #require(diff.hunks.first?.lines.compactMap(LinePick.init).first)
+    let events = s.events()
+    try await s.stageLines(repo: repo, path: file.path, area: .unstaged, lines: [pick])
+    var it = events.makeAsyncIterator()
+    let event = await it.next()
+    #expect(event?.repo == repo)
+    let after = try await s.status(repo: repo)
+    #expect(after.staged.contains(where: { $0.path == file.path }))
+}

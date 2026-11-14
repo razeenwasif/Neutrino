@@ -5,6 +5,7 @@
 //! on atlas comes in a later milestone.
 
 mod registry;
+mod watch;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,12 +40,41 @@ pub fn socket_path() -> PathBuf {
 pub struct Daemon {
     registry: Registry,
     diffs: DiffCache,
+    watchers: watch::Watchers,
+    /// One write at a time, so two never race for the index lock.
+    writes: Mutex<()>,
+    /// Where discarded work is noted, so it can be got back.
+    discarded_log: PathBuf,
 }
 
 impl Daemon {
     pub fn new(state_dir: &Path) -> Result<Arc<Self>> {
         std::fs::create_dir_all(state_dir).with_context(|| format!("creating {}", state_dir.display()))?;
-        Ok(Arc::new(Daemon { registry: Registry::load(state_dir)?, diffs: DiffCache::default() }))
+        Ok(Arc::new(Daemon {
+            registry: Registry::load(state_dir)?,
+            diffs: DiffCache::default(),
+            watchers: watch::Watchers::new(),
+            writes: Mutex::new(()),
+            discarded_log: state_dir.join("discarded.log"),
+        }))
+    }
+
+    /// Watch a repo's files so subscribers hear about changes. Needs the Tokio runtime.
+    fn watch(&self, id: &str) {
+        if let Ok(repo) = self.registry.get(id) {
+            let local = neutrino_git::local(&repo);
+            let root = neutrino_git::root(&local).to_path_buf();
+            let git_dir = local.git_dir().to_path_buf();
+            self.watchers.watch(id, root, git_dir);
+        }
+    }
+
+    fn watch_all(&self) {
+        for r in self.registry.list() {
+            if r.error.is_none() {
+                self.watch(&r.id);
+            }
+        }
     }
 
     /// Answer one request. Git work runs on the blocking pool.
@@ -68,11 +98,41 @@ impl Daemon {
                 repos: self.registry.len() as u32,
             }),
             Request::ListRepos => Response::Repos(self.registry.list()),
-            Request::AddRepo { path } => Response::Repo(self.registry.add(&path)?),
+            Request::AddRepo { path } => {
+                let repo = self.registry.add(&path)?;
+                self.watch(&repo.id);
+                Response::Repo(repo)
+            }
             Request::RemoveRepo { repo } => {
                 self.registry.remove(&repo)?;
+                self.watchers.unwatch(&repo);
                 Response::Removed { repo }
             }
+            Request::Status { repo: id } => Response::Status(neutrino_git::worktree::status(&repo(&id)?)?),
+            Request::WorkDiff { repo: id, path, area, context } => {
+                Response::FileDiff(neutrino_git::worktree::work_diff(&repo(&id)?, &path, area, context.unwrap_or(3).min(10_000))?)
+            }
+            Request::Stage { repo: id, paths } => self.write(|| Ok(neutrino_git::worktree::stage(&repo(&id)?, &paths)?))?,
+            Request::Unstage { repo: id, paths } => self.write(|| Ok(neutrino_git::worktree::unstage(&repo(&id)?, &paths)?))?,
+            Request::StageLines { repo: id, path, area, lines } => {
+                self.write(|| Ok(neutrino_git::worktree::stage_lines(&repo(&id)?, &path, area, &lines)?))?
+            }
+            Request::Discard { repo: id, paths } => self.write(|| Ok(neutrino_git::worktree::discard(&repo(&id)?, &paths, &self.discarded_log)?))?,
+            Request::DiscardLines { repo: id, path, lines } => {
+                self.write(|| Ok(neutrino_git::worktree::discard_lines(&repo(&id)?, &path, &lines, &self.discarded_log)?))?
+            }
+            Request::CommitChanges { repo: id, message, amend } => {
+                let _guard = self.writes.lock().unwrap();
+                let (sha, output) = neutrino_git::worktree::commit(&repo(&id)?, &message, amend)?;
+                Response::Committed { sha, output }
+            }
+            Request::CreateBranch { repo: id, name, start, checkout } => {
+                self.write(|| Ok(neutrino_git::worktree::create_branch(&repo(&id)?, &name, start.as_deref(), checkout)?))?
+            }
+            Request::Checkout { repo: id, branch } => self.write(|| Ok(neutrino_git::worktree::checkout(&repo(&id)?, &branch)?))?,
+            Request::RenameBranch { repo: id, from, to } => self.write(|| Ok(neutrino_git::worktree::rename_branch(&repo(&id)?, &from, &to)?))?,
+            Request::DeleteBranch { repo: id, name, force } => self.write(|| Ok(neutrino_git::worktree::delete_branch(&repo(&id)?, &name, force)?))?,
+            Request::Subscribe => bail!("subscribe is handled by the connection"),
             Request::Branches { repo: id } => Response::Branches(neutrino_git::branches(&repo(&id)?)?),
             Request::Log(q) => Response::Log(neutrino_git::log(&repo(&q.repo)?, &q)?),
             Request::Commit { repo: id, sha } => Response::Commit(Box::new(neutrino_git::commit(&repo(&id)?, &sha)?)),
@@ -82,6 +142,11 @@ impl Daemon {
             }
             Request::Cancel { .. } => bail!("cancel is handled by the connection"),
         })
+    }
+
+    fn write(&self, f: impl FnOnce() -> Result<String>) -> Result<Response> {
+        let _guard = self.writes.lock().unwrap();
+        Ok(Response::Done { output: f()? })
     }
 }
 
@@ -133,6 +198,26 @@ async fn connection(daemon: Arc<Daemon>, stream: UnixStream) {
             continue;
         }
 
+        if request == Request::Subscribe {
+            let mut events = daemon.watchers.subscribe();
+            let tx2 = tx.clone();
+            let task = tokio::spawn(async move {
+                loop {
+                    match events.recv().await {
+                        Ok(event) => {
+                            if tx2.send(encode_response(id, &Response::Event(event))).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
+                }
+            });
+            in_flight.lock().unwrap().insert(id, task.abort_handle());
+            continue;
+        }
+
         let (daemon, tx2, flights) = (Arc::clone(&daemon), tx.clone(), Arc::clone(&in_flight));
         // Hold the map while spawning so the task can't finish before it's registered.
         let mut map = in_flight.lock().unwrap();
@@ -146,6 +231,10 @@ async fn connection(daemon: Arc<Daemon>, stream: UnixStream) {
         });
         map.insert(id, task.abort_handle());
         drop(map);
+    }
+    // Stop this connection's subscriptions with it.
+    for (_, task) in in_flight.lock().unwrap().drain() {
+        task.abort();
     }
     drop(tx);
     let _ = writer.await;
@@ -169,6 +258,7 @@ pub async fn serve(daemon: Arc<Daemon>, socket: &Path, shutdown: impl std::futur
         std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
     }
 
+    daemon.watch_all();
     tokio::pin!(shutdown);
     loop {
         tokio::select! {

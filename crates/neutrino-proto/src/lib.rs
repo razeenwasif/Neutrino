@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a breaking change is made to the control API.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Repositories and refs
@@ -165,6 +165,10 @@ pub enum ChangeStatus {
     Copied,
     /// A file became a symlink or the other way round.
     TypeChanged,
+    /// Not tracked yet (working-tree status only).
+    Untracked,
+    /// Both sides of a merge changed it and it isn't resolved (working-tree status only).
+    Conflicted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,7 +198,7 @@ pub struct CommitDetail {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LineKind {
     Context,
@@ -248,6 +252,64 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
 }
 
+// ---------------------------------------------------------------------------
+// Working copy
+// ---------------------------------------------------------------------------
+
+/// A file in the working-tree status. Line counts are against the other side
+/// of its area: the index against HEAD when staged, the working tree against
+/// the index otherwise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: ChangeStatus,
+    pub additions: u32,
+    pub deletions: u32,
+    pub binary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkingStatus {
+    pub head: Option<Head>,
+    pub upstream: Option<String>,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+    /// A merge, rebase, cherry-pick, revert or bisect in progress.
+    pub operation: Option<String>,
+    pub staged: Vec<StatusFile>,
+    pub unstaged: Vec<StatusFile>,
+    pub untracked: Vec<StatusFile>,
+    pub conflicted: Vec<StatusFile>,
+}
+
+/// One changed line picked in a working-tree diff: an added line by its new
+/// line number, a removed line by its old one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LinePick {
+    pub kind: LineKind,
+    pub line: u32,
+}
+
+/// Which side of the working copy a diff or a line pick is about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Area {
+    /// The index against HEAD.
+    Staged,
+    /// The working tree against the index (untracked files included).
+    #[default]
+    Unstaged,
+}
+
+/// Something changed in a repo the client subscribed to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoEvent {
+    pub repo: String,
+    /// `worktree` (files changed) or `refs` (HEAD, branches or the index moved).
+    pub kind: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineInfo {
     pub version: String,
@@ -285,6 +347,56 @@ pub enum Request {
         #[serde(default)]
         context: Option<u32>,
     },
+    /// Staged, unstaged, untracked and conflicted files.
+    Status { repo: String },
+    /// One file's working-copy diff.
+    WorkDiff {
+        repo: String,
+        path: String,
+        #[serde(default)]
+        area: Area,
+        #[serde(default)]
+        context: Option<u32>,
+    },
+    /// Stage whole files (new, changed or deleted).
+    Stage { repo: String, paths: Vec<String> },
+    /// Take whole files out of the index.
+    Unstage { repo: String, paths: Vec<String> },
+    /// Stage (from `unstaged`) or unstage (from `staged`) some lines of one file.
+    StageLines { repo: String, path: String, area: Area, lines: Vec<LinePick> },
+    /// Throw away working-tree changes to whole files. Their contents are
+    /// kept as objects in the repo and listed in ~/.neutrino/discarded.log.
+    Discard { repo: String, paths: Vec<String> },
+    /// Throw away some working-tree lines of one file.
+    DiscardLines { repo: String, path: String, lines: Vec<LinePick> },
+    /// Commit what's staged. Runs git, so hooks and signing apply.
+    CommitChanges {
+        repo: String,
+        message: String,
+        #[serde(default)]
+        amend: bool,
+    },
+    CreateBranch {
+        repo: String,
+        name: String,
+        /// Where it starts. Default HEAD.
+        #[serde(default)]
+        start: Option<String>,
+        #[serde(default)]
+        checkout: bool,
+    },
+    /// Switch to a local branch, or to a remote one as a new tracking branch.
+    Checkout { repo: String, branch: String },
+    RenameBranch { repo: String, from: String, to: String },
+    /// Delete a local branch; without `force`, only once it's merged.
+    DeleteBranch {
+        repo: String,
+        name: String,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Keep this request open and answer it with `event`s as repos change.
+    Subscribe,
     /// Drop the answer to an earlier request on this connection.
     Cancel { id: u64 },
 }
@@ -322,6 +434,12 @@ pub enum Response {
     Log(LogPage),
     Commit(Box<CommitDetail>),
     FileDiff(FileDiff),
+    Status(WorkingStatus),
+    /// A write finished; `output` is what git printed, if anything.
+    Done { output: String },
+    Committed { sha: String, output: String },
+    /// One of possibly many answers to `subscribe`.
+    Event(RepoEvent),
     /// The request was cancelled before it finished.
     Cancelled,
     Error { message: String },
@@ -433,7 +551,7 @@ mod tests {
     #[test]
     fn response_shape() {
         let line = encode_response(2, &Response::Pong { protocol: PROTOCOL_VERSION });
-        assert_eq!(wire(&line), json!({"id": 2, "type": "pong", "data": {"protocol": 1}}));
+        assert_eq!(wire(&line), json!({"id": 2, "type": "pong", "data": {"protocol": 2}}));
         let line = encode_response(5, &Response::Cancelled);
         assert_eq!(wire(&line), json!({"id": 5, "type": "cancelled"}));
         let head = Head::Branch { name: "main".into(), sha: Some("abc".into()) };
@@ -444,6 +562,20 @@ mod tests {
     fn diff_line_omits_empty_extras() {
         let line = DiffLine { kind: LineKind::Added, old_line: None, new_line: Some(4), text: "x".into(), segments: vec![], no_newline: false };
         assert_eq!(serde_json::to_value(&line).unwrap(), json!({"kind": "added", "old_line": null, "new_line": 4, "text": "x"}));
+    }
+
+    #[test]
+    fn working_copy_shapes() {
+        let req = Request::StageLines { repo: "r".into(), path: "a.rs".into(), area: Area::Unstaged, lines: vec![LinePick { kind: LineKind::Added, line: 4 }] };
+        assert_eq!(
+            wire(&encode_request(3, &req)),
+            json!({"id": 3, "method": "stage_lines", "params": {"repo": "r", "path": "a.rs", "area": "unstaged", "lines": [{"kind": "added", "line": 4}]}})
+        );
+        let (_, req) = decode_request(r#"{"id":1,"method":"work_diff","params":{"repo":"r","path":"p"}}"#);
+        assert_eq!(req.unwrap(), Request::WorkDiff { repo: "r".into(), path: "p".into(), area: Area::Unstaged, context: None });
+        let ev = Response::Event(RepoEvent { repo: "r".into(), kind: "worktree".into() });
+        assert_eq!(wire(&encode_response(9, &ev)), json!({"id": 9, "type": "event", "data": {"repo": "r", "kind": "worktree"}}));
+        assert_eq!(serde_json::to_value(ChangeStatus::Untracked).unwrap(), json!("untracked"));
     }
 
     #[test]

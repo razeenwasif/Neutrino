@@ -197,3 +197,104 @@ public final class DemoService: NeutrinoService {
         return FileDiff(path: path, status: f.0.status, additions: f.0.additions, deletions: f.0.deletions, hunks: Self.hunks(f.1))
     }
 }
+
+// MARK: - Demo working copy
+
+/// The prototype's Changes screen: five changed files, two of them staged.
+final class DemoWorkingCopy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var staged: Set<String> = ["cluster/nexus_cluster/server/placement.py", "cluster/nexus_cluster/server/reservations.py"]
+    private var gone: Set<String> = []
+
+    struct File {
+        var status: StatusFile
+        var diff: [String]
+    }
+
+    static let files: [File] = [
+        File(status: StatusFile(path: "cluster/nexus_cluster/server/placement.py", status: .modified, additions: 3, deletions: 1), diff: [
+            "@@ -1,4 +1,5 @@", " \"\"\"Where a job runs.\"\"\"", " from .models import Job, JobSpec, Node", "+from . import reservations", " ",
+            "@@ -38,6 +39,8 @@ def free_memory_gb(node: Node, jobs: list[Job]) -> float:", "     \"\"\"RAM a new job may reserve on this node.\"\"\"",
+            "     reserved = sum(j.memory_gb for j in jobs if j.node == node.id)", "-    return node.ram_gb - NODE_KEEP_GB - reserved",
+            "+    held = sum(r.memory_gb for r in reservations.active(node.id))", "+    return node.ram_gb - NODE_KEEP_GB - reserved - held", " ", " ",
+        ]),
+        File(status: StatusFile(path: "cluster/nexus_cluster/server/reservations.py", status: .added, additions: 6, deletions: 0), diff: [
+            "@@ -0,0 +1,6 @@", "+\"\"\"Memory held on a node by schedulers outside Nexus.\"\"\"", "+from dataclasses import dataclass", "+", "+@dataclass",
+            "+class Reservation:", "+    owner: str          # for example \"neutrino-ci\"",
+        ]),
+        File(status: StatusFile(path: "cluster/tests/test_placement.py", status: .modified, additions: 4, deletions: 0), diff: [
+            "@@ -52,2 +52,6 @@ def test_keeps_four_gb_for_the_node():", "     assert free_memory_gb(atlas, []) == 12", "+", "+",
+            "+def test_reservation_counts_against_free_memory(monkeypatch):", "+    assert free_memory_gb(atlas, []) == 6",
+        ]),
+        File(status: StatusFile(path: "docs/CONTROL_PLANE.md", status: .modified, additions: 3, deletions: 1), diff: [
+            "@@ -18,4 +18,6 @@", " - **Coordinator** runs on atlas. It keeps the queue in its own database,",
+            "-  places each job on a node, and talks to the agents over the LAN.", "+  places each job on a node, and talks to the agents over the LAN. Other",
+            "+  schedulers hold memory with `POST /v1/reservations`; placement treats a", "+  reservation like a running job that asked for the same RAM.",
+            " - **Agents** run on each node. They report hardware and health.",
+        ]),
+        File(status: StatusFile(path: "notes/reservations-todo.md", status: .untracked, additions: 2, deletions: 0), diff: [
+            "@@ -0,0 +1,2 @@", "+- renew from Neutrino every 60 s", "+- show held RAM in Fleet",
+        ]),
+    ]
+
+    func status() -> WorkingStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        var st = WorkingStatus(head: DemoService.repo.head, upstream: "origin/reservations", ahead: 2, behind: 0)
+        for f in Self.files where !gone.contains(f.status.path) {
+            if staged.contains(f.status.path) {
+                var s = f.status
+                if s.status == .untracked { s.status = .added }
+                st.staged.append(s)
+            } else if f.status.status == .untracked {
+                st.untracked.append(f.status)
+            } else {
+                st.unstaged.append(f.status)
+            }
+        }
+        return st
+    }
+
+    func diff(_ path: String) throws -> FileDiff {
+        guard let f = Self.files.first(where: { $0.status.path == path }), !gone.contains(path) else { throw ServiceError.daemon("\(path) has no changes here") }
+        return FileDiff(path: path, status: f.status.status, additions: f.status.additions, deletions: f.status.deletions, hunks: DemoService.hunks(f.diff))
+    }
+
+    func stage(_ paths: [String], on: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        for p in paths { if on { staged.insert(p) } else { staged.remove(p) } }
+    }
+
+    func commit() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !staged.isEmpty else { throw ServiceError.daemon("nothing added to commit") }
+        gone.formUnion(staged)
+        staged = []
+    }
+}
+
+private let demoWorkingCopy = DemoWorkingCopy()
+
+extension DemoService {
+    private static var lineMessage: String { "Start neutrinod to work with lines and branches in your own repos." }
+
+    public func status(repo _: String) async throws -> WorkingStatus { demoWorkingCopy.status() }
+    public func workDiff(repo _: String, path: String, area _: Area) async throws -> FileDiff { try demoWorkingCopy.diff(path) }
+    public func stage(repo _: String, paths: [String]) async throws { demoWorkingCopy.stage(paths, on: true) }
+    public func unstage(repo _: String, paths: [String]) async throws { demoWorkingCopy.stage(paths, on: false) }
+    public func stageLines(repo _: String, path _: String, area _: Area, lines _: [LinePick]) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func discard(repo _: String, paths _: [String]) async throws { throw ServiceError.daemon("The demo repository's files can't be discarded.") }
+    public func discardLines(repo _: String, path _: String, lines _: [LinePick]) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func commit(repo _: String, message: String, amend _: Bool) async throws -> (sha: String, output: String) {
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ServiceError.daemon("write a commit message first") }
+        try demoWorkingCopy.commit()
+        return ("d3m0c0mm17e0b1c8d94f27a6305bd1e9c47f8a2b", "")
+    }
+    public func createBranch(repo _: String, name _: String, start _: String?, checkout _: Bool) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func checkout(repo _: String, branch _: String) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func renameBranch(repo _: String, from _: String, to _: String) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func deleteBranch(repo _: String, name _: String, force _: Bool) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func events() -> AsyncStream<RepoEvent> { AsyncStream { _ in } }
+}

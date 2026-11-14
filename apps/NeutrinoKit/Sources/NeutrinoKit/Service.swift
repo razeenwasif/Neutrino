@@ -40,6 +40,23 @@ public protocol NeutrinoService: Sendable {
     func log(_ query: LogQuery) async throws -> LogPage
     func commit(repo: String, sha: String) async throws -> CommitDetail
     func fileDiff(repo: String, sha: String, path: String, context: UInt32?) async throws -> FileDiff
+
+    // Working copy
+    func status(repo: String) async throws -> WorkingStatus
+    func workDiff(repo: String, path: String, area: Area) async throws -> FileDiff
+    func stage(repo: String, paths: [String]) async throws
+    func unstage(repo: String, paths: [String]) async throws
+    func stageLines(repo: String, path: String, area: Area, lines: [LinePick]) async throws
+    func discard(repo: String, paths: [String]) async throws
+    func discardLines(repo: String, path: String, lines: [LinePick]) async throws
+    /// Returns the new commit and what git and its hooks printed.
+    func commit(repo: String, message: String, amend: Bool) async throws -> (sha: String, output: String)
+    func createBranch(repo: String, name: String, start: String?, checkout: Bool) async throws
+    func checkout(repo: String, branch: String) async throws
+    func renameBranch(repo: String, from: String, to: String) async throws
+    func deleteBranch(repo: String, name: String, force: Bool) async throws
+    /// Changes to any registered repo, until the stream is dropped.
+    func events() -> AsyncStream<RepoEvent>
 }
 
 // MARK: - Socket service
@@ -96,6 +113,78 @@ public final class SocketService: NeutrinoService {
         return d
     }
 
+    public func status(repo: String) async throws -> WorkingStatus {
+        guard case let .status(s) = try await call(.status(repo: repo)) else { throw ServiceError.unexpectedResponse }
+        return s
+    }
+
+    public func workDiff(repo: String, path: String, area: Area) async throws -> FileDiff {
+        guard case let .fileDiff(d) = try await call(.workDiff(repo: repo, path: path, area: area, context: 3)) else { throw ServiceError.unexpectedResponse }
+        return d
+    }
+
+    private func perform(_ r: Request) async throws {
+        guard case .done = try await call(r, timeout: 300) else { throw ServiceError.unexpectedResponse }
+    }
+
+    public func stage(repo: String, paths: [String]) async throws { try await perform(.stage(repo: repo, paths: paths)) }
+    public func unstage(repo: String, paths: [String]) async throws { try await perform(.unstage(repo: repo, paths: paths)) }
+    public func stageLines(repo: String, path: String, area: Area, lines: [LinePick]) async throws {
+        try await perform(.stageLines(repo: repo, path: path, area: area, lines: lines))
+    }
+    public func discard(repo: String, paths: [String]) async throws { try await perform(.discard(repo: repo, paths: paths)) }
+    public func discardLines(repo: String, path: String, lines: [LinePick]) async throws {
+        try await perform(.discardLines(repo: repo, path: path, lines: lines))
+    }
+
+    public func commit(repo: String, message: String, amend: Bool) async throws -> (sha: String, output: String) {
+        // Hooks may run tests, so allow a long wait.
+        guard case let .committed(sha, output) = try await call(.commitChanges(repo: repo, message: message, amend: amend), timeout: 1800) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return (sha, output)
+    }
+
+    public func createBranch(repo: String, name: String, start: String?, checkout: Bool) async throws {
+        try await perform(.createBranch(repo: repo, name: name, start: start, checkout: checkout))
+    }
+    public func checkout(repo: String, branch: String) async throws { try await perform(.checkout(repo: repo, branch: branch)) }
+    public func renameBranch(repo: String, from: String, to: String) async throws { try await perform(.renameBranch(repo: repo, from: from, to: to)) }
+    public func deleteBranch(repo: String, name: String, force: Bool) async throws { try await perform(.deleteBranch(repo: repo, name: name, force: force)) }
+
+    /// A connection held open on `subscribe`; ends when the stream is dropped or the daemon goes away.
+    public func events() -> AsyncStream<RepoEvent> {
+        let path = self.path
+        return AsyncStream { continuation in
+            let box = FDBox()
+            continuation.onTermination = { _ in box.shutdown() }
+            let thread = Thread {
+                defer { continuation.finish() }
+                guard let fd = try? Self.connect(path: path, timeout: 0) else { return }
+                box.set(fd)
+                defer { box.close() }
+                guard (try? Self.writeAll(fd, Wire.line(id: 1, .subscribe))) != nil else { return }
+                var pending = Data()
+                var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+                while true {
+                    let n = read(fd, &chunk, chunk.count)
+                    if n <= 0 {
+                        if n < 0, errno == EINTR { continue }
+                        return
+                    }
+                    pending.append(contentsOf: chunk[0 ..< n])
+                    while let nl = pending.firstIndex(of: 0x0A) {
+                        let line = pending[pending.startIndex ..< nl]
+                        pending.removeSubrange(pending.startIndex ... nl)
+                        if case let .event(e)? = try? Wire.decode(Data(line)).1 { continuation.yield(e) }
+                    }
+                }
+            }
+            thread.name = "neutrino events"
+            thread.start()
+        }
+    }
+
     /// Send one request and wait for its answer, off the main thread.
     public func call(_ request: Request, timeout: TimeInterval = 60) async throws -> Response {
         let path = self.path
@@ -135,8 +224,10 @@ public final class SocketService: NeutrinoService {
             raw.copyBytes(from: bytes)
             raw[bytes.count] = 0
         }
-        var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        if timeout > 0 {
+            var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        }
         var noSigpipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
         let ok = withUnsafePointer(to: &addr) {
@@ -181,5 +272,37 @@ public final class SocketService: NeutrinoService {
             }
             out.append(contentsOf: chunk[0 ..< n])
         }
+    }
+}
+
+/// A socket shared between the reading thread and the stream's cancellation.
+final class FDBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32 = -1
+    private var stopped = false
+
+    func set(_ fd: Int32) {
+        lock.lock()
+        self.fd = fd
+        let stop = stopped
+        lock.unlock()
+        if stop { Darwin.shutdown(fd, SHUT_RDWR) }
+    }
+
+    /// Wake the reader so it returns.
+    func shutdown() {
+        lock.lock()
+        stopped = true
+        let fd = self.fd
+        lock.unlock()
+        if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
+    }
+
+    func close() {
+        lock.lock()
+        let fd = self.fd
+        self.fd = -1
+        lock.unlock()
+        if fd >= 0 { Darwin.close(fd) }
     }
 }

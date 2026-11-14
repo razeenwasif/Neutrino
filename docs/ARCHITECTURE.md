@@ -6,9 +6,9 @@ secret storage. The server runs on atlas (the always-on Mac mini); the MacBook
 is a client. CI jobs run in Graviton containers on atlas. Nothing leaves your
 machines.
 
-Status: milestone 1 (the read path) is built; see the README for what was
-measured. Everything from milestone 2 on is design, and its numbers are
-targets.
+Status: milestones 1 (the read path) and 2 (the working copy) are built; see
+the README for what was measured. Everything from milestone 3 on is design,
+and its numbers are targets.
 
 ## 1. Decisions and what they rest on
 

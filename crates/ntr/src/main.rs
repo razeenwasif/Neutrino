@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use neutrino_proto::{
-    ChangeStatus, Head, LineKind, LogEntry, LogQuery, RefKind, Repo, Request, Response, decode_response, encode_request,
+    Area, ChangeStatus, Head, LineKind, LogEntry, LogQuery, RefKind, Repo, Request, Response, WorkingStatus, decode_response, encode_request,
 };
 
 #[derive(Parser)]
@@ -55,13 +55,67 @@ enum Cmd {
     },
     /// A commit and the files it changed.
     Show { sha: String },
-    /// One file's changes in a commit.
+    /// A file's changes: `diff PATH` for the working tree, `diff SHA PATH` for a commit.
     Diff {
-        sha: String,
-        path: String,
+        #[arg(num_args = 1..=2, required = true)]
+        args: Vec<String>,
+        /// With one PATH: what's staged, instead of what isn't.
+        #[arg(long)]
+        staged: bool,
         /// Lines of context.
         #[arg(short = 'U', long, default_value_t = 3)]
         context: u32,
+    },
+    /// Staged, unstaged, untracked and conflicted files.
+    Status,
+    /// Stage whole files.
+    Stage {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Take whole files out of the index.
+    Unstage {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Throw away working-tree changes; copies go to ~/.neutrino/discarded.log.
+    Discard {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Commit what's staged.
+    Commit {
+        #[arg(short = 'm', long)]
+        message: Option<String>,
+        #[arg(long)]
+        amend: bool,
+    },
+    /// Switch to a branch; a remote one becomes a tracking branch.
+    Switch { branch: String },
+    /// Create, rename or delete a branch.
+    #[command(subcommand)]
+    Branch(BranchCmd),
+    /// Print change events as they happen, until Ctrl-C.
+    Watch,
+}
+
+#[derive(Subcommand)]
+enum BranchCmd {
+    New {
+        name: String,
+        /// Where it starts. Default HEAD.
+        #[arg(long)]
+        start: Option<String>,
+        /// Switch to it too.
+        #[arg(long, short = 's')]
+        switch: bool,
+    },
+    Rename { from: String, to: String },
+    Delete {
+        name: String,
+        /// Delete it even if it isn't merged.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -198,12 +252,15 @@ fn status_letter(s: ChangeStatus) -> &'static str {
         ChangeStatus::Renamed => "R",
         ChangeStatus::Copied => "C",
         ChangeStatus::TypeChanged => "T",
+        ChangeStatus::Untracked => "?",
+        ChangeStatus::Conflicted => "U",
     }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let st = Style { on: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
+    let style = Style { on: st.on };
     let mut c = Conn::open(&socket_path(cli.socket))?;
     let out = &mut std::io::stdout().lock();
 
@@ -316,9 +373,14 @@ fn main() -> Result<()> {
             }
             writeln!(out, "\n {} files, +{add} −{del}{}", d.files.len(), if d.truncated { " (list truncated)" } else { "" })?;
         }
-        Cmd::Diff { sha, path, context } => {
+        Cmd::Diff { args, staged, context } => {
             let repo = pick_repo(&mut c, cli.repo)?;
-            let Response::FileDiff(d) = c.call(Request::FileDiff { repo, sha, path, context: Some(context) })? else { bail!("unexpected answer") };
+            let request = match args.as_slice() {
+                [path] => Request::WorkDiff { repo, path: path.clone(), area: if staged { Area::Staged } else { Area::Unstaged }, context: Some(context) },
+                [sha, path] => Request::FileDiff { repo, sha: sha.clone(), path: path.clone(), context: Some(context) },
+                _ => bail!("give a path, or a commit and a path"),
+            };
+            let Response::FileDiff(d) = c.call(request)? else { bail!("unexpected answer") };
             let old = d.old_path.as_deref().unwrap_or(&d.path);
             writeln!(out, "{}", st.paint("1", &format!("--- a/{old}\n+++ b/{}", d.path)))?;
             if d.binary {
@@ -348,6 +410,127 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Cmd::Status => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            let Response::Status(st) = c.call(Request::Status { repo })? else { bail!("unexpected answer") };
+            print_status(out, &st, &style)?;
+        }
+        Cmd::Stage { paths } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            done(out, c.call(Request::Stage { repo, paths: rel_paths(&paths)? })?)?
+        }
+        Cmd::Unstage { paths } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            done(out, c.call(Request::Unstage { repo, paths: rel_paths(&paths)? })?)?
+        }
+        Cmd::Discard { paths } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            done(out, c.call(Request::Discard { repo, paths: rel_paths(&paths)? })?)?;
+            writeln!(out, "Discarded. Copies are listed in ~/.neutrino/discarded.log.")?;
+        }
+        Cmd::Commit { message, amend } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            match c.call(Request::CommitChanges { repo, message: message.unwrap_or_default(), amend })? {
+                Response::Committed { sha, output } => {
+                    if !output.is_empty() {
+                        writeln!(out, "{output}")?;
+                    }
+                    writeln!(out, "Committed {}", style.paint("33", &sha[..7]))?;
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Switch { branch } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            done(out, c.call(Request::Checkout { repo, branch })?)?
+        }
+        Cmd::Branch(b) => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            let request = match b {
+                BranchCmd::New { name, start, switch } => Request::CreateBranch { repo, name, start, checkout: switch },
+                BranchCmd::Rename { from, to } => Request::RenameBranch { repo, from, to },
+                BranchCmd::Delete { name, force } => Request::DeleteBranch { repo, name, force },
+            };
+            done(out, c.call(request)?)?;
+        }
+        Cmd::Watch => {
+            let id = c.next;
+            c.next += 1;
+            c.stream.get_mut().write_all((encode_request(id, &Request::Subscribe) + "\n").as_bytes())?;
+            c.stream.get_mut().set_read_timeout(None)?;
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                if c.stream.read_line(&mut buf)? == 0 {
+                    break;
+                }
+                if let Ok((_, Response::Event(e))) = decode_response(buf.trim()) {
+                    writeln!(out, "{}  {}", style.paint("1", &e.repo), e.kind)?;
+                    out.flush()?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Paths relative to the repo root, from paths given relative to here.
+fn rel_paths(paths: &[String]) -> Result<Vec<String>> {
+    let out = std::process::Command::new("git").args(["rev-parse", "--show-prefix"]).output();
+    let prefix = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => String::new(),
+    };
+    Ok(paths.iter().map(|p| format!("{prefix}{}", p.trim_start_matches("./"))).collect())
+}
+
+fn done(out: &mut impl Write, r: Response) -> Result<()> {
+    match r {
+        Response::Done { output } => {
+            if !output.is_empty() {
+                writeln!(out, "{output}")?;
+            }
+            Ok(())
+        }
+        r => Err(unexpected(r)),
+    }
+}
+
+fn print_status(out: &mut impl Write, st: &WorkingStatus, style: &Style) -> Result<()> {
+    match &st.head {
+        Some(Head::Branch { name, .. }) => write!(out, "On {}", style.paint("36", name))?,
+        Some(Head::Detached { sha }) => write!(out, "Detached at {}", &sha[..7.min(sha.len())])?,
+        None => write!(out, "No HEAD")?,
+    }
+    match (&st.upstream, st.ahead, st.behind) {
+        (Some(u), Some(a), Some(b)) => writeln!(out, ", ↑{a} ↓{b} against {u}")?,
+        (Some(u), _, _) => writeln!(out, ", tracking {u} (gone)")?,
+        _ => writeln!(out)?,
+    }
+    if let Some(op) = &st.operation {
+        writeln!(out, "{}", style.paint("33", &format!("A {op} is in progress.")))?;
+    }
+    let section = |out: &mut dyn Write, title: &str, code: &str, list: &[neutrino_proto::StatusFile]| -> std::io::Result<()> {
+        if list.is_empty() {
+            return Ok(());
+        }
+        writeln!(out, "\n{title}")?;
+        for f in list {
+            let path = match &f.old_path {
+                Some(old) => format!("{old} → {}", f.path),
+                None => f.path.clone(),
+            };
+            let counts = if f.binary { "binary".to_string() } else { format!("+{} −{}", f.additions, f.deletions) };
+            writeln!(out, "  {} {}  {}", style.paint(code, status_letter(f.status)), style.paint(code, &path), style.paint("2", &counts))?;
+        }
+        Ok(())
+    };
+    section(out, "Conflicted", "31", &st.conflicted)?;
+    section(out, "Staged", "32", &st.staged)?;
+    section(out, "Not staged", "33", &st.unstaged)?;
+    section(out, "Untracked", "2", &st.untracked)?;
+    if st.conflicted.is_empty() && st.staged.is_empty() && st.unstaged.is_empty() && st.untracked.is_empty() {
+        writeln!(out, "Nothing to commit.")?;
     }
     Ok(())
 }

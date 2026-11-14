@@ -131,6 +131,9 @@ struct AheadBehind: View {
 
 struct BranchPanel: View {
     @Environment(AppModel.self) private var model
+    @State private var naming: NameSheet.Purpose?
+    @State private var deleting: Branch?
+    @State private var unmerged: (branch: Branch, message: String)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -169,8 +172,30 @@ struct BranchPanel: View {
                 }
                 .font(.system(size: 12.5))
                 .foregroundStyle(N.body)
-                Button("Show history") { Task { await model.showHistory(of: b) } }
-                    .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
+                HStack(spacing: 6) {
+                    if !b.isHead {
+                        Button(b.kind == .remote ? "Check out as local" : "Check out") { Task { await model.checkout(b) } }
+                            .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
+                            .disabled(model.writing || !model.isLive)
+                            .help("Switches with git, which refuses if it would overwrite your uncommitted changes.")
+                    }
+                    Button("Show history") { Task { await model.showHistory(of: b) } }
+                        .buttonStyle(PillButtonStyle(kind: b.isHead ? .primary : .secondary, height: 30))
+                }
+                HStack(spacing: 6) {
+                    Button("New branch from here…") { naming = .create(start: b.name) }
+                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                    if b.kind == .local {
+                        Button("Rename…") { naming = .rename(b.name) }
+                            .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                    }
+                    if b.kind == .local, !b.isHead {
+                        Button("Delete…") { deleting = b }
+                            .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                            .foregroundStyle(N.danger)
+                    }
+                }
+                .disabled(model.writing || !model.isLive)
                 Spacer()
             } else {
                 EmptyState(title: "No branch selected", message: "Pick a branch to see where it stands.")
@@ -179,5 +204,102 @@ struct BranchPanel: View {
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .island()
+        .sheet(item: $naming) { purpose in NameSheet(purpose: purpose) }
+        .confirmationDialog(deleting.map { "Delete \($0.name)?" } ?? "", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { b in
+            Button("Delete branch", role: .destructive) {
+                Task {
+                    if let refusal = await model.deleteBranch(b.name, force: false) {
+                        unmerged = (b, refusal)
+                    }
+                }
+            }
+        } message: { _ in
+            Text("Only a branch that's merged is deleted; git refuses otherwise.")
+        }
+        .confirmationDialog(unmerged.map { "\($0.branch.name) isn't merged" } ?? "", isPresented: Binding(get: { unmerged != nil }, set: { if !$0 { unmerged = nil } }), presenting: unmerged) { u in
+            Button("Delete anyway", role: .destructive) {
+                Task {
+                    if let refusal = await model.deleteBranch(u.branch.name, force: true) { model.notice = refusal }
+                }
+            }
+        } message: { u in
+            Text("\(u.message)\n\nIts commits stay reachable through the reflog for a while, but no branch will point at them.")
+        }
+    }
+}
+
+/// Asks for a branch name, to create or rename one.
+struct NameSheet: View {
+    enum Purpose: Identifiable, Hashable {
+        case create(start: String?)
+        case rename(String)
+
+        var id: String {
+            switch self {
+            case let .create(s): "create:\(s ?? "")"
+            case let .rename(n): "rename:\(n)"
+            }
+        }
+    }
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    var purpose: Purpose
+    @State private var name = ""
+    @State private var switchTo = true
+    @State private var working = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Name").font(.system(size: 11)).foregroundStyle(N.muted)
+                TextField("feature/thing", text: $name)
+                    .textFieldStyle(.plain)
+                    .font(N.mono(13))
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .onSubmit(save)
+            }
+            if case .create = purpose {
+                Toggle("Switch to it", isOn: $switchTo).toggleStyle(.checkbox).font(.system(size: 12.5))
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button(action: save) { Text(working ? "Working…" : (isRename ? "Rename" : "Create")) }
+                    .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || working)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .background(N.island)
+        .onAppear { if case let .rename(old) = purpose { name = old } }
+    }
+
+    private var isRename: Bool { if case .rename = purpose { true } else { false } }
+
+    private var title: String {
+        switch purpose {
+        case let .create(start): "New branch from \(start ?? "HEAD")"
+        case let .rename(old): "Rename \(old)"
+        }
+    }
+
+    private func save() {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, !working else { return }
+        working = true
+        Task {
+            let ok: Bool = switch purpose {
+            case let .create(start): await model.createBranch(name: n, start: start, checkout: switchTo)
+            case let .rename(old): await model.renameBranch(from: old, to: n)
+            }
+            working = false
+            if ok { dismiss() }
+        }
     }
 }

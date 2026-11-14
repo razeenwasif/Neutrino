@@ -3,7 +3,7 @@ import Foundation
 // Mirrors crates/neutrino-proto. Keys are snake_case on the wire and
 // camelCase here (the coders convert); enum values keep their wire spelling.
 
-public let protocolVersion: UInt32 = 1
+public let protocolVersion: UInt32 = 2
 
 // MARK: - Repositories and refs
 
@@ -230,6 +230,7 @@ public struct LogQuery: Codable, Hashable, Sendable {
 public enum ChangeStatus: String, Codable, Sendable {
     case added, modified, deleted, renamed, copied
     case typeChanged = "type_changed"
+    case untracked, conflicted
 
     public var letter: String {
         switch self {
@@ -239,6 +240,8 @@ public enum ChangeStatus: String, Codable, Sendable {
         case .renamed: "R"
         case .copied: "C"
         case .typeChanged: "T"
+        case .untracked: "?"
+        case .conflicted: "U"
         }
     }
 
@@ -250,6 +253,8 @@ public enum ChangeStatus: String, Codable, Sendable {
         case .renamed: "Renamed"
         case .copied: "Copied"
         case .typeChanged: "Type changed"
+        case .untracked: "Untracked"
+        case .conflicted: "Conflicted"
         }
     }
 }
@@ -380,6 +385,91 @@ public struct FileDiff: Codable, Hashable, Sendable {
     }
 }
 
+// MARK: - Working copy
+
+public struct StatusFile: Codable, Hashable, Identifiable, Sendable {
+    public var path: String
+    public var oldPath: String?
+    public var status: ChangeStatus
+    public var additions: UInt32
+    public var deletions: UInt32
+    public var binary: Bool
+
+    public var id: String { path }
+
+    public init(path: String, oldPath: String? = nil, status: ChangeStatus, additions: UInt32 = 0, deletions: UInt32 = 0, binary: Bool = false) {
+        self.path = path
+        self.oldPath = oldPath
+        self.status = status
+        self.additions = additions
+        self.deletions = deletions
+        self.binary = binary
+    }
+}
+
+public struct WorkingStatus: Codable, Hashable, Sendable {
+    public var head: Head?
+    public var upstream: String?
+    public var ahead: UInt32?
+    public var behind: UInt32?
+    public var operation: String?
+    public var staged: [StatusFile]
+    public var unstaged: [StatusFile]
+    public var untracked: [StatusFile]
+    public var conflicted: [StatusFile]
+
+    public var isClean: Bool { staged.isEmpty && unstaged.isEmpty && untracked.isEmpty && conflicted.isEmpty }
+    public var changeCount: Int { Set((staged + unstaged + untracked + conflicted).map(\.path)).count }
+
+    public init(head: Head?, upstream: String? = nil, ahead: UInt32? = nil, behind: UInt32? = nil, operation: String? = nil, staged: [StatusFile] = [], unstaged: [StatusFile] = [], untracked: [StatusFile] = [], conflicted: [StatusFile] = []) {
+        self.head = head
+        self.upstream = upstream
+        self.ahead = ahead
+        self.behind = behind
+        self.operation = operation
+        self.staged = staged
+        self.unstaged = unstaged
+        self.untracked = untracked
+        self.conflicted = conflicted
+    }
+}
+
+/// Which side of the working copy: the index against HEAD, or the working tree against the index.
+public enum Area: String, Codable, Hashable, Sendable {
+    case staged, unstaged
+}
+
+/// A changed line picked in a working-copy diff: added lines by new number, removed by old.
+public struct LinePick: Codable, Hashable, Sendable {
+    public var kind: LineKind
+    public var line: UInt32
+
+    public init(kind: LineKind, line: UInt32) {
+        self.kind = kind
+        self.line = line
+    }
+
+    /// The pick for a diff line, or nil for context.
+    public init?(_ l: DiffLine) {
+        switch l.kind {
+        case .added: guard let n = l.newLine else { return nil }; self.init(kind: .added, line: n)
+        case .removed: guard let n = l.oldLine else { return nil }; self.init(kind: .removed, line: n)
+        case .context: return nil
+        }
+    }
+}
+
+public struct RepoEvent: Codable, Hashable, Sendable {
+    public var repo: String
+    /// `worktree` or `refs`.
+    public var kind: String
+
+    public init(repo: String, kind: String) {
+        self.repo = repo
+        self.kind = kind
+    }
+}
+
 public struct EngineInfo: Codable, Hashable, Sendable {
     public var version: String
     public var `protocol`: UInt32
@@ -406,6 +496,19 @@ public enum Request: Sendable, Equatable {
     case log(LogQuery)
     case commit(repo: String, sha: String)
     case fileDiff(repo: String, sha: String, path: String, context: UInt32?)
+    case status(repo: String)
+    case workDiff(repo: String, path: String, area: Area, context: UInt32?)
+    case stage(repo: String, paths: [String])
+    case unstage(repo: String, paths: [String])
+    case stageLines(repo: String, path: String, area: Area, lines: [LinePick])
+    case discard(repo: String, paths: [String])
+    case discardLines(repo: String, path: String, lines: [LinePick])
+    case commitChanges(repo: String, message: String, amend: Bool)
+    case createBranch(repo: String, name: String, start: String?, checkout: Bool)
+    case checkout(repo: String, branch: String)
+    case renameBranch(repo: String, from: String, to: String)
+    case deleteBranch(repo: String, name: String, force: Bool)
+    case subscribe
     case cancel(id: UInt64)
 }
 
@@ -419,6 +522,10 @@ public enum Response: Sendable, Equatable {
     case log(LogPage)
     case commit(CommitDetail)
     case fileDiff(FileDiff)
+    case status(WorkingStatus)
+    case done(output: String)
+    case committed(sha: String, output: String)
+    case event(RepoEvent)
     case cancelled
     case error(message: String)
 }
@@ -452,6 +559,14 @@ public enum Wire {
     private struct PathParam: Encodable { var path: String }
     private struct IDParam: Encodable { var id: UInt64 }
     private struct CommitParam: Encodable { var repo: String; var sha: String }
+    private struct WorkDiffParam: Encodable { var repo: String; var path: String; var area: Area; var context: UInt32? }
+    private struct PathsParam: Encodable { var repo: String; var paths: [String] }
+    private struct LinesParam: Encodable { var repo: String; var path: String; var area: Area?; var lines: [LinePick] }
+    private struct CommitChangesParam: Encodable { var repo: String; var message: String; var amend: Bool }
+    private struct CreateBranchParam: Encodable { var repo: String; var name: String; var start: String?; var checkout: Bool }
+    private struct CheckoutParam: Encodable { var repo: String; var branch: String }
+    private struct RenameParam: Encodable { var repo: String; var from: String; var to: String }
+    private struct DeleteParam: Encodable { var repo: String; var name: String; var force: Bool }
     private struct DiffParam: Encodable {
         var repo: String
         var sha: String
@@ -477,6 +592,19 @@ public enum Wire {
         case let .log(q): try line(id, "log", q)
         case let .commit(repo, sha): try line(id, "commit", CommitParam(repo: repo, sha: sha))
         case let .fileDiff(repo, sha, path, context): try line(id, "file_diff", DiffParam(repo: repo, sha: sha, path: path, context: context))
+        case let .status(repo): try line(id, "status", RepoParam(repo: repo))
+        case let .workDiff(repo, path, area, context): try line(id, "work_diff", WorkDiffParam(repo: repo, path: path, area: area, context: context))
+        case let .stage(repo, paths): try line(id, "stage", PathsParam(repo: repo, paths: paths))
+        case let .unstage(repo, paths): try line(id, "unstage", PathsParam(repo: repo, paths: paths))
+        case let .stageLines(repo, path, area, lines): try line(id, "stage_lines", LinesParam(repo: repo, path: path, area: area, lines: lines))
+        case let .discard(repo, paths): try line(id, "discard", PathsParam(repo: repo, paths: paths))
+        case let .discardLines(repo, path, lines): try line(id, "discard_lines", LinesParam(repo: repo, path: path, area: nil, lines: lines))
+        case let .commitChanges(repo, message, amend): try line(id, "commit_changes", CommitChangesParam(repo: repo, message: message, amend: amend))
+        case let .createBranch(repo, name, start, checkout): try line(id, "create_branch", CreateBranchParam(repo: repo, name: name, start: start, checkout: checkout))
+        case let .checkout(repo, branch): try line(id, "checkout", CheckoutParam(repo: repo, branch: branch))
+        case let .renameBranch(repo, from, to): try line(id, "rename_branch", RenameParam(repo: repo, from: from, to: to))
+        case let .deleteBranch(repo, name, force): try line(id, "delete_branch", DeleteParam(repo: repo, name: name, force: force))
+        case .subscribe: try line(id, "subscribe", NoParams?.none)
         case let .cancel(target): try line(id, "cancel", IDParam(id: target))
         }
     }
@@ -493,6 +621,8 @@ public enum Wire {
     private struct Pong: Decodable { var `protocol`: UInt32 }
     private struct Removed: Decodable { var repo: String }
     private struct Message: Decodable { var message: String }
+    private struct Output: Decodable { var output: String }
+    private struct Committed: Decodable { var sha: String; var output: String }
 
     /// Parse one response line into its id and response.
     public static func decode(_ line: Data) throws -> (UInt64, Response) {
@@ -509,6 +639,10 @@ public enum Wire {
         case "log": .log(try data(LogPage.self))
         case "commit": .commit(try data(CommitDetail.self))
         case "file_diff": .fileDiff(try data(FileDiff.self))
+        case "status": .status(try data(WorkingStatus.self))
+        case "done": .done(output: try data(Output.self).output)
+        case "committed": try { let c = try data(Committed.self); return .committed(sha: c.sha, output: c.output) }()
+        case "event": .event(try data(RepoEvent.self))
         case "cancelled": .cancelled
         case "error": .error(message: try data(Message.self).message)
         default: throw WireError.unknownType(header.type)

@@ -14,6 +14,7 @@ struct RootView: View {
                         NoRepositories().island()
                     } else {
                         switch model.section {
+                        case .changes: ChangesScreen()
                         case .history: HistoryScreen()
                         case .branches: BranchesScreen()
                         }
@@ -156,7 +157,9 @@ struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             SectionLabel("This Mac").padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 8)
-            NavRow(title: "Changes", icon: "doc.badge.plus", enabled: false, help: "Status, staging and commits arrive in milestone 2.")
+            NavRow(title: "Changes", icon: "doc.badge.plus", selected: model.section == .changes, count: model.status?.changeCount) {
+                model.section = .changes
+            }
             NavRow(title: "History", icon: "clock.arrow.circlepath", selected: model.section == .history) { model.section = .history }
             NavRow(title: "Branches", icon: "arrow.triangle.branch", selected: model.section == .branches, count: model.branches.filter { $0.kind == .local }.count) {
                 model.section = .branches
@@ -315,6 +318,10 @@ struct StatusBar: View {
             if let repo = model.repo {
                 Text(repo.head?.label ?? "").foregroundStyle(N.muted)
                 Text(repo.path).lineLimit(1).truncationMode(.middle)
+            }
+            if model.section == .changes, let s = model.status {
+                if let up = s.upstream, let a = s.ahead, let b = s.behind { Text("↑\(a) ↓\(b) against \(up)") }
+                Text(s.isClean ? "clean" : "\(s.changeCount) changed")
             }
             if model.section == .history, !model.commits.isEmpty {
                 Text("\(model.commits.count)\(model.hasMore ? "+" : "") commits")

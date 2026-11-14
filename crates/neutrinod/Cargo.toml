@@ -12,6 +12,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
+notify = "8"
 
 [dev-dependencies]
 tempfile.workspace = true

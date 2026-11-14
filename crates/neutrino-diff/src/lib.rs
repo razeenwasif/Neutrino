@@ -231,6 +231,86 @@ pub fn word_diff(old: &str, new: &str) -> Option<(Vec<Segment>, Vec<Segment>)> {
     Some((segments(&a, |i| diff.is_removed(i)), segments(&b, |i| diff.is_added(i))))
 }
 
+/// How a partial patch will be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Apply {
+    /// `git apply` forwards: picked changes are added on top of the old side.
+    Forward,
+    /// `git apply --reverse`: picked changes are taken back off the new side.
+    Reverse,
+}
+
+/// A unified patch holding only the picked lines of `hunks`, for `git apply`.
+///
+/// Lines that weren't picked must come out unchanged. Applied forwards, an
+/// unpicked added line is left out and an unpicked removed line becomes
+/// context; applied in reverse it's the other way round. Returns `None` when
+/// nothing picked is in the hunks.
+pub fn partial_patch(
+    path: &str,
+    hunks: &[Hunk],
+    picked: &std::collections::HashSet<neutrino_proto::LinePick>,
+    apply: Apply,
+    new_file: bool,
+) -> Option<String> {
+    use neutrino_proto::LinePick;
+    let is_picked = |l: &DiffLine| match l.kind {
+        LineKind::Added => picked.contains(&LinePick { kind: LineKind::Added, line: l.new_line.unwrap_or(0) }),
+        LineKind::Removed => picked.contains(&LinePick { kind: LineKind::Removed, line: l.old_line.unwrap_or(0) }),
+        LineKind::Context => false,
+    };
+
+    let mut body = String::new();
+    let mut delta: i64 = 0;
+    for h in hunks {
+        if !h.lines.iter().any(is_picked) {
+            continue;
+        }
+        let mut lines: Vec<(char, &DiffLine)> = Vec::new();
+        for l in &h.lines {
+            let kept = match (l.kind, is_picked(l), apply) {
+                (LineKind::Context, _, _) => Some(' '),
+                (LineKind::Added, true, _) => Some('+'),
+                (LineKind::Removed, true, _) => Some('-'),
+                (LineKind::Added, false, Apply::Forward) => None,
+                (LineKind::Removed, false, Apply::Forward) => Some(' '),
+                (LineKind::Added, false, Apply::Reverse) => Some(' '),
+                (LineKind::Removed, false, Apply::Reverse) => None,
+            };
+            if let Some(sign) = kept {
+                lines.push((sign, l));
+            }
+        }
+        let old_count = lines.iter().filter(|(s, _)| *s != '+').count() as i64;
+        let new_count = lines.iter().filter(|(s, _)| *s != '-').count() as i64;
+        let (old_start, new_start) = match apply {
+            Apply::Forward => (h.old_start as i64, h.old_start as i64 + delta),
+            Apply::Reverse => (h.new_start as i64 - delta, h.new_start as i64),
+        };
+        delta += new_count - old_count;
+        body.push_str(&format!("@@ -{},{} +{},{} @@\n", old_start.max(0), old_count, new_start.max(0), new_count));
+        for (sign, l) in lines {
+            body.push(sign);
+            body.push_str(&l.text);
+            body.push('\n');
+            if l.no_newline {
+                body.push_str("\\ No newline at end of file\n");
+            }
+        }
+    }
+    if body.is_empty() {
+        return None;
+    }
+    let mut patch = format!("diff --git a/{path} b/{path}\n");
+    if new_file {
+        patch.push_str(&format!("new file mode 100644\n--- /dev/null\n+++ b/{path}\n"));
+    } else {
+        patch.push_str(&format!("--- a/{path}\n+++ b/{path}\n"));
+    }
+    patch.push_str(&body);
+    Some(patch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +398,22 @@ mod tests {
     fn binary_detection() {
         assert!(is_binary(b"PNG\0\x01"));
         assert!(!is_binary("plain text, ünïcode".as_bytes()));
+    }
+
+    #[test]
+    fn partial_patches() {
+        use neutrino_proto::LinePick;
+        let old = "a\nb\nc\nd\n";
+        let new = "a\nB\nc\nD\nE\n";
+        let d = diff(old.as_bytes(), new.as_bytes(), 3);
+        // Pick only the change to b.
+        let picks: std::collections::HashSet<_> =
+            [LinePick { kind: LineKind::Removed, line: 2 }, LinePick { kind: LineKind::Added, line: 2 }].into_iter().collect();
+        let fwd = partial_patch("f", &d.hunks, &picks, Apply::Forward, false).unwrap();
+        assert_eq!(fwd, "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n c\n d\n");
+        let rev = partial_patch("f", &d.hunks, &picks, Apply::Reverse, false).unwrap();
+        assert_eq!(rev, "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,5 +1,5 @@\n a\n-b\n+B\n c\n D\n E\n");
+        assert!(partial_patch("f", &d.hunks, &Default::default(), Apply::Forward, false).is_none());
     }
 
     #[test]
