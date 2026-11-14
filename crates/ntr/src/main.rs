@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use neutrino_proto::{
-    Area, BranchRule, ChangeStatus, Head, LineKind, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, Side, WorkingStatus,
+    Area, BranchRule, ChangeStatus, Head, LineKind, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, RunDetail, RunState, Side, WorkingStatus,
     decode_response, encode_request,
 };
 
@@ -132,6 +132,48 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<RulesCmd>,
     },
+    /// Server: CI runs of a hosted repository, newest first.
+    Runs {
+        /// Only this pull request's.
+        #[arg(long)]
+        pr: Option<u32>,
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: u32,
+    },
+    /// Server: one CI run, by its number.
+    #[command(subcommand)]
+    Run(RunCmd),
+    /// Server: the workflow files on a branch, checked.
+    Workflows {
+        #[arg(long, short = 'b', default_value = "main")]
+        branch: String,
+    },
+    /// Server: what CI is doing, and whether Graviton answers.
+    Ci,
+}
+
+#[derive(Subcommand)]
+enum RunCmd {
+    /// Its jobs and steps.
+    Show { number: u32 },
+    /// A job's output; with --follow, until it finishes.
+    Logs {
+        number: u32,
+        /// The job (its key, e.g. test-2). Default: the first one.
+        #[arg(long, short = 'j')]
+        job: Option<String>,
+        #[arg(long, short = 'f')]
+        follow: bool,
+    },
+    Cancel { number: u32 },
+    /// The same workflow on the same commit again.
+    Rerun { number: u32 },
+    /// Start a workflow that has workflow_dispatch.
+    Start {
+        workflow: String,
+        #[arg(long, short = 'b', default_value = "main")]
+        branch: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -187,6 +229,9 @@ enum RulesCmd {
         allow_force: bool,
         #[arg(long)]
         allow_delete: bool,
+        /// A workflow (name or file) that must pass before merging; repeat for more.
+        #[arg(long = "check")]
+        checks: Vec<String>,
     },
     Delete { pattern: String },
     /// Pushes that overrode a rule.
@@ -623,9 +668,9 @@ fn main() -> Result<()> {
             let repo = pick_repo(&mut c, cli.repo)?;
             let request = match action {
                 None => Request::BranchRules { repo },
-                Some(RulesCmd::Set { pattern, allow_push, allow_force, allow_delete }) => Request::SetBranchRule {
+                Some(RulesCmd::Set { pattern, allow_push, allow_force, allow_delete, checks }) => Request::SetBranchRule {
                     repo,
-                    rule: BranchRule { pattern, require_pull: !allow_push, block_force: !allow_force, block_delete: !allow_delete, required_checks: vec![] },
+                    rule: BranchRule { pattern, require_pull: !allow_push, block_force: !allow_force, block_delete: !allow_delete, required_checks: checks },
                 },
                 Some(RulesCmd::Delete { pattern }) => Request::DeleteBranchRule { repo, pattern },
                 Some(RulesCmd::Overrides) => Request::Overrides { repo },
@@ -646,6 +691,10 @@ fn main() -> Result<()> {
                         if r.block_delete {
                             guards.push("no delete");
                         }
+                        let checks = if r.required_checks.is_empty() { String::new() } else { format!("checks {}", r.required_checks.join(", ")) };
+                        if !checks.is_empty() {
+                            guards.push(&checks);
+                        }
                         let guards = if guards.is_empty() { "nothing".to_string() } else { guards.join(", ") };
                         writeln!(out, "{:<20} {guards}", style.paint("1", &r.pattern))?;
                     }
@@ -661,6 +710,76 @@ fn main() -> Result<()> {
                 r => return Err(unexpected(r)),
             }
         }
+        Cmd::Runs { pr, limit } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            match c.call(Request::ListRuns { repo, pull: pr, limit: Some(limit) })? {
+                Response::Runs(list) => {
+                    if list.is_empty() {
+                        writeln!(out, "No runs yet. Push a workflow to .neutrino/workflows/.")?;
+                    }
+                    for r in list {
+                        let what = match (r.pull, &r.branch) {
+                            (Some(n), _) => format!("#{n}"),
+                            (None, Some(b)) => b.clone(),
+                            _ => String::new(),
+                        };
+                        writeln!(
+                            out,
+                            "{:<5} {}  {:<20} {:<18} {:<12} {}  {}",
+                            r.number,
+                            state_mark(r.state, &style),
+                            r.name,
+                            r.event,
+                            what,
+                            &r.sha[..7.min(r.sha.len())],
+                            style.paint("2", &ago(r.created_at))
+                        )?;
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Run(cmd) => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            run_cmd(&mut c, out, &style, repo, cmd)?;
+        }
+        Cmd::Workflows { branch } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            match c.call(Request::Workflows { repo, branch: branch.clone() })? {
+                Response::Workflows(files) => {
+                    if files.is_empty() {
+                        writeln!(out, "No workflow files in .neutrino/workflows/ on {branch}.")?;
+                    }
+                    for f in files {
+                        match &f.error {
+                            Some(e) => writeln!(out, "{}  {}", style.paint("31", &f.file), e)?,
+                            None => writeln!(
+                                out,
+                                "{}  {}  on {}  jobs {}",
+                                style.paint("1", &f.file),
+                                f.name.as_deref().unwrap_or(""),
+                                f.triggers.join(", "),
+                                f.jobs.join(", ")
+                            )?,
+                        }
+                        for w in &f.warnings {
+                            writeln!(out, "    {}", style.paint("33", w))?;
+                        }
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Ci => match c.call(Request::CiInfo)? {
+            Response::Ci(i) => {
+                let g = if i.graviton { style.paint("32", "answers") } else { style.paint("31", &format!("unreachable: {}", i.graviton_error.unwrap_or_default())) };
+                writeln!(out, "Graviton   {g}")?;
+                writeln!(out, "Budget     {} CPUs, {} MiB", i.budget_cpus, i.budget_memory_mib)?;
+                writeln!(out, "In use     {} CPUs, {} MiB by {} job{}", i.used_cpus, i.used_memory_mib, i.running, if i.running == 1 { "" } else { "s" })?;
+                writeln!(out, "Queued     {}", i.queued)?;
+            }
+            r => return Err(unexpected(r)),
+        },
         Cmd::Watch => {
             let id = c.next;
             c.next += 1;
@@ -675,6 +794,116 @@ fn main() -> Result<()> {
                 if let Ok((_, Response::Event(e))) = decode_response(buf.trim()) {
                     writeln!(out, "{}  {}", style.paint("1", &e.repo), e.kind)?;
                     out.flush()?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn state_mark(s: RunState, style: &Style) -> String {
+    let (code, text) = match s {
+        RunState::Queued => ("2", "queued   "),
+        RunState::Running => ("33", "running  "),
+        RunState::Success => ("32", "success  "),
+        RunState::Failure => ("31", "failure  "),
+        RunState::Cancelled => ("2", "cancelled"),
+        RunState::Skipped => ("2", "skipped  "),
+    };
+    style.paint(code, text)
+}
+
+/// A run's id from its number in the repo.
+fn run_id(c: &mut Conn, repo: &str, number: u32) -> Result<i64> {
+    match c.call(Request::ListRuns { repo: repo.into(), pull: None, limit: Some(500) })? {
+        Response::Runs(list) => list.into_iter().find(|r| r.number == number).map(|r| r.id).ok_or_else(|| anyhow!("there's no run {number} in {repo}")),
+        r => Err(unexpected(r)),
+    }
+}
+
+fn print_run(out: &mut impl Write, style: &Style, d: &RunDetail) -> Result<()> {
+    let r = &d.run;
+    writeln!(out, "{} {}  {}", style.paint("1", &format!("Run {}", r.number)), style.paint("1", &r.name), state_mark(r.state, style).trim_end())?;
+    let at = match (r.pull, &r.branch) {
+        (Some(n), _) => format!("pull request #{n}"),
+        (None, Some(b)) => b.clone(),
+        _ => String::new(),
+    };
+    writeln!(out, "{} on {at} at {}, {}", r.event, &r.sha[..7.min(r.sha.len())], ago(r.created_at))?;
+    if let Some(e) = &r.error {
+        writeln!(out, "\n{}", style.paint("31", e))?;
+    }
+    for w in &d.warnings {
+        writeln!(out, "{}", style.paint("33", w))?;
+    }
+    for j in &d.jobs {
+        let took = match (j.started_at, j.finished_at) {
+            (Some(a), Some(b)) => format!("  {}s", b - a),
+            _ => String::new(),
+        };
+        writeln!(out, "\n{} {}  {}{}", state_mark(j.state, style), style.paint("1", &j.name), style.paint("2", &j.key), style.paint("2", &took))?;
+        if let Some(e) = &j.error {
+            writeln!(out, "    {}", style.paint("31", e))?;
+        }
+        for s in &j.steps {
+            let code = s.exit_code.filter(|c| *c != 0).map(|c| format!(" (exit {c})")).unwrap_or_default();
+            writeln!(out, "    {} {}{}", state_mark(s.state, style), s.name, code)?;
+        }
+    }
+    Ok(())
+}
+
+fn run_cmd(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: RunCmd) -> Result<()> {
+    let detail = |r: Response| -> Result<RunDetail> {
+        match r {
+            Response::Run(d) => Ok(*d),
+            r => Err(unexpected(r)),
+        }
+    };
+    match cmd {
+        RunCmd::Show { number } => {
+            let id = run_id(c, &repo, number)?;
+            print_run(out, style, &detail(c.call(Request::Run { repo, id })?)?)?;
+        }
+        RunCmd::Cancel { number } => {
+            let id = run_id(c, &repo, number)?;
+            detail(c.call(Request::CancelRun { repo, id })?)?;
+            writeln!(out, "Cancelling run {number}.")?;
+        }
+        RunCmd::Rerun { number } => {
+            let id = run_id(c, &repo, number)?;
+            let d = detail(c.call(Request::RerunRun { repo, id })?)?;
+            writeln!(out, "Started run {} ({}).", d.run.number, d.run.name)?;
+        }
+        RunCmd::Start { workflow, branch } => {
+            let d = detail(c.call(Request::DispatchRun { repo, workflow, branch })?)?;
+            writeln!(out, "Started run {} ({}) on {}.", d.run.number, d.run.name, d.run.branch.unwrap_or_default())?;
+        }
+        RunCmd::Logs { number, job, follow } => {
+            let id = run_id(c, &repo, number)?;
+            let d = detail(c.call(Request::Run { repo: repo.clone(), id })?)?;
+            let j = match &job {
+                Some(k) => d.jobs.iter().find(|j| &j.key == k || &j.name == k).ok_or_else(|| {
+                    anyhow!("run {number} has no job {k}; it has {}", d.jobs.iter().map(|j| j.key.as_str()).collect::<Vec<_>>().join(", "))
+                })?,
+                None => d.jobs.first().ok_or_else(|| anyhow!("run {number} has no jobs"))?,
+            };
+            let mut offset = 0;
+            loop {
+                match c.call(Request::JobLog { repo: repo.clone(), job: j.id, offset })? {
+                    Response::JobLog(chunk) => {
+                        write!(out, "{}", chunk.text)?;
+                        out.flush()?;
+                        let more = chunk.next > offset;
+                        offset = chunk.next;
+                        if chunk.done || (!follow && !more) {
+                            break;
+                        }
+                        if !more {
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
+                    }
+                    r => return Err(unexpected(r)),
                 }
             }
         }
@@ -759,6 +988,12 @@ fn pr(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: PrCm
             }
             if let Some(r) = &d.rule {
                 writeln!(out, "{} is guarded by the rule {}", p.target, style.paint("1", &r.pattern))?;
+            }
+            if !d.checks.is_empty() {
+                writeln!(out, "\nChecks")?;
+                for r in &d.checks {
+                    writeln!(out, "  {} {}  run {}", state_mark(r.state, style), r.name, r.number)?;
+                }
             }
             writeln!(out, "\nCommits")?;
             for e in &d.commits {

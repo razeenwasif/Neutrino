@@ -59,7 +59,7 @@ async fn detail(socket: &Path, request: Request) -> PullDetail {
 }
 
 async fn start(state: PathBuf, socket: PathBuf) -> (Arc<neutrinod::Daemon>, tokio::sync::oneshot::Sender<()>) {
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci() };
     let daemon = neutrinod::Daemon::with(&state, options).unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let d = Arc::clone(&daemon);
@@ -183,4 +183,9 @@ async fn review_and_merge() {
     git(&wc, &["commit", "-qam", "while it's down"]);
     let (ok, said) = push(&wc, &["push", "-o", "neutrino-override=x", "origin", "main"]).await;
     assert!(!ok && said.contains("branch rules"), "{said}");
+}
+
+/// Tests never touch the real Graviton: steps run as local processes.
+fn local_ci() -> neutrinod::ci::CiOptions {
+    neutrinod::ci::CiOptions { runner: neutrinod::ci::Runner::Local(Default::default()), ..Default::default() }
 }

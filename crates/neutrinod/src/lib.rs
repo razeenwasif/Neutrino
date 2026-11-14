@@ -8,6 +8,7 @@
 //!   `<state>/repos/`, takes pushes over SSH (git's own transport, with hooks
 //!   that report back here), and answers paired devices over TLS.
 
+pub mod ci;
 pub mod hosting;
 mod pulls;
 mod registry;
@@ -66,11 +67,13 @@ pub struct Options {
     pub remote_port: Option<u16>,
     /// Server only: advertise the endpoint over Bonjour.
     pub advertise: bool,
+    /// Server only: where CI jobs run and what they may use.
+    pub ci: ci::CiOptions,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { role: Role::Workstation, remote_port: None, advertise: false }
+        Options { role: Role::Workstation, remote_port: None, advertise: false, ci: ci::CiOptions::default() }
     }
 }
 
@@ -108,6 +111,14 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::SetBranchRule { .. }
             | Request::DeleteBranchRule { .. }
             | Request::Overrides { .. }
+            | Request::ListRuns { .. }
+            | Request::Run { .. }
+            | Request::JobLog { .. }
+            | Request::CancelRun { .. }
+            | Request::RerunRun { .. }
+            | Request::DispatchRun { .. }
+            | Request::Workflows { .. }
+            | Request::CiInfo
             | Request::Subscribe
             | Request::Cancel { .. }
     )
@@ -124,8 +135,10 @@ pub struct Daemon {
     /// Where discarded work is noted, so it can be got back.
     discarded_log: PathBuf,
     remote: Option<Arc<Remote>>,
-    /// Pull requests and rules; the server's only.
+    /// Pull requests, rules and runs; the server's only.
     store: Option<neutrino_store::Store>,
+    /// The CI scheduler; the server's only.
+    ci: Option<ci::Ci>,
     /// The socket hooks call back on; set by `serve`.
     socket: Mutex<Option<PathBuf>>,
     /// The TLS port actually bound (the option may be 0 for "any").
@@ -148,8 +161,13 @@ impl Daemon {
             Role::Server => Some(neutrino_store::Store::open(&pulls::database_path(state_dir))?),
             Role::Workstation => None,
         };
+        let ci = match options.role {
+            Role::Server => Some(ci::Ci::new(options.ci.clone())),
+            Role::Workstation => None,
+        };
         Ok(Arc::new(Daemon {
             store,
+            ci,
             state_dir: state_dir.to_path_buf(),
             registry: Registry::load(state_dir)?,
             diffs: DiffCache::default(),
@@ -236,6 +254,12 @@ impl Daemon {
 
     /// Answer one request. Git work runs on the blocking pool.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+        if request == Request::CiInfo {
+            return match self.ci_info().await {
+                Ok(info) => Response::Ci(info),
+                Err(e) => Response::Error { message: format!("{e:#}") },
+            };
+        }
         let this = Arc::clone(self);
         match tokio::task::spawn_blocking(move || this.handle_blocking(request)).await {
             Ok(Ok(response)) => response,
@@ -362,6 +386,15 @@ impl Daemon {
                     output.push('\n');
                     output.push_str(&line);
                 }
+                let mut started = 0;
+                for u in updates.iter().filter(|u| !u.new.bytes().all(|b| b == b'0')) {
+                    if u.name.starts_with("refs/heads/") || u.name.starts_with("refs/tags/") {
+                        started += self.trigger(&id, &neutrino_ci::Event::Push { name: u.name.clone(), sha: u.new.clone() }).len();
+                    }
+                }
+                if started > 0 {
+                    output.push_str(&format!("\nneutrino: started {started} CI run{}", if started == 1 { "" } else { "s" }));
+                }
                 if let Some(b) = adopted {
                     output.push_str(&format!("\nneutrino: {b} is now this repository's default branch"));
                 }
@@ -396,6 +429,34 @@ impl Daemon {
                 self.registry.get(&id)?;
                 Response::Overrides(self.store()?.overrides(&id)?)
             }
+
+            // CI
+            Request::ListRuns { repo: id, pull, limit } => {
+                self.registry.get(&id)?;
+                Response::Runs(self.store()?.runs(&id, pull, limit.unwrap_or(50))?)
+            }
+            Request::Run { repo: id, id: run } => {
+                let d = self.store()?.run_detail(run)?;
+                if d.run.repo != id {
+                    bail!("run {run} isn't in {id}");
+                }
+                Response::Run(Box::new(d))
+            }
+            Request::JobLog { repo: id, job, offset } => Response::JobLog(self.job_log(&id, job, offset)?),
+            Request::CancelRun { repo: id, id: run } => {
+                self.cancel(&id, run)?;
+                Response::Run(Box::new(self.store()?.run_detail(run)?))
+            }
+            Request::RerunRun { repo: id, id: run } => {
+                let new = self.rerun(&id, run)?;
+                Response::Run(Box::new(self.store()?.run_detail(new)?))
+            }
+            Request::DispatchRun { repo: id, workflow, branch } => {
+                let new = self.dispatch(&id, &workflow, &branch)?;
+                Response::Run(Box::new(self.store()?.run_detail(new)?))
+            }
+            Request::Workflows { repo: id, branch } => Response::Workflows(self.workflow_files(&id, &branch)?),
+            Request::CiInfo => bail!("CI info is answered before this"),
 
             // Pairing
             Request::PairBegin => Response::Pairing(self.pairing()?.begin_pairing()?),
@@ -552,6 +613,7 @@ pub async fn serve(daemon: Arc<Daemon>, socket: &Path, shutdown: impl std::futur
 
     daemon.adopt_hosted();
     daemon.watch_all();
+    daemon.start_ci();
     let remote_task = match daemon.remote.clone() {
         Some(remote) => {
             let tcp = remote.bind().await?;

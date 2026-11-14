@@ -4,7 +4,7 @@ import Observation
 import SwiftUI
 
 enum Section: String, CaseIterable {
-    case changes, history, branches, pulls
+    case changes, history, branches, pulls, runs
 }
 
 enum PullFilter: String {
@@ -122,6 +122,22 @@ final class AppModel {
     var pullBusy: String?
     var loadingPulls = false
 
+    // CI runs (methods in RunsModel.swift); they belong to the same hosted repo as pull requests.
+    var runList: [Run] = []
+    var runID: Int64?
+    var runDetail: RunDetail?
+    var runError: String?
+    var runJobID: Int64?
+    /// The selected job's log so far, and where the next read starts.
+    var jobLogText = ""
+    var jobLogNext: UInt64 = 0
+    var jobLogDone = false
+    var runGeneration = 0
+    var logGeneration = 0
+    var runBusy: String?
+    var ciInfo: CiInfo?
+    var runsTask: Task<Void, Never>?
+
     // Menu bar panel (methods in MenuBar.swift)
     /// Status of every working copy, refreshed when the panel opens.
     var glance: [String: WorkingStatus] = [:]
@@ -226,6 +242,8 @@ final class AppModel {
             notice = error.localizedDescription
         }
         let saved = UserDefaults.standard.string(forKey: "repo")
+        // A hosted repo picked last time comes back if the server still has it.
+        if source == .server, repoID == nil, let saved, hostedRepos.contains(where: { $0.id == saved }) { repoID = saved }
         if source == .server, hostedRepos.isEmpty { source = .local }
         if repo == nil || repo?.error != nil {
             source = .local
@@ -281,7 +299,8 @@ final class AppModel {
         async let b: Void = loadBranches()
         async let s: Void = loadStatus()
         async let p: Void = section == .pulls ? loadPulls() : ()
-        _ = await (h, b, s, p)
+        async let r: Void = section == .runs ? loadRuns() : ()
+        _ = await (h, b, s, p, r)
         if source == .local, let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
             repos[i] = updated
         }

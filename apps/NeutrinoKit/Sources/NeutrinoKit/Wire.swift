@@ -3,7 +3,7 @@ import Foundation
 // Mirrors crates/neutrino-proto. Keys are snake_case on the wire and
 // camelCase here (the coders convert); enum values keep their wire spelling.
 
-public let protocolVersion: UInt32 = 4
+public let protocolVersion: UInt32 = 5
 
 // MARK: - Repositories and refs
 
@@ -538,6 +538,14 @@ public enum Request: Sendable, Equatable {
     case setBranchRule(repo: String, rule: BranchRule)
     case deleteBranchRule(repo: String, pattern: String)
     case overrides(repo: String)
+    case listRuns(repo: String, pull: UInt32?, limit: UInt32?)
+    case run(repo: String, id: Int64)
+    case jobLog(repo: String, job: Int64, offset: UInt64)
+    case cancelRun(repo: String, id: Int64)
+    case rerunRun(repo: String, id: Int64)
+    case dispatchRun(repo: String, workflow: String, branch: String)
+    case workflows(repo: String, branch: String)
+    case ciInfo
     case pair(code: String, device: String)
     case auth(token: String)
     case cancel(id: UInt64)
@@ -564,6 +572,11 @@ public enum Response: Sendable, Equatable {
     case compare([FileChange])
     case rules([BranchRule])
     case overrides([RuleOverride])
+    case runs([Run])
+    case run(RunDetail)
+    case jobLog(LogChunk)
+    case ci(CiInfo)
+    case workflows([WorkflowFile])
     case paired(token: String, deviceID: String, host: String)
     case authenticated(host: String, role: String)
     case cancelled
@@ -623,6 +636,11 @@ public enum Wire {
     private struct CompareDiffParam: Encodable { var repo: String; var base: String; var head: String; var path: String; var context: UInt32? }
     private struct RuleParam: Encodable { var repo: String; var rule: BranchRule }
     private struct PatternParam: Encodable { var repo: String; var pattern: String }
+    private struct ListRunsParam: Encodable { var repo: String; var pull: UInt32?; var limit: UInt32? }
+    private struct RunParam: Encodable { var repo: String; var id: Int64 }
+    private struct JobLogParam: Encodable { var repo: String; var job: Int64; var offset: UInt64 }
+    private struct DispatchParam: Encodable { var repo: String; var workflow: String; var branch: String }
+    private struct BranchParam: Encodable { var repo: String; var branch: String }
     private struct DiffParam: Encodable {
         var repo: String
         var sha: String
@@ -684,6 +702,14 @@ public enum Wire {
         case let .setBranchRule(repo, rule): try line(id, "set_branch_rule", RuleParam(repo: repo, rule: rule))
         case let .deleteBranchRule(repo, pattern): try line(id, "delete_branch_rule", PatternParam(repo: repo, pattern: pattern))
         case let .overrides(repo): try line(id, "overrides", RepoParam(repo: repo))
+        case let .listRuns(repo, pull, limit): try line(id, "list_runs", ListRunsParam(repo: repo, pull: pull, limit: limit))
+        case let .run(repo, run): try line(id, "run", RunParam(repo: repo, id: run))
+        case let .jobLog(repo, job, offset): try line(id, "job_log", JobLogParam(repo: repo, job: job, offset: offset))
+        case let .cancelRun(repo, run): try line(id, "cancel_run", RunParam(repo: repo, id: run))
+        case let .rerunRun(repo, run): try line(id, "rerun_run", RunParam(repo: repo, id: run))
+        case let .dispatchRun(repo, workflow, branch): try line(id, "dispatch_run", DispatchParam(repo: repo, workflow: workflow, branch: branch))
+        case let .workflows(repo, branch): try line(id, "workflows", BranchParam(repo: repo, branch: branch))
+        case .ciInfo: try line(id, "ci_info", NoParams?.none)
         case let .pair(code, device): try line(id, "pair", PairParam(code: code, device: device))
         case let .auth(token): try line(id, "auth", AuthParam(token: token))
         case let .cancel(target): try line(id, "cancel", IDParam(id: target))
@@ -734,6 +760,11 @@ public enum Wire {
         case "compare": .compare(try data([FileChange].self))
         case "rules": .rules(try data([BranchRule].self))
         case "overrides": .overrides(try data([RuleOverride].self))
+        case "runs": .runs(try data([Run].self))
+        case "run": .run(try data(RunDetail.self))
+        case "job_log": .jobLog(try data(LogChunk.self))
+        case "ci": .ci(try data(CiInfo.self))
+        case "workflows": .workflows(try data([WorkflowFile].self))
         case "paired": try { let p = try data(Paired.self); return .paired(token: p.token, deviceID: p.deviceId, host: p.host) }()
         case "authenticated": try { let a = try data(Authenticated.self); return .authenticated(host: a.host, role: a.role) }()
         case "cancelled": .cancelled

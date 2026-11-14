@@ -41,6 +41,7 @@ struct NeutrinoMacApp: App {
                 Button("History") { model.section = .history }.keyboardShortcut("2")
                 Button("Branches") { model.section = .branches }.keyboardShortcut("3")
                 Button("Pull Requests") { model.section = .pulls }.keyboardShortcut("4")
+                Button("Runs") { model.section = .runs }.keyboardShortcut("5")
                 Divider()
                 Button("Stage All") { Task { await model.stageAll() } }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(!model.isLive && model.status == nil)
                 Divider()

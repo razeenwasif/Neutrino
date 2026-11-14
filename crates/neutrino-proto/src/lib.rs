@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a breaking change is made to the control API.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// TCP port of the server's paired TLS endpoint, and its Bonjour service type.
 pub const REMOTE_PORT: u16 = 7844;
@@ -473,7 +473,7 @@ pub struct BranchRule {
     pub block_force: bool,
     /// Refuse deleting the branch.
     pub block_delete: bool,
-    /// Checks that must pass before a merge (enforced once CI exists).
+    /// Workflows (by name or file) whose latest run on the pull request must pass before a merge.
     #[serde(default)]
     pub required_checks: Vec<String>,
 }
@@ -501,6 +501,153 @@ pub struct PullDetail {
     pub commits: Vec<LogEntry>,
     /// The rule that guards the target, if one does.
     pub rule: Option<BranchRule>,
+    /// The latest run of each workflow on the latest version.
+    #[serde(default)]
+    pub checks: Vec<Run>,
+}
+
+/// Where a run, a job or a step is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    Queued,
+    Running,
+    Success,
+    Failure,
+    Cancelled,
+    /// Its condition said not to run, or what it needed failed.
+    Skipped,
+}
+
+impl RunState {
+    pub fn finished(self) -> bool {
+        !matches!(self, RunState::Queued | RunState::Running)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            RunState::Queued => "queued",
+            RunState::Running => "running",
+            RunState::Success => "success",
+            RunState::Failure => "failure",
+            RunState::Cancelled => "cancelled",
+            RunState::Skipped => "skipped",
+        }
+    }
+
+    pub fn parse(s: &str) -> RunState {
+        match s {
+            "running" => RunState::Running,
+            "success" => RunState::Success,
+            "failure" => RunState::Failure,
+            "cancelled" => RunState::Cancelled,
+            "skipped" => RunState::Skipped,
+            _ => RunState::Queued,
+        }
+    }
+}
+
+/// A workflow file and whether it parses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowFile {
+    pub file: String,
+    pub name: Option<String>,
+    /// `push`, `pull_request`, `workflow_dispatch`, `schedule`.
+    pub triggers: Vec<String>,
+    pub jobs: Vec<String>,
+    pub error: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+/// One workflow run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Run {
+    pub id: i64,
+    pub repo: String,
+    /// Per repo, from 1.
+    pub number: u32,
+    /// The file under `.neutrino/workflows/`.
+    pub workflow: String,
+    pub name: String,
+    /// `push`, `pull_request` or `workflow_dispatch`.
+    pub event: String,
+    /// The branch (or tag) it ran for.
+    pub branch: Option<String>,
+    pub sha: String,
+    pub pull: Option<u32>,
+    pub state: RunState,
+    /// Why it failed before any job ran (a bad workflow file, say).
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunStep {
+    pub index: u32,
+    pub name: String,
+    pub state: RunState,
+    pub exit_code: Option<i32>,
+    /// Where its output is in the job's log.
+    pub log_start: u64,
+    pub log_end: u64,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunJob {
+    pub id: i64,
+    pub run: i64,
+    /// Unique within the run (`test-2` for a matrix entry).
+    pub key: String,
+    pub name: String,
+    pub executor: String,
+    pub image: Option<String>,
+    pub state: RunState,
+    pub error: Option<String>,
+    pub needs: Vec<String>,
+    pub attempt: u32,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub steps: Vec<RunStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunDetail {
+    pub run: Run,
+    pub jobs: Vec<RunJob>,
+    /// Problems with the workflow file that didn't stop it.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Part of a job's log, from `offset`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogChunk {
+    pub job: i64,
+    pub offset: u64,
+    /// The bytes as text; invalid UTF-8 is replaced.
+    pub text: String,
+    /// Where the next read starts.
+    pub next: u64,
+    /// The job has finished, so nothing more will come.
+    pub done: bool,
+}
+
+/// What the scheduler is doing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CiInfo {
+    /// Whether gravitond answers.
+    pub graviton: bool,
+    pub graviton_error: Option<String>,
+    pub budget_cpus: u32,
+    pub budget_memory_mib: u64,
+    pub used_cpus: u32,
+    pub used_memory_mib: u64,
+    pub running: u32,
+    pub queued: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,6 +830,27 @@ pub enum Request {
     /// Pushes that overrode a rule, newest first.
     Overrides { repo: String },
 
+    // --- CI (server) ---
+    /// Newest first; only one pull request's when `pull` is set.
+    ListRuns {
+        repo: String,
+        #[serde(default)]
+        pull: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    Run { repo: String, id: i64 },
+    /// A job's log from `offset`.
+    JobLog { repo: String, job: i64, #[serde(default)] offset: u64 },
+    CancelRun { repo: String, id: i64 },
+    /// Run the same workflow on the same commit again.
+    RerunRun { repo: String, id: i64 },
+    /// Start a workflow that has `workflow_dispatch` on a branch.
+    DispatchRun { repo: String, workflow: String, branch: String },
+    /// Check the workflow files on a branch without running them.
+    Workflows { repo: String, branch: String },
+    CiInfo,
+
     // --- Pairing (server) ---
     /// A one-time pairing code. Local only.
     PairBegin,
@@ -748,6 +916,12 @@ pub enum Response {
     Compare(Vec<FileChange>),
     Rules(Vec<BranchRule>),
     Overrides(Vec<RuleOverride>),
+    Runs(Vec<Run>),
+    Run(Box<RunDetail>),
+    JobLog(LogChunk),
+    Ci(CiInfo),
+    /// Each workflow file on a branch: its name and either its triggers or what's wrong with it.
+    Workflows(Vec<WorkflowFile>),
     Authenticated { host: String, role: String },
     /// The request was cancelled before it finished.
     Cancelled,
@@ -917,5 +1091,16 @@ mod tests {
         let back = encode_response(9, &Response::Pull(d.clone()));
         let (_, again) = decode_response(&back).unwrap();
         assert_eq!(again, Response::Pull(d));
+    }
+
+    /// The same line the Swift app's `runWire` test decodes.
+    #[test]
+    fn run_detail_wire() {
+        let line = r#"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number":3,"workflow":"ci.yml","name":"ci","event":"pull_request","branch":"feature","sha":"abcdef1234","pull":2,"state":"failure","error":null,"created_at":100,"started_at":101,"finished_at":130},"jobs":[{"id":11,"run":7,"key":"test-2","name":"test (2)","executor":"graviton","image":"alpine:3.20","state":"failure","error":null,"needs":["build"],"attempt":1,"started_at":110,"finished_at":125,"steps":[{"index":0,"name":"echo test","state":"failure","exit_code":1,"log_start":40,"log_end":52,"started_at":111,"finished_at":112}]}],"warnings":["jobs.deploy.services is ignored for now"]}}"#;
+        let (id, r) = decode_response(line).unwrap();
+        let Response::Run(d) = r else { panic!("{r:?}") };
+        assert_eq!((id, d.run.number, d.jobs[0].steps[0].exit_code), (4, 3, Some(1)));
+        let (_, again) = decode_response(&encode_response(4, &Response::Run(d.clone()))).unwrap();
+        assert_eq!(again, Response::Run(d));
     }
 }

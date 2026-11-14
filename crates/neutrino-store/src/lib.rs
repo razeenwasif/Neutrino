@@ -10,6 +10,9 @@ use anyhow::{Context, Result, bail};
 use neutrino_proto::{BranchRule, Note, PullRequest, PullState, PullVersion, RuleOverride, Side};
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod runs;
+pub use runs::{NewJob, QueuedJob};
+
 /// Each step brings the schema from version `i` to `i + 1`.
 const MIGRATIONS: &[&str] = &[
     "CREATE TABLE pulls (
@@ -65,6 +68,58 @@ const MIGRATIONS: &[&str] = &[
         reason TEXT NOT NULL,
         at INTEGER NOT NULL
     );",
+    "CREATE TABLE runs (
+        id INTEGER PRIMARY KEY,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        workflow TEXT NOT NULL,
+        name TEXT NOT NULL,
+        event TEXT NOT NULL,
+        branch TEXT,
+        sha TEXT NOT NULL,
+        pull INTEGER,
+        state TEXT NOT NULL,
+        error TEXT,
+        warnings TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        finished_at INTEGER,
+        UNIQUE (repo, number)
+    );
+    CREATE INDEX runs_by_pull ON runs (repo, pull);
+    CREATE TABLE jobs (
+        id INTEGER PRIMARY KEY,
+        run INTEGER NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        matrix TEXT NOT NULL DEFAULT '{}',
+        needs TEXT NOT NULL DEFAULT '[]',
+        executor TEXT NOT NULL,
+        image TEXT,
+        cpus INTEGER NOT NULL,
+        memory_mib INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        error TEXT,
+        container TEXT,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        started_at INTEGER,
+        finished_at INTEGER,
+        UNIQUE (run, key)
+    );
+    CREATE INDEX jobs_by_state ON jobs (state);
+    CREATE TABLE steps (
+        job INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+        idx INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL,
+        exit_code INTEGER,
+        log_start INTEGER NOT NULL DEFAULT 0,
+        log_end INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER,
+        finished_at INTEGER,
+        PRIMARY KEY (job, idx)
+    );",
 ];
 
 pub struct Store {
@@ -119,6 +174,7 @@ impl Store {
 
     pub fn in_memory() -> Result<Self> {
         let db = Connection::open_in_memory()?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
         for step in MIGRATIONS {
             db.execute_batch(step)?;
         }

@@ -328,14 +328,17 @@ struct MergeBox: View {
     private var canMerge: Bool {
         guard let m = detail.mergeability else { return false }
         if strategy == .fastForward { return m.fastForward }
-        return m.clean && detail.rule?.requiredChecks.isEmpty != false
+        return m.clean && missing.isEmpty
     }
+
+    /// Required checks that haven't passed on the latest version.
+    private var missing: [String] { missingChecks(detail.rule?.requiredChecks ?? [], in: detail.checks) }
 
     private var mergeHelp: String {
         guard let m = detail.mergeability else { return "One of the branches is gone." }
         if strategy == .fastForward, !m.fastForward { return "\(detail.pull.target) has moved on, so it can't fast-forward." }
         if !m.clean { return "Resolve the conflicts first." }
-        if let r = detail.rule, !r.requiredChecks.isEmpty { return "The rule needs checks, which arrive with CI." }
+        if !missing.isEmpty { return "\(missing.joined(separator: ", ")) must pass first." }
         return "\(strategy.label) \(detail.pull.source) into \(detail.pull.target). \(strategy.detail)"
     }
 
@@ -359,7 +362,38 @@ struct MergeBox: View {
         }
         if let r = detail.rule {
             status(icon: "lock.shield", color: N.second, title: "\(p.target) is guarded by \(r.pattern)",
-                   detail: r.requiredChecks.isEmpty ? r.summary : "\(r.summary); needs checks \(r.requiredChecks.joined(separator: ", ")), which arrive with CI")
+                   detail: r.requiredChecks.isEmpty ? r.summary : "\(r.summary); \(r.requiredChecks.joined(separator: ", ")) must pass")
+        }
+        if !detail.checks.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(detail.checks) { run in
+                    Button {
+                        Task { await model.show(check: run) }
+                    } label: {
+                        HStack(spacing: 8) {
+                            RunStateIcon(state: run.state, size: 12)
+                            Text(run.name).font(.system(size: 12.5, weight: .medium)).foregroundStyle(N.text)
+                            if detail.rule?.requiredChecks.contains(where: { $0 == run.name || $0 == run.workflow || $0 + ".yml" == run.workflow }) == true {
+                                Text("required").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(N.second)
+                                    .padding(.horizontal, 6).frame(height: 16).background(N.second.opacity(0.12), in: Capsule())
+                            }
+                            Text(run.state.label).font(.system(size: 11.5)).foregroundStyle(N.muted)
+                            Spacer()
+                            Text(formatDuration(run.duration())).font(N.mono(11)).foregroundStyle(N.faint)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 28)
+                        .background(N.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open run \(run.number)")
+                }
+            }
+            .padding(.leading, 28)
+        }
+        ForEach(missing.filter { name in !detail.checks.contains { $0.name == name || $0.workflow.hasPrefix(name) } }, id: \.self) { name in
+            status(icon: "circle.dashed", color: N.warn, title: "\(name) hasn't run", detail: "It's required, but no workflow by that name ran on this version.")
         }
     }
 

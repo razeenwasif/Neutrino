@@ -5,12 +5,14 @@ branches, pull requests, diff review, CI/CD and secrets, on your own
 machines. A Rust engine reads git repositories in-process with gitoxide; a
 SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> Status: **milestone 4 done** (pull requests). The server on atlas keeps pull
-> requests in SQLite: each push to the source is a new version, notes stay on
-> their lines as the code moves, and it merges four ways (merge commit, squash,
-> rebase, fast-forward) inside the bare repo. Branch rules are enforced in the
-> push hooks. Milestone 3 gave the server, pairing and publishing; 1 and 2 gave
-> history, diffs, staging by line, commits and branches. CI comes next.
+> Status: **milestone 5 done** (CI). Pushes and pull requests run the workflows
+> in `.neutrino/workflows/`, each job in its own Graviton VM, within a fixed
+> budget of CPUs and memory, with live logs, timeouts, cancelling and a reaper.
+> Pull requests show their checks, and branch rules can require them.
+> Milestone 4 gave pull requests and branch rules; 3 the server on atlas; 1 and
+> 2 history, diffs, staging by line, commits and branches. Graviton still has
+> to be installed on atlas before jobs there can run. Secrets, caches and
+> artifacts come next.
 
 ## Layout
 
@@ -21,7 +23,9 @@ crates/
   neutrino-git     The git engine: reads on gitoxide (refs, history and graph lanes, commits,
                    diffs, status); writes through the git binary (stage, commit, branches);
                    forge.rs compares branches, checks and does merges, follows lines
-  neutrino-store   The server's SQLite database: pull requests, versions, notes, rules, overrides
+  neutrino-store   The server's SQLite database: pull requests, versions, notes, rules, overrides,
+                   runs, jobs and steps
+  neutrino-ci      Workflow files, the ${{ }} expression language, triggers and matrix planning
   neutrino-remote  The server's TLS endpoint: certificate, pairing codes, device tokens, Bonjour
   neutrinod        The daemon, as workstation or --server: repo registry, Unix socket and TLS,
                    concurrent requests, cancel, file watching and change events, hosting, hooks
@@ -29,7 +33,7 @@ crates/
 apps/
   project.yml      XcodeGen spec → Neutrino.xcodeproj (generated, not committed)
   NeutrinoKit/     Swift package: wire mirror, socket client, demo data, theme
-  Mac/             macOS app: Changes, History, commit panel, diff view, Branches, Pull requests
+  Mac/             macOS app: Changes, History, commit panel, diff view, Branches, Pull requests, Runs
 design/            App icon sources; make-icons.sh renders them into the asset catalog
 scripts/
   dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
@@ -120,6 +124,64 @@ recorded. While a repo has rules its hook refuses pushes if neutrinod is down;
 without rules a push lands regardless. Required checks can be listed but block
 merging until CI exists.
 
+### CI
+
+Workflow files live in `.neutrino/workflows/*.yml` and are Actions-shaped,
+with `run:` steps only (checkout is built in):
+
+```yaml
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request: {}
+  workflow_dispatch: {}
+jobs:
+  test:
+    image: rust:1.85               # runs-on: graviton is the default
+    resources: { cpus: 4, memory: 6G }
+    timeout-minutes: 20
+    strategy: { matrix: { toolchain: [stable, nightly] } }
+    steps:
+      - run: cargo test --workspace
+      - name: Clean up
+        if: failure()
+        run: echo "${{ matrix.toolchain }} failed"
+```
+
+Supported now: `on` (push with branch and tag filters, pull_request,
+workflow_dispatch), `env` at every level, `needs`, `if` with `success()
+failure() always() cancelled()`, `strategy.matrix` with include and exclude,
+`timeout-minutes` and `idle-timeout-minutes`, `continue-on-error`,
+`working-directory`, and `${{ }}` with the `neutrino`, `env`, `matrix` and
+`needs` contexts. `uses:` is refused. `services`, `cache`, `artifacts`,
+`environment`, `concurrency` and `outputs` are read and warned about;
+`schedule` is parsed but doesn't fire yet.
+
+Each job checks its commit out into `~/.neutrino/runs/<run>/<job>/workspace`,
+starts a container named `ntr-…` through Graviton with the workspace at
+`/workspace`, and runs each step there with `sh -e`. Output goes to
+`runs/<run>/<job>.log`, and the database keeps where each step's part starts
+and ends. Afterwards the container is stopped and removed and the workspace
+deleted, whatever happened. A step past its timeout, or a cancelled run, stops
+the container. A reaper removes `ntr-` containers and workspaces no job owns,
+at start and every minute; jobs that were running when neutrinod stopped are
+tried once more.
+
+CI gets a fixed budget on atlas (`--ci-cpus 4 --ci-memory 6G` by default);
+jobs start in order while there's room, and one that asks for more than the
+whole budget fails at once. Graviton is found at its usual socket, or
+`--graviton-socket`.
+
+```bash
+ntr -r myapp runs                    # newest first; --pr N for one pull request's
+ntr -r myapp run show 12             # jobs and steps
+ntr -r myapp run logs 12 -j test -f  # follow a job's output
+ntr -r myapp run cancel 12           # or: rerun 12, start ci -b main
+ntr -r myapp workflows -b main       # the files on a branch, checked
+ntr -r myapp ci                      # Graviton, the budget, what's queued
+ntr -r myapp rules set main --check ci   # merging into main needs ci to pass
+```
+
 ### Working copies
 
 Writes go through the `git` binary (Homebrew's, else Xcode's; `NEUTRINO_GIT`
@@ -143,8 +205,8 @@ cd apps && xcodegen generate && open Neutrino.xcodeproj
 
 It connects to neutrinod when it's running and shows the prototype's demo
 repository otherwise; it notices the daemon starting or stopping on its own.
-⌘O adds a repository, ⌘R reloads, ⌘1 to ⌘4 switch between Changes, History,
-Branches and Pull requests, ⌘F searches, ↑ and ↓ move through commits, ⌘⇧D gives the diff
+⌘O adds a repository, ⌘R reloads, ⌘1 to ⌘5 switch between Changes, History,
+Branches, Pull requests and Runs, ⌘F searches, ↑ and ↓ move through commits, ⌘⇧D gives the diff
 the full width. In Changes, tick a file to stage it, or click lines in its
 diff to pick them and stage, unstage or discard just those (⌘⇧S); each hunk
 has its own button; ⌘↩ commits.
@@ -155,6 +217,7 @@ Tests:
 cargo test --workspace                     # builds real repos with git in temp folders
 swift test --package-path apps/NeutrinoKit
 NEUTRINO_LIVE=1 swift test --package-path apps/NeutrinoKit   # also drives a running neutrinod
+NEUTRINO_LIVE_GRAVITON=1 cargo test -p neutrinod --test ci graviton   # a real job in a Graviton VM
 ```
 
 ## Protocol
@@ -206,6 +269,12 @@ checked.
   slow over a poor link. Notes don't follow a file across a rename. Comparing
   lists at most 250 commits. Mergeability is worked out on every read rather
   than cached.
+- CI: Graviton guests are arm64 Linux, so x86-only images won't run. A job's
+  container keeps its root filesystem in RAM (a Graviton limit), so big images
+  need memory to match. After a timeout or a cancel the container is gone, so
+  `if: always()` steps after it don't run. No secrets, caches, artifacts or
+  service containers yet (milestone 6), and no host or Nexus executors
+  (milestone 7). Logs are plain files and aren't pruned yet.
 - Status reads the index but doesn't write back refreshed stat data, so after
   a large checkout the first status re-hashes files that git would have
   marked clean.

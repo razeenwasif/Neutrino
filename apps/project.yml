@@ -46,7 +46,11 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
       configs:
         Debug:
-          CODE_SIGN_IDENTITY: "-"
+          # A stable signature, so the Keychain remembers that this app may
+          # read the server token instead of asking after every rebuild.
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Apple Development"
+          DEVELOPMENT_TEAM: YOUR_TEAM_ID
 
 schemes:
   NeutrinoMac:

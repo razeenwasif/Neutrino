@@ -51,6 +51,9 @@ extension AppModel {
                 if event.repo == self.pullRepo, self.section == .pulls {
                     await self.loadPulls()
                 }
+                if event.repo == self.pullRepo, self.section == .runs, event.kind == "runs" {
+                    await self.refreshRuns()
+                }
             }
             // The stream ended: the server went away.
             guard let self else { return }

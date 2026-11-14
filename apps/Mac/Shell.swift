@@ -18,6 +18,7 @@ struct RootView: View {
                         case .history: HistoryScreen()
                         case .branches: BranchesScreen()
                         case .pulls: PullsScreen()
+                        case .runs: RunsScreen()
                         }
                     }
                 }
@@ -191,6 +192,11 @@ struct Sidebar: View {
                    count: model.pullList.filter { $0.state == .open }.count,
                    help: model.serverLink == nil ? "Pull requests live on your server. Pair with it first." : nil) {
                 model.section = .pulls
+            }
+            NavRow(title: "Runs", icon: "play.circle", selected: model.section == .runs,
+                   count: model.runList.filter { !$0.state.finished }.count,
+                   help: model.serverLink == nil ? "CI runs on your server. Pair with it first." : nil) {
+                model.section = .runs
             }
 
             ServerSection()

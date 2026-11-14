@@ -70,6 +70,7 @@ impl Daemon {
         forge::keep_pull_head(&repo, number, &head.to_string())?;
         drop(_guard);
         self.pulls_changed(id);
+        self.trigger(id, &neutrino_ci::Event::PullRequest { number, source: source.into(), target: target.into(), sha: head.to_string() });
         self.pull_detail(id, number)
     }
 
@@ -111,6 +112,7 @@ impl Daemon {
         }
 
         Ok(Response::Pull(Box::new(PullDetail {
+            checks: store.runs_for_sha(id, &last.head_sha)?,
             rule: store.rule_for(id, &pull.target)?,
             pull,
             versions,
@@ -163,6 +165,7 @@ impl Daemon {
         let added = store.add_version(id, number, &head.to_string(), &base.to_string())?;
         if added.is_some() {
             forge::keep_pull_head(repo, number, &head.to_string())?;
+            self.trigger(id, &neutrino_ci::Event::PullRequest { number, source: source.into(), target: target.into(), sha: head.to_string() });
         }
         Ok(added)
     }
@@ -175,12 +178,10 @@ impl Daemon {
             bail!("#{number} is {}", if pull.state == PullState::Merged { "already merged" } else { "closed; reopen it first" });
         }
         if let Some(rule) = store.rule_for(id, &pull.target)? {
-            if !rule.required_checks.is_empty() {
-                bail!(
-                    "the rule for {} requires checks ({}), and Neutrino can't run checks until CI arrives; remove them from the rule to merge",
-                    rule.pattern,
-                    rule.required_checks.join(", ")
-                );
+            let checks = store.runs_for_sha(id, &pull.head_sha)?;
+            let missing = missing_checks(&rule.required_checks, &checks);
+            if !missing.is_empty() {
+                bail!("the rule for {} needs these checks to pass on the latest version first: {}", rule.pattern, missing.join(", "));
             }
         }
         let _guard = self.writes.lock().unwrap();
@@ -296,6 +297,26 @@ impl Daemon {
         self.pulls_changed(id);
         Ok(Response::Rules(self.store()?.rules(id)?))
     }
+}
+
+/// Required checks that haven't passed: no run, or a run that isn't a success.
+/// A check names a workflow by its name or its file, with or without `.yml`.
+pub fn missing_checks(required: &[String], runs: &[neutrino_proto::Run]) -> Vec<String> {
+    required
+        .iter()
+        .filter(|name| {
+            let matches = |r: &&neutrino_proto::Run| {
+                r.name.eq_ignore_ascii_case(name) || r.workflow == **name || r.workflow.trim_end_matches(".yml").trim_end_matches(".yaml") == name.as_str()
+            };
+            !runs.iter().filter(matches).any(|r| r.state == neutrino_proto::RunState::Success)
+        })
+        .map(|name| {
+            match runs.iter().find(|r| r.name.eq_ignore_ascii_case(name) || r.workflow.trim_end_matches(".yml") == name.as_str()) {
+                Some(r) => format!("{name} ({})", r.state.name()),
+                None => format!("{name} (hasn't run)"),
+            }
+        })
+        .collect()
 }
 
 /// The database lives beside the rest of the server's state.

@@ -198,8 +198,23 @@ public struct PullDetail: Codable, Hashable, Sendable {
     /// Oldest first.
     public var commits: [LogEntry]
     public var rule: BranchRule?
+    /// The latest run of each workflow on the latest version.
+    public var checks: [Run]
 
-    public init(pull: PullRequest, versions: [PullVersion], notes: [Note], mergeability: Mergeability?, files: [FileChange], commits: [LogEntry], rule: BranchRule?) {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pull = try c.decode(PullRequest.self, forKey: .pull)
+        versions = try c.decode([PullVersion].self, forKey: .versions)
+        notes = try c.decode([Note].self, forKey: .notes)
+        mergeability = try c.decodeIfPresent(Mergeability.self, forKey: .mergeability)
+        files = try c.decode([FileChange].self, forKey: .files)
+        commits = try c.decode([LogEntry].self, forKey: .commits)
+        rule = try c.decodeIfPresent(BranchRule.self, forKey: .rule)
+        checks = try c.decodeIfPresent([Run].self, forKey: .checks) ?? []
+    }
+
+    public init(pull: PullRequest, versions: [PullVersion], notes: [Note], mergeability: Mergeability?, files: [FileChange], commits: [LogEntry], rule: BranchRule?, checks: [Run] = []) {
+        self.checks = checks
         self.pull = pull
         self.versions = versions
         self.notes = notes

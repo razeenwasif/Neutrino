@@ -27,6 +27,18 @@ struct Args {
     /// Server: don't advertise over Bonjour.
     #[arg(long)]
     no_bonjour: bool,
+    /// Server: CPUs CI jobs may use at once.
+    #[arg(long, default_value_t = 4)]
+    ci_cpus: u32,
+    /// Server: memory CI jobs may use at once (512M, 6G).
+    #[arg(long, default_value = "6G")]
+    ci_memory: String,
+    /// Server: gravitond's socket. Default `$GRAVITON_SOCKET`, else Graviton.app's.
+    #[arg(long)]
+    graviton_socket: Option<PathBuf>,
+    /// Server: run CI steps as plain processes on this Mac, with no isolation. For testing.
+    #[arg(long, hide = true)]
+    ci_unisolated: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -57,6 +69,19 @@ async fn run(args: Args, socket: PathBuf) -> Result<()> {
         role: if args.server { neutrinod::Role::Server } else { neutrinod::Role::Workstation },
         remote_port: if args.server && !args.no_remote { Some(args.port) } else { None },
         advertise: !args.no_bonjour,
+        ci: neutrinod::ci::CiOptions {
+            runner: if args.ci_unisolated {
+                neutrinod::ci::Runner::Local(Default::default())
+            } else {
+                neutrinod::ci::Runner::Graviton(neutrinod::ci::Graviton {
+                    socket: args.graviton_socket.clone().unwrap_or_else(neutrinod::ci::runner::graviton_socket),
+                })
+            },
+            cpus: args.ci_cpus.max(1),
+            memory_mib: neutrino_ci::workflow::parse_memory(&args.ci_memory)
+                .ok_or_else(|| anyhow::anyhow!("--ci-memory {:?} should look like 512M or 6G", args.ci_memory))?,
+            minute: std::time::Duration::from_secs(60),
+        },
     };
     let daemon = neutrinod::Daemon::with(&state, options)?;
     eprintln!(

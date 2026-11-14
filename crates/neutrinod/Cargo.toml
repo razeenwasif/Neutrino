@@ -9,11 +9,12 @@ neutrino-proto.workspace = true
 neutrino-git.workspace = true
 neutrino-remote.workspace = true
 neutrino-store.workspace = true
+neutrino-ci.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
 notify = "8"
 
 [dev-dependencies]

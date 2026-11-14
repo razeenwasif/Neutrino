@@ -232,3 +232,26 @@ let pullLine = #"{"id":9,"type":"pull","data":{"pull":{"repo":"app","number":3,"
     }
     #expect(o.first?.reason == "hotfix")
 }
+
+// The same line is decoded by crates/neutrino-proto's `run_detail_wire` test.
+let runLine = #"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number":3,"workflow":"ci.yml","name":"ci","event":"pull_request","branch":"feature","sha":"abcdef1234","pull":2,"state":"failure","error":null,"created_at":100,"started_at":101,"finished_at":130},"jobs":[{"id":11,"run":7,"key":"test-2","name":"test (2)","executor":"graviton","image":"alpine:3.20","state":"failure","error":null,"needs":["build"],"attempt":1,"started_at":110,"finished_at":125,"steps":[{"index":0,"name":"echo test","state":"failure","exit_code":1,"log_start":40,"log_end":52,"started_at":111,"finished_at":112}]}],"warnings":["jobs.deploy.services is ignored for now"]}}"#
+
+@Test func runWire() throws {
+    guard case let .run(d) = try Wire.decode(Data(runLine.utf8)).1 else { Issue.record("not a run"); return }
+    #expect(d.run.number == 3 && d.run.state == .failure && d.run.pull == 2 && d.run.duration() == 29)
+    #expect(d.run.eventLabel == "Pull request")
+    #expect(d.jobs[0].steps[0].exitCode == 1 && d.jobs[0].steps[0].logStart == 40)
+    #expect(d.warnings.count == 1)
+    let list = try json(Wire.line(id: 2, .listRuns(repo: "app", pull: 2, limit: nil)))
+    #expect(list == ["id": 2, "method": "list_runs", "params": ["repo": "app", "pull": 2]] as NSDictionary)
+    let log = try json(Wire.line(id: 3, .jobLog(repo: "app", job: 11, offset: 40)))
+    #expect(log == ["id": 3, "method": "job_log", "params": ["repo": "app", "job": 11, "offset": 40]] as NSDictionary)
+    #expect(try json(Wire.line(id: 1, .ciInfo)) == ["id": 1, "method": "ci_info"] as NSDictionary)
+    guard case let .jobLog(chunk) = try Wire.decode(Data(#"{"id":3,"type":"job_log","data":{"job":11,"offset":40,"text":"hi\n","next":43,"done":true}}"#.utf8)).1 else {
+        Issue.record("not a log"); return
+    }
+    #expect(chunk.next == 43 && chunk.done)
+    let ok = Run(id: 1, repo: "app", number: 1, workflow: "ci.yml", name: "ci", event: "push", branch: "main", sha: "a", pull: nil, state: .success, createdAt: 0)
+    #expect(missingChecks(["ci", "lint"], in: [ok]) == ["lint"])
+    #expect(missingChecks(["ci.yml"], in: [ok]).isEmpty)
+}

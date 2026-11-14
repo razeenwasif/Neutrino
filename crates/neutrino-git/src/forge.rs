@@ -375,3 +375,39 @@ pub fn side_commit(side: Side, base: &str, head: &str) -> String {
         Side::New => head.to_string(),
     }
 }
+
+/// The files directly inside `dir` at commit `rev` whose names end in one of
+/// `extensions`, with their contents. Nothing when the folder isn't there.
+pub fn files_at(repo: &gix::Repository, rev: &str, dir: &str, extensions: &[&str]) -> Result<Vec<(String, Vec<u8>)>> {
+    let id = object(repo, rev)?;
+    let tree = repo.find_commit(id).ctx("reading commit")?.tree().ctx("reading tree")?;
+    let Some(entry) = tree.lookup_entry_by_path(dir).ctx("finding folder")? else { return Ok(Vec::new()) };
+    if !entry.mode().is_tree() {
+        return Ok(Vec::new());
+    }
+    let folder = entry.object().ctx("reading folder")?.into_tree();
+    let mut out = Vec::new();
+    for e in folder.iter() {
+        let e = e.ctx("reading folder")?;
+        let name = e.filename().to_string();
+        if !e.mode().is_blob() || !extensions.iter().any(|x| name.ends_with(x)) {
+            continue;
+        }
+        let blob = repo.find_object(e.oid()).ctx("reading file")?.detach().data;
+        out.push((name, blob));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// A shallow checkout of one commit into `dest`, which must not exist: what a
+/// CI job works in. Fetched by id, so pull request heads work too.
+pub fn checkout_into(repo: &gix::Repository, sha: &str, dest: &Path) -> Result<()> {
+    let source = repo.git_dir().to_path_buf();
+    std::fs::create_dir_all(dest).ctx(format!("creating {}", dest.display()))?;
+    ok(dest, &["init", "-q"], &[], None)?;
+    let url = format!("file://{}", source.display());
+    ok(dest, &["fetch", "-q", "--no-tags", "--depth=1", &url, sha], &[], None)?;
+    ok(dest, &["-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD"], &[], None)?;
+    Ok(())
+}

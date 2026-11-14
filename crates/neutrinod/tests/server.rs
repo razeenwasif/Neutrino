@@ -115,7 +115,7 @@ async fn publish_push_and_pair() {
     let (server, stop_server) = start(
         root.join("server"),
         server_sock.clone(),
-        neutrinod::Options { role: neutrinod::Role::Server, remote_port: Some(0), advertise: false },
+        neutrinod::Options { role: neutrinod::Role::Server, remote_port: Some(0), advertise: false, ci: local_ci() },
     )
     .await;
     let (_work, stop_work) = start(root.join("work-state"), work_sock.clone(), neutrinod::Options::default()).await;
@@ -218,7 +218,7 @@ async fn a_restarted_server_adopts_its_repos() {
     let root = dir.path().canonicalize().unwrap();
     let state = root.join("server");
     neutrinod::hosting::create(&state.join("repos"), "kept", None).unwrap();
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci() };
     let (_s, stop) = start(state.clone(), root.join("s.sock"), options).await;
     match call(&root.join("s.sock"), Request::ListRepos).await {
         Response::Repos(r) => assert!(r.iter().any(|r| r.id == "kept" && r.bare)),
@@ -236,7 +236,7 @@ async fn the_first_pushed_branch_becomes_the_default() {
     unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci() };
     let (_s, stop) = start(root.join("server"), root.join("s.sock"), options).await;
     let Response::Repo(hosted) = call(&root.join("s.sock"), Request::CreateHosted { name: "old".into(), description: None }).await else { panic!() };
 
@@ -256,4 +256,9 @@ async fn the_first_pushed_branch_becomes_the_default() {
         other => panic!("{other:?}"),
     }
     stop.send(()).unwrap();
+}
+
+/// Tests never touch the real Graviton: steps run as local processes.
+fn local_ci() -> neutrinod::ci::CiOptions {
+    neutrinod::ci::CiOptions { runner: neutrinod::ci::Runner::Local(Default::default()), ..Default::default() }
 }

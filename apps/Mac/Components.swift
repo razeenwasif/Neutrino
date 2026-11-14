@@ -64,14 +64,30 @@ struct PillButtonStyle: ButtonStyle {
         case .secondary: (N.control, N.body)
         case .quiet: (.clear, N.body)
         }
-        return configuration.label
-            .font(.system(size: 12, weight: kind == .primary ? .semibold : .medium))
-            .foregroundStyle(fg)
-            .padding(.horizontal, 12)
-            .frame(height: height)
-            .background(bg, in: Capsule())
-            .brightness(configuration.isPressed ? 0.08 : 0)
-            .contentShape(Capsule())
+        return Pill(label: configuration.label, bg: bg, fg: fg, height: height, pressed: configuration.isPressed, primary: kind == .primary)
+    }
+
+    /// A view, so it can read whether the button is enabled.
+    private struct Pill<Label: View>: View {
+        var label: Label
+        var bg: Color
+        var fg: Color
+        var height: CGFloat
+        var pressed: Bool
+        var primary: Bool
+        @Environment(\.isEnabled) private var enabled
+
+        var body: some View {
+            label
+                .font(.system(size: 12, weight: primary ? .semibold : .medium))
+                .foregroundStyle(fg)
+                .padding(.horizontal, 12)
+                .frame(height: height)
+                .background(bg, in: Capsule())
+                .brightness(pressed ? 0.08 : 0)
+                .opacity(enabled ? 1 : 0.4)
+                .contentShape(Capsule())
+        }
     }
 }
 
