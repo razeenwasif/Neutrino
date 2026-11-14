@@ -202,3 +202,33 @@ func liveServer() async throws {
         #expect(!page.commits.isEmpty)
     }
 }
+
+// The same line is decoded by crates/neutrino-proto's `pull_detail_wire` test.
+let pullLine = #"{"id":9,"type":"pull","data":{"pull":{"repo":"app","number":3,"title":"Shout","body":"Louder.","source":"feature","target":"main","state":"open","head_sha":"bbb","versions":2,"open_notes":1,"created_at":10,"updated_at":20,"merged_at":null,"merge_sha":null},"versions":[{"version":1,"head_sha":"aaa","base_sha":"000","created_at":10},{"version":2,"head_sha":"bbb","base_sha":"000","created_at":20}],"notes":[{"id":5,"version":1,"path":"app.txt","side":"new","line":3,"text":"Keep three","created_at":11,"resolved":false,"current_line":4},{"id":6,"version":1,"path":"app.txt","side":"old","line":1,"text":"Gone","created_at":12,"resolved":true,"current_line":null}],"mergeability":{"clean":true,"conflicts":[],"fast_forward":false,"behind":1},"files":[{"path":"app.txt","old_path":null,"status":"modified","additions":2,"deletions":1,"binary":false}],"commits":[{"sha":"bbb","parents":["aaa"],"subject":"start at zero","author":{"name":"Ada","email":"ada@example.com","time":20,"offset":0},"time":20,"refs":[],"graph":null}],"rule":{"pattern":"main","require_pull":true,"block_force":true,"block_delete":false}}}"#
+
+@Test func pullWire() throws {
+    guard case let .pull(d) = try Wire.decode(Data(pullLine.utf8)).1 else { Issue.record("not a pull"); return }
+    #expect(d.pull.number == 3 && d.pull.state == .open && d.pull.openNotes == 1 && d.pull.mergeSha == nil)
+    #expect(d.versions.map(\.version) == [1, 2])
+    #expect(d.notes[0].currentLine == 4 && d.notes[0].side == .new && !d.notes[0].outdated)
+    #expect(d.notes[1].outdated && d.notes[1].side == .old && d.notes[1].resolved)
+    #expect(d.mergeability == Mergeability(clean: true, fastForward: false, behind: 1))
+    #expect(d.rule?.requiredChecks == [] && d.rule?.blockDelete == false)
+    #expect(d.rule?.summary == "pull requests only, no force-push")
+    #expect(d.commits.first?.subject == "start at zero")
+
+    let merge = try json(Wire.line(id: 2, .mergePull(repo: "app", number: 3, strategy: .fastForward, message: nil, deleteSource: true)))
+    #expect(merge == ["id": 2, "method": "merge_pull", "params": ["repo": "app", "number": 3, "strategy": "fast_forward", "delete_source": true]] as NSDictionary)
+    let note = try json(Wire.line(id: 3, .addNote(repo: "app", number: 3, path: "a.rs", side: .old, line: 7, text: "Why?")))
+    #expect(note == ["id": 3, "method": "add_note", "params": ["repo": "app", "number": 3, "path": "a.rs", "side": "old", "line": 7, "text": "Why?"]] as NSDictionary)
+    let rule = try json(Wire.line(id: 4, .setBranchRule(repo: "app", rule: BranchRule(pattern: "release/*", blockDelete: false))))
+    #expect(rule == ["id": 4, "method": "set_branch_rule", "params": ["repo": "app", "rule": ["pattern": "release/*", "require_pull": true, "block_force": true, "block_delete": false, "required_checks": []]]] as NSDictionary)
+    let close = try json(Wire.line(id: 5, .updatePull(repo: "app", number: 3, title: nil, body: nil, state: .closed)))
+    #expect(close == ["id": 5, "method": "update_pull", "params": ["repo": "app", "number": 3, "state": "closed"]] as NSDictionary)
+
+    #expect(try Wire.decode(Data(#"{"id":1,"type":"merged","data":{"sha":"ccc"}}"#.utf8)) == (1, .merged(sha: "ccc")))
+    guard case let .overrides(o) = try Wire.decode(Data(#"{"id":1,"type":"overrides","data":[{"ref_name":"refs/heads/main","rule":"require_pull","reason":"hotfix","at":5}]}"#.utf8)).1 else {
+        Issue.record("not overrides"); return
+    }
+    #expect(o.first?.reason == "hotfix")
+}

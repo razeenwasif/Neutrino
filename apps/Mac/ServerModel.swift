@@ -44,9 +44,12 @@ extension AppModel {
             for await event in stream {
                 guard let self else { return }
                 if let list = try? await server.repos() { self.hostedRepos = list }
-                if self.source == .server, event.repo == self.repoID {
+                if self.source == .server, event.repo == self.repoID, event.kind != "pulls" {
                     await self.loadBranches()
                     if self.section == .history { await self.reloadHistory() }
+                }
+                if event.repo == self.pullRepo, self.section == .pulls {
+                    await self.loadPulls()
                 }
             }
             // The stream ended: the server went away.

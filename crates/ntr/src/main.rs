@@ -8,7 +8,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use neutrino_proto::{
-    Area, ChangeStatus, Head, LineKind, LogEntry, LogQuery, RefKind, Repo, Request, Response, WorkingStatus, decode_response, encode_request,
+    Area, BranchRule, ChangeStatus, Head, LineKind, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, Side, WorkingStatus,
+    decode_response, encode_request,
 };
 
 #[derive(Parser)]
@@ -123,6 +124,73 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<DeviceCmd>,
     },
+    /// Server: pull requests on a hosted repository.
+    #[command(subcommand)]
+    Pr(PrCmd),
+    /// Server: branch rules on a hosted repository; with no action, lists them.
+    Rules {
+        #[command(subcommand)]
+        action: Option<RulesCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrCmd {
+    /// Open and recent pull requests.
+    List,
+    /// Open one to merge SOURCE into TARGET.
+    Create {
+        source: String,
+        /// Default: the repository's default branch.
+        target: Option<String>,
+        #[arg(long, short = 't')]
+        title: String,
+        #[arg(long, short = 'm', default_value = "")]
+        body: String,
+    },
+    /// A pull request: versions, files, commits, notes and whether it merges.
+    Show { number: u32 },
+    Merge {
+        number: u32,
+        /// merge, squash, rebase or ff.
+        #[arg(long, short = 's', default_value = "merge")]
+        strategy: String,
+        #[arg(long, short = 'm')]
+        message: Option<String>,
+        /// Delete the source branch afterwards.
+        #[arg(long, short = 'd')]
+        delete_branch: bool,
+    },
+    Close { number: u32 },
+    Reopen { number: u32 },
+    /// Leave a note on a line of the latest version.
+    Note {
+        number: u32,
+        path: String,
+        line: u32,
+        text: String,
+        /// The line number is on the old side.
+        #[arg(long)]
+        old: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// Guard branches matching PATTERN (`main`, `release/*`).
+    Set {
+        pattern: String,
+        /// Let people push straight to it.
+        #[arg(long)]
+        allow_push: bool,
+        #[arg(long)]
+        allow_force: bool,
+        #[arg(long)]
+        allow_delete: bool,
+    },
+    Delete { pattern: String },
+    /// Pushes that overrode a rule.
+    Overrides,
 }
 
 #[derive(Subcommand)]
@@ -547,6 +615,52 @@ fn main() -> Result<()> {
             Response::Revoked { id } => writeln!(out, "Revoked {id}. Its token no longer works.")?,
             r => return Err(unexpected(r)),
         },
+        Cmd::Pr(cmd) => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            pr(&mut c, out, &style, repo, cmd)?;
+        }
+        Cmd::Rules { action } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            let request = match action {
+                None => Request::BranchRules { repo },
+                Some(RulesCmd::Set { pattern, allow_push, allow_force, allow_delete }) => Request::SetBranchRule {
+                    repo,
+                    rule: BranchRule { pattern, require_pull: !allow_push, block_force: !allow_force, block_delete: !allow_delete, required_checks: vec![] },
+                },
+                Some(RulesCmd::Delete { pattern }) => Request::DeleteBranchRule { repo, pattern },
+                Some(RulesCmd::Overrides) => Request::Overrides { repo },
+            };
+            match c.call(request)? {
+                Response::Rules(rules) => {
+                    if rules.is_empty() {
+                        writeln!(out, "No branch rules. Add one with `ntr rules set main`.")?;
+                    }
+                    for r in rules {
+                        let mut guards = Vec::new();
+                        if r.require_pull {
+                            guards.push("pull requests only");
+                        }
+                        if r.block_force {
+                            guards.push("no force-push");
+                        }
+                        if r.block_delete {
+                            guards.push("no delete");
+                        }
+                        let guards = if guards.is_empty() { "nothing".to_string() } else { guards.join(", ") };
+                        writeln!(out, "{:<20} {guards}", style.paint("1", &r.pattern))?;
+                    }
+                }
+                Response::Overrides(list) => {
+                    if list.is_empty() {
+                        writeln!(out, "No overrides.")?;
+                    }
+                    for o in list {
+                        writeln!(out, "{}  {:<24} {:<13} {}", style.paint("2", &ago(o.at)), o.ref_name, o.rule, o.reason)?;
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
         Cmd::Watch => {
             let id = c.next;
             c.next += 1;
@@ -564,6 +678,111 @@ fn main() -> Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn pr(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: PrCmd) -> Result<()> {
+    let request = match cmd {
+        PrCmd::List => Request::ListPulls { repo },
+        PrCmd::Create { source, target, title, body } => {
+            let target = match target {
+                Some(t) => t,
+                None => match repos(c)?.into_iter().find(|r| r.id == repo).and_then(|r| r.head) {
+                    Some(Head::Branch { name, .. }) => name,
+                    _ => bail!("{repo} has no default branch; name the target"),
+                },
+            };
+            Request::CreatePull { repo, title, body, source, target }
+        }
+        PrCmd::Show { number } => Request::Pull { repo, number },
+        PrCmd::Merge { number, strategy, message, delete_branch } => {
+            let strategy = match strategy.as_str() {
+                "merge" => MergeStrategy::Merge,
+                "squash" => MergeStrategy::Squash,
+                "rebase" => MergeStrategy::Rebase,
+                "ff" | "fast-forward" => MergeStrategy::FastForward,
+                other => bail!("{other:?} isn't a strategy: use merge, squash, rebase or ff"),
+            };
+            Request::MergePull { repo, number, strategy, message, delete_source: delete_branch }
+        }
+        PrCmd::Close { number } => Request::UpdatePull { repo, number, title: None, body: None, state: Some(PullState::Closed) },
+        PrCmd::Reopen { number } => Request::UpdatePull { repo, number, title: None, body: None, state: Some(PullState::Open) },
+        PrCmd::Note { number, path, line, text, old } => {
+            Request::AddNote { repo, number, path, side: if old { Side::Old } else { Side::New }, line, text }
+        }
+    };
+    let state = |s: PullState| match s {
+        PullState::Open => style.paint("32", "open"),
+        PullState::Merged => style.paint("35", "merged"),
+        PullState::Closed => style.paint("31", "closed"),
+    };
+    match c.call(request)? {
+        Response::Pulls(list) => {
+            if list.is_empty() {
+                writeln!(out, "No pull requests. Open one with `ntr pr create BRANCH -t TITLE`.")?;
+            }
+            for p in list {
+                let notes = if p.open_notes > 0 { format!("  {} notes", p.open_notes) } else { String::new() };
+                writeln!(
+                    out,
+                    "{} {:<6} {}  {} → {}  {}{}",
+                    style.paint("1", &format!("#{:<3}", p.number)),
+                    state(p.state),
+                    p.title,
+                    style.paint("36", &p.source),
+                    style.paint("36", &p.target),
+                    style.paint("2", &ago(p.updated_at)),
+                    notes
+                )?;
+            }
+        }
+        Response::Pull(d) => {
+            let p = &d.pull;
+            writeln!(out, "{} {}  {}", style.paint("1", &format!("#{}", p.number)), style.paint("1", &p.title), state(p.state))?;
+            writeln!(out, "{} → {}, version {}, opened {}", style.paint("36", &p.source), style.paint("36", &p.target), p.versions, ago(p.created_at))?;
+            if !p.body.is_empty() {
+                writeln!(out, "\n{}", p.body)?;
+            }
+            if let Some(m) = &d.mergeability {
+                let how = if m.fast_forward {
+                    style.paint("32", "can fast-forward")
+                } else if m.clean {
+                    style.paint("32", &format!("merges cleanly ({} behind {})", m.behind, p.target))
+                } else {
+                    style.paint("31", &format!("conflicts in {}", m.conflicts.join(", ")))
+                };
+                writeln!(out, "\n{how}")?;
+            }
+            if let Some(sha) = &p.merge_sha {
+                writeln!(out, "\nMerged as {}", &sha[..7.min(sha.len())])?;
+            }
+            if let Some(r) = &d.rule {
+                writeln!(out, "{} is guarded by the rule {}", p.target, style.paint("1", &r.pattern))?;
+            }
+            writeln!(out, "\nCommits")?;
+            for e in &d.commits {
+                writeln!(out, "  {} {}", style.paint("33", &e.sha[..7]), e.subject)?;
+            }
+            writeln!(out, "\nFiles")?;
+            for f in &d.files {
+                let counts = if f.binary { "binary".to_string() } else { format!("+{} −{}", f.additions, f.deletions) };
+                writeln!(out, "  {} {}  {}", status_letter(f.status), f.path, style.paint("2", &counts))?;
+            }
+            if !d.notes.is_empty() {
+                writeln!(out, "\nNotes")?;
+                for n in &d.notes {
+                    let at = match n.current_line {
+                        Some(l) => format!("{}:{l}", n.path),
+                        None => format!("{}:{} (outdated)", n.path, n.line),
+                    };
+                    let mark = if n.resolved { style.paint("2", "resolved") } else { style.paint("33", "open") };
+                    writeln!(out, "  [{}] {} {}  {}", n.id, mark, style.paint("36", &at), n.text)?;
+                }
+            }
+        }
+        Response::Merged { sha } => writeln!(out, "Merged as {}", &sha[..7.min(sha.len())])?,
+        r => return Err(unexpected(r)),
     }
     Ok(())
 }

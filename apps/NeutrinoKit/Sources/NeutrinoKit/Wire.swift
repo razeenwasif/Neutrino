@@ -3,7 +3,7 @@ import Foundation
 // Mirrors crates/neutrino-proto. Keys are snake_case on the wire and
 // camelCase here (the coders convert); enum values keep their wire spelling.
 
-public let protocolVersion: UInt32 = 3
+public let protocolVersion: UInt32 = 4
 
 // MARK: - Repositories and refs
 
@@ -525,6 +525,19 @@ public enum Request: Sendable, Equatable {
     case fetch(repo: String, remote: String?)
     case push(repo: String, remote: String?, branch: String?, setUpstream: Bool)
     case createHosted(name: String, description: String?)
+    case listPulls(repo: String)
+    case createPull(repo: String, title: String, body: String, source: String, target: String)
+    case pull(repo: String, number: UInt32)
+    case updatePull(repo: String, number: UInt32, title: String?, body: String?, state: PullState?)
+    case addNote(repo: String, number: UInt32, path: String, side: Side, line: UInt32, text: String)
+    case resolveNote(repo: String, number: UInt32, note: Int64, resolved: Bool)
+    case mergePull(repo: String, number: UInt32, strategy: MergeStrategy, message: String?, deleteSource: Bool)
+    case compare(repo: String, base: String, head: String)
+    case compareDiff(repo: String, base: String, head: String, path: String, context: UInt32?)
+    case branchRules(repo: String)
+    case setBranchRule(repo: String, rule: BranchRule)
+    case deleteBranchRule(repo: String, pattern: String)
+    case overrides(repo: String)
     case pair(code: String, device: String)
     case auth(token: String)
     case cancel(id: UInt64)
@@ -545,6 +558,12 @@ public enum Response: Sendable, Equatable {
     case committed(sha: String, output: String)
     case event(RepoEvent)
     case remotes([RemoteInfo])
+    case pulls([PullRequest])
+    case pull(PullDetail)
+    case merged(sha: String)
+    case compare([FileChange])
+    case rules([BranchRule])
+    case overrides([RuleOverride])
     case paired(token: String, deviceID: String, host: String)
     case authenticated(host: String, role: String)
     case cancelled
@@ -594,6 +613,16 @@ public enum Wire {
     private struct HostParam: Encodable { var name: String; var description: String? }
     private struct PairParam: Encodable { var code: String; var device: String }
     private struct AuthParam: Encodable { var token: String }
+    private struct CreatePullParam: Encodable { var repo: String; var title: String; var body: String; var source: String; var target: String }
+    private struct PullParam: Encodable { var repo: String; var number: UInt32 }
+    private struct UpdatePullParam: Encodable { var repo: String; var number: UInt32; var title: String?; var body: String?; var state: PullState? }
+    private struct NoteParam: Encodable { var repo: String; var number: UInt32; var path: String; var side: Side; var line: UInt32; var text: String }
+    private struct ResolveParam: Encodable { var repo: String; var number: UInt32; var note: Int64; var resolved: Bool }
+    private struct MergeParam: Encodable { var repo: String; var number: UInt32; var strategy: MergeStrategy; var message: String?; var deleteSource: Bool }
+    private struct CompareParam: Encodable { var repo: String; var base: String; var head: String }
+    private struct CompareDiffParam: Encodable { var repo: String; var base: String; var head: String; var path: String; var context: UInt32? }
+    private struct RuleParam: Encodable { var repo: String; var rule: BranchRule }
+    private struct PatternParam: Encodable { var repo: String; var pattern: String }
     private struct DiffParam: Encodable {
         var repo: String
         var sha: String
@@ -637,6 +666,24 @@ public enum Wire {
         case let .fetch(repo, remote): try line(id, "fetch", FetchParam(repo: repo, remote: remote))
         case let .push(repo, remote, branch, up): try line(id, "push", PushParam(repo: repo, remote: remote, branch: branch, setUpstream: up))
         case let .createHosted(name, description): try line(id, "create_hosted", HostParam(name: name, description: description))
+        case let .listPulls(repo): try line(id, "list_pulls", RepoParam(repo: repo))
+        case let .createPull(repo, title, body, source, target):
+            try line(id, "create_pull", CreatePullParam(repo: repo, title: title, body: body, source: source, target: target))
+        case let .pull(repo, number): try line(id, "pull", PullParam(repo: repo, number: number))
+        case let .updatePull(repo, number, title, body, state):
+            try line(id, "update_pull", UpdatePullParam(repo: repo, number: number, title: title, body: body, state: state))
+        case let .addNote(repo, number, path, side, l, text):
+            try line(id, "add_note", NoteParam(repo: repo, number: number, path: path, side: side, line: l, text: text))
+        case let .resolveNote(repo, number, note, resolved): try line(id, "resolve_note", ResolveParam(repo: repo, number: number, note: note, resolved: resolved))
+        case let .mergePull(repo, number, strategy, message, deleteSource):
+            try line(id, "merge_pull", MergeParam(repo: repo, number: number, strategy: strategy, message: message, deleteSource: deleteSource))
+        case let .compare(repo, base, head): try line(id, "compare", CompareParam(repo: repo, base: base, head: head))
+        case let .compareDiff(repo, base, head, path, context):
+            try line(id, "compare_diff", CompareDiffParam(repo: repo, base: base, head: head, path: path, context: context))
+        case let .branchRules(repo): try line(id, "branch_rules", RepoParam(repo: repo))
+        case let .setBranchRule(repo, rule): try line(id, "set_branch_rule", RuleParam(repo: repo, rule: rule))
+        case let .deleteBranchRule(repo, pattern): try line(id, "delete_branch_rule", PatternParam(repo: repo, pattern: pattern))
+        case let .overrides(repo): try line(id, "overrides", RepoParam(repo: repo))
         case let .pair(code, device): try line(id, "pair", PairParam(code: code, device: device))
         case let .auth(token): try line(id, "auth", AuthParam(token: token))
         case let .cancel(target): try line(id, "cancel", IDParam(id: target))
@@ -659,6 +706,7 @@ public enum Wire {
     private struct Committed: Decodable { var sha: String; var output: String }
     private struct Paired: Decodable { var token: String; var deviceId: String; var host: String }
     private struct Authenticated: Decodable { var host: String; var role: String }
+    private struct MergedSha: Decodable { var sha: String }
 
     /// Parse one response line into its id and response.
     public static func decode(_ line: Data) throws -> (UInt64, Response) {
@@ -680,6 +728,12 @@ public enum Wire {
         case "committed": try { let c = try data(Committed.self); return .committed(sha: c.sha, output: c.output) }()
         case "event": .event(try data(RepoEvent.self))
         case "remotes": .remotes(try data([RemoteInfo].self))
+        case "pulls": .pulls(try data([PullRequest].self))
+        case "pull": .pull(try data(PullDetail.self))
+        case "merged": .merged(sha: try data(MergedSha.self).sha)
+        case "compare": .compare(try data([FileChange].self))
+        case "rules": .rules(try data([BranchRule].self))
+        case "overrides": .overrides(try data([RuleOverride].self))
         case "paired": try { let p = try data(Paired.self); return .paired(token: p.token, deviceID: p.deviceId, host: p.host) }()
         case "authenticated": try { let a = try data(Authenticated.self); return .authenticated(host: a.host, role: a.role) }()
         case "cancelled": .cancelled

@@ -52,12 +52,14 @@ public struct ServerLink: Codable, Hashable, Sendable {
     }
 
     var endpoints: [NWEndpoint] {
+        // The address seen at pairing first: it answers at once, while a
+        // Bonjour name has to be resolved first. Bonjour finds it again if the address moves.
         var list: [NWEndpoint] = []
-        if let serviceName {
-            list.append(.service(name: serviceName, type: bonjourType, domain: "local.", interface: nil))
-        }
         if let address, let port = NWEndpoint.Port(rawValue: port) {
             list.append(.hostPort(host: NWEndpoint.Host(address), port: port))
+        }
+        if let serviceName {
+            list.append(.service(name: serviceName, type: bonjourType, domain: "local.", interface: nil))
         }
         return list
     }
@@ -71,9 +73,12 @@ public enum ServerStore {
     private static let key = "server"
     private static let service = "dev.neutrino.server"
 
+    /// The paired server, if any. Doesn't touch the Keychain: reading it can
+    /// put up a prompt, which mustn't hold up launch. The token is read when
+    /// `ServerService` connects, and a missing one reads as unpaired then.
     public static func load() -> ServerLink? {
-        guard let data = UserDefaults.standard.data(forKey: key), let link = try? JSONDecoder().decode(ServerLink.self, from: data) else { return nil }
-        return token(for: link.deviceID) == nil ? nil : link
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(ServerLink.self, from: data)
     }
 
     public static func save(_ link: ServerLink, token: String? = nil) throws {
@@ -167,8 +172,18 @@ final class LineConnection: @unchecked Sendable {
                 }
             }
             connection.start(queue: queue)
+            // TCP's own timeout doesn't cover resolving a Bonjour name, which
+            // can sit "in progress" indefinitely; give up so the next address gets a turn.
+            queue.asyncAfter(deadline: .now() + Self.startTimeout) { [connection] in
+                once.run {
+                    connection.cancel()
+                    continuation.resume(throwing: ServiceError.unreachable("no answer within \(Int(Self.startTimeout)) seconds"))
+                }
+            }
         }
     }
+
+    static let startTimeout: TimeInterval = 8
 
     func send(_ data: Data) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

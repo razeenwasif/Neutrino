@@ -529,3 +529,134 @@ mod working_copy {
         assert!(worktree::git_binary().exists() || worktree::git_binary() == std::path::Path::new("git"));
     }
 }
+
+mod forge {
+    use super::*;
+    use crate::forge::{self, Identity};
+    use neutrino_proto::MergeStrategy;
+
+    fn server() -> Identity {
+        Identity { name: "Neutrino".into(), email: "neutrino@localhost".into() }
+    }
+
+    /// main: a.txt; feature adds b.txt and edits a.txt's last line; main later adds c.txt.
+    fn setup() -> (Fixture, PathBuf) {
+        let f = Fixture::new();
+        f.write("a.txt", b"1\n2\n3\n4\n5\n");
+        f.commit("base");
+        f.git(&["checkout", "-q", "-b", "feature"]);
+        f.write("b.txt", b"new\n");
+        f.commit("add b");
+        f.write("a.txt", b"1\n2\n3\n4\nfive\n");
+        f.commit("edit a");
+        f.git(&["checkout", "-q", "main"]);
+        f.write("c.txt", b"c\n");
+        f.commit("add c on main");
+        let bare = f._dir.path().join("hosted.git");
+        f.git(&["clone", "-q", "--bare", f.path.to_str().unwrap(), bare.to_str().unwrap()]);
+        (f, bare)
+    }
+
+    fn open(path: &Path) -> gix::Repository {
+        local(&discover(path).unwrap())
+    }
+
+    #[test]
+    fn compare_from_the_merge_base() {
+        let (_f, bare) = setup();
+        let repo = open(&bare);
+        let files = forge::compare(&repo, "main", "feature").unwrap();
+        let names: Vec<_> = files.iter().map(|f| (f.path.as_str(), f.additions, f.deletions)).collect();
+        assert_eq!(names, vec![("a.txt", 1, 1), ("b.txt", 1, 0)], "c.txt landed on main and isn't the pull request's");
+        let d = forge::compare_diff(&repo, "main", "feature", "a.txt", 3, &DiffCache::default()).unwrap();
+        assert_eq!((d.additions, d.deletions), (1, 1));
+        let commits = forge::commits_between(&repo, "main", "feature").unwrap();
+        assert_eq!(commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), vec!["add b", "edit a"]);
+    }
+
+    #[test]
+    fn mergeability_and_strategies() {
+        for strategy in [MergeStrategy::Merge, MergeStrategy::Squash, MergeStrategy::Rebase] {
+            let (f, bare) = setup();
+            let repo = open(&bare);
+            let m = forge::mergeability(&repo, "main", "feature").unwrap();
+            assert!(m.clean && !m.fast_forward && m.behind == 1, "{m:?}");
+            assert!(forge::merge(&repo, "main", "feature", MergeStrategy::FastForward, "", &server()).is_err(), "main moved on");
+
+            let new = forge::merge(&repo, "main", "feature", strategy, "Merge feature", &server()).unwrap();
+            let tip = f.git_in(&bare, &["rev-parse", "main"]);
+            assert_eq!(tip, new.to_string());
+            let files = f.git_in(&bare, &["ls-tree", "--name-only", "main"]);
+            assert_eq!(files, "a.txt\nb.txt\nc.txt", "{strategy:?}");
+            assert_eq!(f.git_in(&bare, &["show", "main:a.txt"]), "1\n2\n3\n4\nfive");
+            let parents = f.git_in(&bare, &["rev-list", "--parents", "-n1", "main"]).split(' ').count() - 1;
+            let count = f.git_in(&bare, &["rev-list", "--count", "main"]);
+            match strategy {
+                MergeStrategy::Merge => assert_eq!((parents, count.as_str()), (2, "5")),
+                MergeStrategy::Squash => assert_eq!((parents, count.as_str()), (1, "3")),
+                _ => {
+                    assert_eq!((parents, count.as_str()), (1, "4"));
+                    assert_eq!(f.git_in(&bare, &["log", "-1", "--format=%s|%an|%cn", "main"]), "edit a|Ada|Neutrino", "a rebase keeps authors");
+                }
+            }
+            if strategy != MergeStrategy::Rebase {
+                assert_eq!(f.git_in(&bare, &["log", "-1", "--format=%s|%an|%cn", "main"]), "Merge feature|Ada|Neutrino");
+            }
+            assert!(forge::merge(&repo, "main", "feature", strategy, "again", &server()).is_err(), "nothing left to merge");
+        }
+    }
+
+    #[test]
+    fn fast_forward_and_conflicts() {
+        let f = Fixture::new();
+        f.write("a.txt", b"one\n");
+        f.commit("base");
+        f.git(&["checkout", "-q", "-b", "ff"]);
+        f.write("a.txt", b"two\n");
+        let two = f.commit("two");
+        f.git(&["checkout", "-q", "-b", "clash", "main"]);
+        f.write("a.txt", b"three\n");
+        f.commit("three");
+        f.git(&["checkout", "-q", "main"]);
+        let repo = f.repo();
+
+        let m = forge::mergeability(&repo, "main", "ff").unwrap();
+        assert!(m.clean && m.fast_forward && m.behind == 0);
+        assert_eq!(forge::merge(&repo, "main", "ff", MergeStrategy::FastForward, "", &server()).unwrap().to_string(), two);
+
+        let m = forge::mergeability(&repo, "main", "clash").unwrap();
+        assert_eq!((m.clean, m.conflicts.clone()), (false, vec!["a.txt".to_string()]));
+        let err = forge::merge(&repo, "main", "clash", MergeStrategy::Merge, "m", &server()).unwrap_err();
+        assert!(err.0.contains("conflicts with main in a.txt"), "{err}");
+        assert!(forge::merge(&repo, "main", "clash", MergeStrategy::Rebase, "m", &server()).is_err());
+        assert_eq!(f.git(&["rev-parse", "main"]), two, "a failed merge moves nothing");
+    }
+
+    #[test]
+    fn lines_follow_edits() {
+        let old = b"a\nb\nc\nd\ne\n";
+        // Insert two lines after b, change d.
+        let new = b"a\nb\nx\ny\nc\nD\ne\n";
+        let map = |l| forge::map_through(old, new, l);
+        assert_eq!(map(1), Some(1));
+        assert_eq!(map(2), Some(2));
+        assert_eq!(map(3), Some(5));
+        assert_eq!(map(4), None, "the line changed");
+        assert_eq!(map(5), Some(7));
+        assert_eq!(forge::map_through(b"a\nb\n", b"b\n", 2), Some(1));
+        assert_eq!(forge::map_through(b"a\nb\n", b"b\n", 1), None);
+        assert_eq!(forge::map_through(b"a\n", b"z\na\n", 1), Some(2), "an insertion at the top");
+    }
+
+    #[test]
+    fn pull_heads_are_kept() {
+        let (f, bare) = setup();
+        let repo = open(&bare);
+        let tip = f.git_in(&bare, &["rev-parse", "feature"]);
+        forge::keep_pull_head(&repo, 7, &tip).unwrap();
+        assert_eq!(f.git_in(&bare, &["rev-parse", "refs/pull/7/head"]), tip);
+        assert_eq!(forge::map_line(&repo, "main", "feature", "a.txt", 2).unwrap(), Some(2));
+        assert_eq!(forge::map_line(&repo, "main", "feature", "a.txt", 5).unwrap(), None);
+        assert_eq!(forge::map_line(&repo, "main", "feature", "missing.txt", 1).unwrap(), None);
+    }
+}

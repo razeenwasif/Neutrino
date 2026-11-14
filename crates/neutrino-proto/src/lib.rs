@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a breaking change is made to the control API.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// TCP port of the server's paired TLS endpoint, and its Bonjour service type.
 pub const REMOTE_PORT: u16 = 7844;
@@ -334,6 +334,10 @@ pub struct RefUpdate {
     pub new: String,
     /// Full name, e.g. `refs/heads/main`.
     pub name: String,
+    /// The new commit doesn't descend from the old one. The pre-receive hook
+    /// works this out, since only it can see the pushed objects.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forced: bool,
 }
 
 /// What `ntr pair` shows on the server: everything a device needs to pair.
@@ -358,6 +362,145 @@ pub struct PairedDevice {
     /// Unix seconds.
     pub paired_at: u64,
     pub last_seen: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Pull requests and branch rules (server)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullState {
+    Open,
+    Merged,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequest {
+    pub repo: String,
+    pub number: u32,
+    pub title: String,
+    pub body: String,
+    /// The branch being merged.
+    pub source: String,
+    /// The branch it merges into.
+    pub target: String,
+    pub state: PullState,
+    /// The latest version's head.
+    pub head_sha: String,
+    pub versions: u32,
+    /// Unresolved notes.
+    pub open_notes: u32,
+    /// Unix seconds.
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub merged_at: Option<i64>,
+    /// The commit the merge left on the target.
+    pub merge_sha: Option<String>,
+}
+
+/// One push to the source branch while the pull request was open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullVersion {
+    /// From 1.
+    pub version: u32,
+    pub head_sha: String,
+    /// Where the source left the target when this version was pushed.
+    pub base_sha: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    /// A line of the base version (a removed line).
+    Old,
+    /// A line of the head version (an added or unchanged line).
+    New,
+}
+
+/// A note on a line of a pull request's diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    pub id: i64,
+    /// The version it was written on.
+    pub version: u32,
+    pub path: String,
+    pub side: Side,
+    /// The line it was written on, in that version.
+    pub line: u32,
+    pub text: String,
+    pub created_at: i64,
+    pub resolved: bool,
+    /// Where the line is in the latest version; `None` when that line changed
+    /// since (the note is outdated).
+    pub current_line: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeStrategy {
+    /// A merge commit with both parents.
+    Merge,
+    /// One new commit with the pull request's changes.
+    Squash,
+    /// The pull request's commits replayed onto the target.
+    Rebase,
+    /// Move the target to the source; only when nothing landed on the target meanwhile.
+    FastForward,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mergeability {
+    /// Merges without conflicts.
+    pub clean: bool,
+    /// Files that conflict, when it doesn't.
+    pub conflicts: Vec<String>,
+    /// The target is an ancestor of the source.
+    pub fast_forward: bool,
+    /// Commits on the target that the source doesn't have.
+    pub behind: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchRule {
+    /// A branch name, or a pattern with `*` (`release/*`).
+    pub pattern: String,
+    /// Changes reach these branches only by merging a pull request.
+    pub require_pull: bool,
+    /// Refuse pushes that rewrite history.
+    pub block_force: bool,
+    /// Refuse deleting the branch.
+    pub block_delete: bool,
+    /// Checks that must pass before a merge (enforced once CI exists).
+    #[serde(default)]
+    pub required_checks: Vec<String>,
+}
+
+/// A push that went through despite a rule, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleOverride {
+    pub ref_name: String,
+    /// Which rule it broke: `require_pull`, `block_force` or `block_delete`.
+    pub rule: String,
+    pub reason: String,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullDetail {
+    pub pull: PullRequest,
+    pub versions: Vec<PullVersion>,
+    pub notes: Vec<Note>,
+    /// For an open pull request.
+    pub mergeability: Option<Mergeability>,
+    /// The latest version against where it left the target.
+    pub files: Vec<FileChange>,
+    /// Its commits, oldest first.
+    pub commits: Vec<LogEntry>,
+    /// The rule that guards the target, if one does.
+    pub rule: Option<BranchRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,9 +620,68 @@ pub enum Request {
         description: Option<String>,
     },
     /// From the pre-receive hook: may these updates land? Local only.
-    HookPreReceive { repo: String, updates: Vec<RefUpdate> },
+    HookPreReceive {
+        repo: String,
+        updates: Vec<RefUpdate>,
+        /// `git push -o …` options; `neutrino-override=<reason>` overrides a rule.
+        #[serde(default)]
+        push_options: Vec<String>,
+    },
     /// From the post-receive hook: these updates landed. Local only.
     HookPostReceive { repo: String, updates: Vec<RefUpdate> },
+
+    // --- Pull requests (server) ---
+    ListPulls { repo: String },
+    CreatePull {
+        repo: String,
+        title: String,
+        #[serde(default)]
+        body: String,
+        source: String,
+        target: String,
+    },
+    Pull { repo: String, number: u32 },
+    /// Change the title or description, or close or reopen.
+    UpdatePull {
+        repo: String,
+        number: u32,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        state: Option<PullState>,
+    },
+    AddNote { repo: String, number: u32, path: String, side: Side, line: u32, text: String },
+    ResolveNote { repo: String, number: u32, note: i64, resolved: bool },
+    MergePull {
+        repo: String,
+        number: u32,
+        strategy: MergeStrategy,
+        /// The merge or squash commit's message. Default: the pull request's title and number.
+        #[serde(default)]
+        message: Option<String>,
+        /// Delete the source branch afterwards.
+        #[serde(default)]
+        delete_source: bool,
+    },
+    /// The files changed between two commits.
+    Compare { repo: String, base: String, head: String },
+    /// One file's diff between two commits.
+    CompareDiff {
+        repo: String,
+        base: String,
+        head: String,
+        path: String,
+        #[serde(default)]
+        context: Option<u32>,
+    },
+    BranchRules { repo: String },
+    /// Add a rule, or replace the one with the same pattern.
+    SetBranchRule { repo: String, rule: BranchRule },
+    DeleteBranchRule { repo: String, pattern: String },
+    /// Pushes that overrode a rule, newest first.
+    Overrides { repo: String },
 
     // --- Pairing (server) ---
     /// A one-time pairing code. Local only.
@@ -540,6 +742,12 @@ pub enum Response {
     Devices(Vec<PairedDevice>),
     Revoked { id: String },
     Paired { token: String, device_id: String, host: String },
+    Pulls(Vec<PullRequest>),
+    Pull(Box<PullDetail>),
+    Merged { sha: String },
+    Compare(Vec<FileChange>),
+    Rules(Vec<BranchRule>),
+    Overrides(Vec<RuleOverride>),
     Authenticated { host: String, role: String },
     /// The request was cancelled before it finished.
     Cancelled,
@@ -696,5 +904,18 @@ mod tests {
         let resp = Response::Error { message: "no such repo".into() };
         let (id, back) = decode_response(&encode_response(11, &resp)).unwrap();
         assert_eq!((id, back), (11, resp));
+    }
+
+    /// The same line the Swift app's `pullWire` test decodes.
+    #[test]
+    fn pull_detail_wire() {
+        let line = r#"{"id":9,"type":"pull","data":{"pull":{"repo":"app","number":3,"title":"Shout","body":"Louder.","source":"feature","target":"main","state":"open","head_sha":"bbb","versions":2,"open_notes":1,"created_at":10,"updated_at":20,"merged_at":null,"merge_sha":null},"versions":[{"version":1,"head_sha":"aaa","base_sha":"000","created_at":10},{"version":2,"head_sha":"bbb","base_sha":"000","created_at":20}],"notes":[{"id":5,"version":1,"path":"app.txt","side":"new","line":3,"text":"Keep three","created_at":11,"resolved":false,"current_line":4},{"id":6,"version":1,"path":"app.txt","side":"old","line":1,"text":"Gone","created_at":12,"resolved":true,"current_line":null}],"mergeability":{"clean":true,"conflicts":[],"fast_forward":false,"behind":1},"files":[{"path":"app.txt","old_path":null,"status":"modified","additions":2,"deletions":1,"binary":false}],"commits":[{"sha":"bbb","parents":["aaa"],"subject":"start at zero","author":{"name":"Ada","email":"ada@example.com","time":20,"offset":0},"time":20,"refs":[],"graph":null}],"rule":{"pattern":"main","require_pull":true,"block_force":true,"block_delete":false}}}"#;
+        let (id, r) = decode_response(line).unwrap();
+        let Response::Pull(d) = r else { panic!("{r:?}") };
+        assert_eq!((id, d.pull.number, d.notes.len(), d.notes[1].current_line), (9, 3, 2, None));
+        assert!(d.rule.as_ref().unwrap().required_checks.is_empty());
+        let back = encode_response(9, &Response::Pull(d.clone()));
+        let (_, again) = decode_response(&back).unwrap();
+        assert_eq!(again, Response::Pull(d));
     }
 }

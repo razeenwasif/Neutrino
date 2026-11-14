@@ -78,7 +78,53 @@ pub fn install_hooks(git_dir: &Path, exe: &Path, socket: &Path, repo_id: &str) -
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
     }
+    // `git push -o neutrino-override=…` needs the server to accept push options.
+    let out = Command::new(neutrino_git::worktree::git_binary())
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["config", "receive.advertisePushOptions", "true"])
+        .output()
+        .context("running git config")?;
+    if !out.status.success() {
+        bail!("git config failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
     Ok(())
+}
+
+/// Present in a hosted repo's git dir while it has branch rules, so its
+/// pre-receive hook refuses pushes when the daemon can't check them.
+pub const RULES_MARKER: &str = "neutrino-rules";
+
+pub fn mark_rules(git_dir: &Path, has_rules: bool) -> Result<()> {
+    let marker = git_dir.join(RULES_MARKER);
+    if has_rules {
+        std::fs::write(&marker, "This repository has branch rules; its pre-receive hook refuses pushes while neutrinod is down.\n")?;
+    } else if marker.exists() {
+        std::fs::remove_file(&marker)?;
+    }
+    Ok(())
+}
+
+fn zero(sha: &str) -> bool {
+    sha.bytes().all(|b| b == b'0')
+}
+
+/// Mark the updates that aren't fast-forwards. Runs inside the hook, whose
+/// environment lets git see the pushed objects before they're accepted.
+fn mark_forced(updates: &mut [RefUpdate]) {
+    for u in updates.iter_mut().filter(|u| !zero(&u.old) && !zero(&u.new) && u.name.starts_with("refs/heads/")) {
+        let fast_forward = Command::new(neutrino_git::worktree::git_binary())
+            .args(["merge-base", "--is-ancestor", &u.old, &u.new])
+            .status()
+            .is_ok_and(|s| s.success());
+        u.forced = !fast_forward;
+    }
+}
+
+/// `git push -o …` options, as git hands them to hooks.
+fn push_options() -> Vec<String> {
+    let count: usize = std::env::var("GIT_PUSH_OPTION_COUNT").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+    (0..count).filter_map(|i| std::env::var(format!("GIT_PUSH_OPTION_{i}")).ok()).collect()
 }
 
 /// Read a hook's stdin: one `old new ref` line per update.
@@ -88,7 +134,7 @@ pub fn read_updates(input: impl BufRead) -> Vec<RefUpdate> {
         .map_while(|l| l.ok())
         .filter_map(|l| {
             let mut parts = l.split_whitespace();
-            Some(RefUpdate { old: parts.next()?.to_string(), new: parts.next()?.to_string(), name: parts.next()?.to_string() })
+            Some(RefUpdate { old: parts.next()?.to_string(), new: parts.next()?.to_string(), name: parts.next()?.to_string(), forced: false })
         })
         .collect()
 }
@@ -96,9 +142,12 @@ pub fn read_updates(input: impl BufRead) -> Vec<RefUpdate> {
 /// The `neutrinod hook` command, run by git inside a push. Returns the exit code:
 /// non-zero from pre-receive refuses the push.
 pub fn run_hook(kind: &str, repo: &str, socket: &Path) -> i32 {
-    let updates = read_updates(std::io::stdin().lock());
+    let mut updates = read_updates(std::io::stdin().lock());
     let request = match kind {
-        "pre-receive" => Request::HookPreReceive { repo: repo.into(), updates },
+        "pre-receive" => {
+            mark_forced(&mut updates);
+            Request::HookPreReceive { repo: repo.into(), updates, push_options: push_options() }
+        }
         "post-receive" => Request::HookPostReceive { repo: repo.into(), updates },
         other => {
             eprintln!("neutrino: unknown hook {other}");
@@ -118,9 +167,16 @@ pub fn run_hook(kind: &str, repo: &str, socket: &Path) -> i32 {
         }
         Ok(_) => 0,
         Err(e) => {
-            // With nothing to enforce yet, a daemon that's down mustn't block pushes.
-            eprintln!("neutrino: couldn't reach neutrinod ({e:#}); the push goes ahead without it");
-            0
+            // Hooks run in the git dir. With rules to enforce, refuse rather
+            // than let a push past them; with none, don't block anything.
+            let guarded = kind == "pre-receive" && Path::new(RULES_MARKER).exists();
+            if guarded {
+                eprintln!("neutrino: couldn't reach neutrinod ({e:#}), and this repository has branch rules, so the push is refused until it's back");
+                1
+            } else {
+                eprintln!("neutrino: couldn't reach neutrinod ({e:#}); the push goes ahead without it");
+                0
+            }
         }
     }
 }

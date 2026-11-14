@@ -4,6 +4,7 @@
 //! [`gix::Repository`]; the daemon keeps one [`gix::ThreadSafeRepository`] per
 //! registered repo and hands each request its own thread-local copy.
 
+pub mod forge;
 pub mod graph;
 pub mod worktree;
 
@@ -18,6 +19,7 @@ use neutrino_proto::{
     Branch, ChangeStatus, CommitDetail, FileChange, FileDiff, Head, LogEntry, LogPage, LogQuery, RefKind, RefLabel, Repo, Signature,
 };
 
+pub use gix;
 pub use gix::ThreadSafeRepository;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,13 +191,13 @@ pub fn branches(repo: &gix::Repository) -> Result<Vec<Branch>> {
 // History
 // ---------------------------------------------------------------------------
 
-fn signature(sig: gix::actor::SignatureRef<'_>) -> Signature {
+pub(crate) fn signature(sig: gix::actor::SignatureRef<'_>) -> Signature {
     let time = sig.time().unwrap_or_default();
     Signature { name: sig.name.trim().to_str_lossy().into_owned(), email: sig.email.trim().to_str_lossy().into_owned(), time: time.seconds, offset: time.offset }
 }
 
 /// Subject (the first paragraph on one line, as git shows it) and body.
-fn split_message(raw: &BStr) -> (String, String) {
+pub(crate) fn split_message(raw: &BStr) -> (String, String) {
     let text = raw.to_str_lossy();
     let text = text.trim_start_matches(['\n', '\r']);
     let (subject, body) = match text.find("\n\n").or_else(|| text.find("\r\n\r\n")) {
@@ -206,7 +208,7 @@ fn split_message(raw: &BStr) -> (String, String) {
     (subject, body.trim().to_string())
 }
 
-fn resolve(repo: &gix::Repository, rev: &str) -> Result<ObjectId> {
+pub(crate) fn resolve(repo: &gix::Repository, rev: &str) -> Result<ObjectId> {
     let id = repo.rev_parse_single(rev).ctx(format!("no commit named {rev:?}"))?;
     let commit = id.object().ctx("reading object")?.peel_to_commit().ctx(format!("{rev:?} is not a commit"))?;
     Ok(commit.id().detach())
@@ -309,7 +311,7 @@ pub fn log(repo: &gix::Repository, q: &LogQuery) -> Result<LogPage> {
 // ---------------------------------------------------------------------------
 
 /// One changed file between a commit and its first parent, with blob ids.
-struct Change {
+pub(crate) struct Change {
     path: String,
     old_path: Option<String>,
     status: ChangeStatus,
@@ -323,8 +325,13 @@ fn changes(repo: &gix::Repository, commit: &gix::Commit<'_>) -> Result<Vec<Chang
         Some(p) => Some(repo.find_commit(p).ctx("reading parent")?.tree().ctx("reading parent tree")?),
         None => None,
     };
+    tree_changes(repo, parent_tree.as_ref(), &tree)
+}
+
+/// Every changed file from `old` (nothing, when `None`) to `new`, renames found.
+pub(crate) fn tree_changes(repo: &gix::Repository, old: Option<&gix::Tree<'_>>, new: &gix::Tree<'_>) -> Result<Vec<Change>> {
     let options = gix::diff::Options::default().with_rewrites(Some(gix::diff::Rewrites::default()));
-    let raw = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), options).ctx("comparing trees")?;
+    let raw = repo.diff_tree_to_tree(old, Some(new), options).ctx("comparing trees")?;
 
     use gix::object::tree::diff::ChangeDetached as C;
     let mut out = Vec::new();
@@ -405,9 +412,24 @@ pub fn commit(repo: &gix::Repository, sha: &str) -> Result<CommitDetail> {
     let commit = find_commit(repo, sha)?;
     let id = commit.id().detach();
     let (subject, body) = split_message(commit.message_raw_sloppy());
-    let all = changes(repo, &commit)?;
-    let truncated = all.len() > MAX_FILES;
+    let (files, truncated) = file_list(repo, changes(repo, &commit)?);
 
+    Ok(CommitDetail {
+        sha: id.to_string(),
+        parents: commit.parent_ids().map(|p| p.to_string()).collect(),
+        author: signature(commit.author().ctx("reading author")?),
+        committer: signature(commit.committer().ctx("reading committer")?),
+        subject,
+        body,
+        refs: ref_labels(repo)?.remove(&id).unwrap_or_default(),
+        files,
+        truncated,
+    })
+}
+
+/// The file list for a set of changes, with line counts for the first few hundred.
+pub(crate) fn file_list(repo: &gix::Repository, all: Vec<Change>) -> (Vec<FileChange>, bool) {
+    let truncated = all.len() > MAX_FILES;
     let mut files = Vec::new();
     for (i, c) in all.into_iter().take(MAX_FILES).enumerate() {
         let (mut additions, mut deletions, mut binary) = (0, 0, false);
@@ -426,18 +448,7 @@ pub fn commit(repo: &gix::Repository, sha: &str) -> Result<CommitDetail> {
         }
         files.push(FileChange { path: c.path, old_path: c.old_path, status: c.status, additions, deletions, binary });
     }
-
-    Ok(CommitDetail {
-        sha: id.to_string(),
-        parents: commit.parent_ids().map(|p| p.to_string()).collect(),
-        author: signature(commit.author().ctx("reading author")?),
-        committer: signature(commit.committer().ctx("reading committer")?),
-        subject,
-        body,
-        refs: ref_labels(repo)?.remove(&id).unwrap_or_default(),
-        files,
-        truncated,
-    })
+    (files, truncated)
 }
 
 /// Diffs already computed, keyed by both sides' blob ids and the context.
@@ -490,6 +501,10 @@ pub fn file_diff(repo: &gix::Repository, sha: &str, path: &str, context: u32, ca
     let Some(c) = changes(repo, &commit)?.into_iter().find(|c| c.path == path) else {
         return fail(format!("{path} did not change in {}", commit.id().to_hex_with_len(7)));
     };
+    change_diff(repo, c, context, cache)
+}
+
+pub(crate) fn change_diff(repo: &gix::Repository, c: Change, context: u32, cache: &DiffCache) -> Result<FileDiff> {
     let key = (c.old.map(|s| s.0), c.new.map(|s| s.0), context);
     let body = match cache.get(&key) {
         Some(body) => body,

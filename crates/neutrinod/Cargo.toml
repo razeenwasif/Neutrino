@@ -8,6 +8,7 @@ edition.workspace = true
 neutrino-proto.workspace = true
 neutrino-git.workspace = true
 neutrino-remote.workspace = true
+neutrino-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

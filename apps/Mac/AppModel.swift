@@ -4,7 +4,15 @@ import Observation
 import SwiftUI
 
 enum Section: String, CaseIterable {
-    case changes, history, branches
+    case changes, history, branches, pulls
+}
+
+enum PullFilter: String {
+    case open, closed
+}
+
+enum PullTab: String {
+    case overview, files, commits
 }
 
 /// A file in the Changes list, and which side of it is shown.
@@ -94,6 +102,25 @@ final class AppModel {
     private(set) var branches: [Branch] = []
     private(set) var branchesError: String?
     var selectedBranch: String?
+
+    // Pull requests (methods in PullsModel.swift)
+    /// The hosted repo the pull requests belong to: the selected hosted repo,
+    /// or the one a local repo's remote points at.
+    var pullRepo: String?
+    var pullRepoProblem: String?
+    var pullList: [PullRequest] = []
+    var pullFilter: PullFilter = .open
+    var pullNumber: UInt32?
+    var pullDetail: PullDetail?
+    var pullError: String?
+    var pullTab: PullTab = .overview
+    var pullFile: String?
+    var pullDiff: FileDiff?
+    var pullDiffError: String?
+    var pullGeneration = 0
+    var pullDiffGeneration = 0
+    var pullBusy: String?
+    var loadingPulls = false
 
     /// A short message for the last thing that went wrong, shown in the header.
     var notice: String?
@@ -246,7 +273,8 @@ final class AppModel {
         async let h: Void = reloadHistory()
         async let b: Void = loadBranches()
         async let s: Void = loadStatus()
-        _ = await (h, b, s)
+        async let p: Void = section == .pulls ? loadPulls() : ()
+        _ = await (h, b, s, p)
         if source == .local, let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
             repos[i] = updated
         }

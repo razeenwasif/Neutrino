@@ -301,8 +301,8 @@ struct ServerSection: View {
                     .buttonStyle(.plain)
                 }
             }
-            ForEach([("Pull requests", "arrow.triangle.pull"), ("Runs", "play.circle"), ("Secrets", "key")], id: \.0) { title, icon in
-                NavRow(title: title, icon: icon, enabled: false, help: "Arrives with milestones 4 to 6.")
+            ForEach([("Runs", "play.circle"), ("Secrets", "key")], id: \.0) { title, icon in
+                NavRow(title: title, icon: icon, enabled: false, help: "Arrives with milestones 5 and 6.")
             }
         }
         .sheet(isPresented: $pairing) { PairSheet() }

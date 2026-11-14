@@ -9,6 +9,7 @@
 //!   that report back here), and answers paired devices over TLS.
 
 pub mod hosting;
+mod pulls;
 mod registry;
 mod watch;
 
@@ -94,6 +95,19 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::Commit { .. }
             | Request::FileDiff { .. }
             | Request::CreateHosted { .. }
+            | Request::ListPulls { .. }
+            | Request::CreatePull { .. }
+            | Request::Pull { .. }
+            | Request::UpdatePull { .. }
+            | Request::AddNote { .. }
+            | Request::ResolveNote { .. }
+            | Request::MergePull { .. }
+            | Request::Compare { .. }
+            | Request::CompareDiff { .. }
+            | Request::BranchRules { .. }
+            | Request::SetBranchRule { .. }
+            | Request::DeleteBranchRule { .. }
+            | Request::Overrides { .. }
             | Request::Subscribe
             | Request::Cancel { .. }
     )
@@ -110,6 +124,8 @@ pub struct Daemon {
     /// Where discarded work is noted, so it can be got back.
     discarded_log: PathBuf,
     remote: Option<Arc<Remote>>,
+    /// Pull requests and rules; the server's only.
+    store: Option<neutrino_store::Store>,
     /// The socket hooks call back on; set by `serve`.
     socket: Mutex<Option<PathBuf>>,
     /// The TLS port actually bound (the option may be 0 for "any").
@@ -128,7 +144,12 @@ impl Daemon {
             (Role::Server, Some(port)) => Some(Remote::open(state_dir, port, options.advertise)?),
             _ => None,
         };
+        let store = match options.role {
+            Role::Server => Some(neutrino_store::Store::open(&pulls::database_path(state_dir))?),
+            Role::Workstation => None,
+        };
         Ok(Arc::new(Daemon {
+            store,
             state_dir: state_dir.to_path_buf(),
             registry: Registry::load(state_dir)?,
             diffs: DiffCache::default(),
@@ -180,7 +201,10 @@ impl Daemon {
         }
         for path in hosting::scan(&self.hosted_dir()) {
             match self.registry.add(&path.display().to_string()) {
-                Ok(repo) => self.refresh_hooks(&path, &repo.id),
+                Ok(repo) => {
+                    self.refresh_hooks(&path, &repo.id);
+                    self.sync_rules_marker(&repo.id);
+                }
                 Err(e) => eprintln!("can't host {}: {e:#}", path.display()),
             }
         }
@@ -294,12 +318,9 @@ impl Daemon {
                 self.watch(&repo.id);
                 Response::Repo(repo)
             }
-            Request::HookPreReceive { repo: id, updates } => {
-                self.server_only()?;
+            Request::HookPreReceive { repo: id, updates, push_options } => {
                 self.registry.get(&id)?;
-                // Branch rules arrive with pull requests (milestone 4); until then every push lands.
-                let _ = updates;
-                Response::Done { output: String::new() }
+                Response::Done { output: self.check_push(&id, &updates, &push_options)? }
             }
             Request::HookPostReceive { repo: id, updates } => {
                 self.server_only()?;
@@ -337,10 +358,43 @@ impl Daemon {
                 });
                 let n = updates.len();
                 let mut output = format!("neutrino: {n} ref{} updated", if n == 1 { "" } else { "s" });
+                for line in self.pulls_after_push(&id, &updates) {
+                    output.push('\n');
+                    output.push_str(&line);
+                }
                 if let Some(b) = adopted {
                     output.push_str(&format!("\nneutrino: {b} is now this repository's default branch"));
                 }
                 Response::Done { output }
+            }
+
+            // Pull requests
+            Request::ListPulls { repo: id } => {
+                self.registry.get(&id)?;
+                Response::Pulls(self.store()?.pulls(&id)?)
+            }
+            Request::CreatePull { repo: id, title, body, source, target } => self.create_pull(&id, &title, &body, &source, &target)?,
+            Request::Pull { repo: id, number } => self.pull_detail(&id, number)?,
+            Request::UpdatePull { repo: id, number, title, body, state } => self.update_pull(&id, number, title, body, state)?,
+            Request::AddNote { repo: id, number, path, side, line, text } => self.add_note(&id, number, &path, side, line, &text)?,
+            Request::ResolveNote { repo: id, number, note, resolved } => self.resolve_note(&id, number, note, resolved)?,
+            Request::MergePull { repo: id, number, strategy, message, delete_source } => {
+                self.merge_pull(&id, number, strategy, message, delete_source)?
+            }
+            Request::Compare { repo: id, base, head } => Response::Compare(neutrino_git::forge::compare(&repo(&id)?, &base, &head)?),
+            Request::CompareDiff { repo: id, base, head, path, context } => {
+                let context = context.unwrap_or(3).min(10_000);
+                Response::FileDiff(neutrino_git::forge::compare_diff(&repo(&id)?, &base, &head, &path, context, &self.diffs)?)
+            }
+            Request::BranchRules { repo: id } => {
+                self.registry.get(&id)?;
+                Response::Rules(self.store()?.rules(&id)?)
+            }
+            Request::SetBranchRule { repo: id, rule } => self.set_rule(&id, &rule)?,
+            Request::DeleteBranchRule { repo: id, pattern } => self.delete_rule(&id, &pattern)?,
+            Request::Overrides { repo: id } => {
+                self.registry.get(&id)?;
+                Response::Overrides(self.store()?.overrides(&id)?)
             }
 
             // Pairing

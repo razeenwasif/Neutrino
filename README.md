@@ -5,12 +5,12 @@ branches, pull requests, diff review, CI/CD and secrets, on your own
 machines. A Rust engine reads git repositories in-process with gitoxide; a
 SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> Status: **milestone 3 done** (the server). `neutrinod --server` runs on
-> atlas: it hosts bare repositories, takes pushes over SSH with hooks that
-> report back to it, and pairs devices over a pinned TLS endpoint. The Mac app
-> pairs with it, lists and browses its repositories, publishes a working copy
-> to it, and fetches and pushes. Milestones 1 and 2 gave the app history,
-> diffs, staging by line, commits and branches. Pull requests come next.
+> Status: **milestone 4 done** (pull requests). The server on atlas keeps pull
+> requests in SQLite: each push to the source is a new version, notes stay on
+> their lines as the code moves, and it merges four ways (merge commit, squash,
+> rebase, fast-forward) inside the bare repo. Branch rules are enforced in the
+> push hooks. Milestone 3 gave the server, pairing and publishing; 1 and 2 gave
+> history, diffs, staging by line, commits and branches. CI comes next.
 
 ## Layout
 
@@ -19,7 +19,9 @@ crates/
   neutrino-proto   Wire types for the control API, JSON lines with request ids
   neutrino-diff    Histogram line diffs, hunks, word highlights (imara-diff)
   neutrino-git     The git engine: reads on gitoxide (refs, history and graph lanes, commits,
-                   diffs, status); writes through the git binary (stage, commit, branches)
+                   diffs, status); writes through the git binary (stage, commit, branches);
+                   forge.rs compares branches, checks and does merges, follows lines
+  neutrino-store   The server's SQLite database: pull requests, versions, notes, rules, overrides
   neutrino-remote  The server's TLS endpoint: certificate, pairing codes, device tokens, Bonjour
   neutrinod        The daemon, as workstation or --server: repo registry, Unix socket and TLS,
                    concurrent requests, cancel, file watching and change events, hosting, hooks
@@ -27,7 +29,7 @@ crates/
 apps/
   project.yml      XcodeGen spec → Neutrino.xcodeproj (generated, not committed)
   NeutrinoKit/     Swift package: wire mirror, socket client, demo data, theme
-  Mac/             macOS app: Changes, History, commit panel, diff view, Branches
+  Mac/             macOS app: Changes, History, commit panel, diff view, Branches, Pull requests
 design/            App icon sources; make-icons.sh renders them into the asset catalog
 scripts/
   dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
@@ -75,9 +77,7 @@ SSH (`ssh://mini/Users/you/.neutrino/repos/myapp.git`), so Remote Login must
 be on and your SSH key in its `authorized_keys`. Each hosted repo's
 `pre-receive` and `post-receive` hooks call `neutrinod hook`, which tells the
 daemon what landed; the first branch pushed to an empty repo becomes its
-default, and the commit-graph is refreshed after each push. Branch rules come
-with pull requests, so for now every push lands, and a push still lands if the
-daemon is down.
+default, and the commit-graph is refreshed after each push.
 
 In the Mac app, choose Pair with atlas in the sidebar, pick the server (or type
 its address), check the fingerprint against `ntr pair`, then enter the code.
@@ -86,6 +86,41 @@ stores only token hashes. A paired device can read hosted repos, create them
 and follow pushes; it can't touch the server's working copies or paths, or
 manage pairing. Publish creates a hosted repo, adds it as the `atlas` remote
 and pushes the current branch; Fetch and Push in the header do the rest.
+
+### Pull requests and branch rules
+
+They live on the server, in `~/.neutrino/neutrino.db`. From the app (Pull
+requests, ⌘4) or on atlas with `ntr`:
+
+```bash
+ntr -r myapp pr create feature -t "Add the thing"   # into the default branch
+ntr -r myapp pr show 1                               # versions, files, commits, notes
+ntr -r myapp pr note 1 src/main.rs 42 "Why this?"    # --old for a removed line
+ntr -r myapp pr merge 1 -s squash -d                 # merge|squash|rebase|ff, -d deletes the branch
+ntr -r myapp rules set main                          # PRs only, no force-push, no delete
+ntr -r myapp rules overrides
+```
+
+Each push to an open pull request's branch is a new version, kept alive by
+`refs/pull/N/head` so force-pushes don't lose what a note was written on.
+Notes are anchored to a line of the version they were written on and followed
+through later versions; one whose line changed shows as outdated. A local repo
+shows the pull requests of the hosted repo its remote points at.
+
+Merges happen in the bare repo (`merge-tree`, `commit-tree`, then
+`update-ref` with the old value, so a racing push wins and the merge fails
+cleanly). They're committed as the repo's `user.name` if set, else as the
+source branch's author; a rebase keeps each commit's author and date. Pushing
+a merge you made locally marks the pull request merged.
+
+Rules guard branches by name or pattern (`release/*`): no direct pushes, no
+force-pushes, no deletes, each optional. The pre-receive hook enforces them.
+`git push -o neutrino-override="why"` gets past one, and the override is
+recorded. While a repo has rules its hook refuses pushes if neutrinod is down;
+without rules a push lands regardless. Required checks can be listed but block
+merging until CI exists.
+
+### Working copies
 
 Writes go through the `git` binary (Homebrew's, else Xcode's; `NEUTRINO_GIT`
 picks another), so hooks, signing and your identity apply, and git's own
@@ -108,8 +143,8 @@ cd apps && xcodegen generate && open Neutrino.xcodeproj
 
 It connects to neutrinod when it's running and shows the prototype's demo
 repository otherwise; it notices the daemon starting or stopping on its own.
-⌘O adds a repository, ⌘R reloads, ⌘1 to ⌘3 switch between Changes, History
-and Branches, ⌘F searches, ↑ and ↓ move through commits, ⌘⇧D gives the diff
+⌘O adds a repository, ⌘R reloads, ⌘1 to ⌘4 switch between Changes, History,
+Branches and Pull requests, ⌘F searches, ↑ and ↓ move through commits, ⌘⇧D gives the diff
 the full width. In Changes, tick a file to stage it, or click lines in its
 diff to pick them and stage, unstage or discard just those (⌘⇧S); each hunk
 has its own button; ⌘↩ commits.
@@ -167,6 +202,10 @@ checked.
   (`BatchMode`), so a key that needs a passphrase must be in the SSH agent.
 - Server: the TLS endpoint takes one message (pair or authenticate) before
   anything else; a client that sends more at once is disconnected.
+- Pull requests: each app request opens its own TLS connection; fine on a LAN,
+  slow over a poor link. Notes don't follow a file across a rename. Comparing
+  lists at most 250 commits. Mergeability is worked out on every read rather
+  than cached.
 - Status reads the index but doesn't write back refreshed stat data, so after
   a large checkout the first status re-hashes files that git would have
   marked clean.

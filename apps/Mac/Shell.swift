@@ -10,13 +10,14 @@ struct RootView: View {
             HStack(alignment: .top, spacing: 10) {
                 Sidebar().frame(width: 228)
                 Group {
-                    if model.repos.isEmpty, model.connection != .connecting {
+                    if model.repos.isEmpty, model.hostedRepos.isEmpty, model.connection != .connecting {
                         NoRepositories().island()
                     } else {
                         switch model.section {
                         case .changes: ChangesScreen()
                         case .history: HistoryScreen()
                         case .branches: BranchesScreen()
+                        case .pulls: PullsScreen()
                         }
                     }
                 }
@@ -185,6 +186,11 @@ struct Sidebar: View {
             NavRow(title: "History", icon: "clock.arrow.circlepath", selected: model.section == .history) { model.section = .history }
             NavRow(title: "Branches", icon: "arrow.triangle.branch", selected: model.section == .branches, count: model.branches.filter { $0.kind == .local }.count) {
                 model.section = .branches
+            }
+            NavRow(title: "Pull requests", icon: "arrow.triangle.pull", selected: model.section == .pulls,
+                   count: model.pullList.filter { $0.state == .open }.count,
+                   help: model.serverLink == nil ? "Pull requests live on your server. Pair with it first." : nil) {
+                model.section = .pulls
             }
 
             ServerSection()

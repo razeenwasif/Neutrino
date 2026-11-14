@@ -84,6 +84,10 @@ struct DiffBody: View {
     /// A button on each hunk header, e.g. "Stage hunk".
     var hunkAction: String? = nil
     var onHunk: ((Hunk) -> Void)? = nil
+    /// Unchanged lines can be clicked too (to leave a note on them).
+    var pickContext = false
+    /// Drawn under a line: its notes, say.
+    var footer: ((DiffLine) -> AnyView?)? = nil
 
     private func picked(_ l: DiffLine?) -> Bool {
         guard let l, let p = LinePick(l) else { return false }
@@ -139,13 +143,16 @@ struct DiffBody: View {
                         .background(N.accent.opacity(0.07))
                         .padding(.top, 6)
                     case let .line(_, l):
-                        UnifiedLine(line: l, picked: picked(l), onPick: onPick)
+                        UnifiedLine(line: l, picked: picked(l), onPick: onPick, pickContext: pickContext)
+                        if let view = footer?(l) { view }
                     case let .pair(_, a, b):
                         HStack(spacing: 0) {
-                            SideLine(line: a, number: a?.oldLine, isOld: true, picked: picked(a), onPick: onPick)
+                            SideLine(line: a, number: a?.oldLine, isOld: true, picked: picked(a), onPick: onPick, pickContext: pickContext)
                             Rectangle().fill(N.hairline).frame(width: 1)
-                            SideLine(line: b, number: b?.newLine, isOld: false, picked: picked(b), onPick: onPick)
+                            SideLine(line: b, number: b?.newLine, isOld: false, picked: picked(b), onPick: onPick, pickContext: pickContext)
                         }
+                        if let a, a.kind == .removed, let view = footer?(a) { view }
+                        if let b, let view = footer?(b) { view }
                     }
                 }
             }
@@ -167,7 +174,11 @@ private struct PickableLine: ViewModifier {
 
     func body(content: Content) -> some View {
         if let line, let onPick {
-            let side = line.kind == .added ? "Added line \(line.newLine ?? 0)" : "Removed line \(line.oldLine ?? 0)"
+            let side = switch line.kind {
+            case .added: "Added line \(line.newLine ?? 0)"
+            case .removed: "Removed line \(line.oldLine ?? 0)"
+            case .context: "Line \(line.newLine ?? 0)"
+            }
             content
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(side): \(line.text)")
@@ -218,10 +229,11 @@ private struct UnifiedLine: View {
     var line: DiffLine
     var picked = false
     var onPick: ((DiffLine) -> Void)? = nil
+    var pickContext = false
 
     var body: some View {
         let c = colors(line.kind)
-        let pickable = onPick != nil && line.kind != .context
+        let pickable = onPick != nil && (line.kind != .context || pickContext)
         HStack(spacing: 0) {
             Rectangle().fill(picked ? N.accent : .clear).frame(width: 3)
             Text(line.oldLine.map(String.init) ?? "").frame(width: 46, alignment: .trailing).foregroundStyle(N.faint)
@@ -238,7 +250,7 @@ private struct UnifiedLine: View {
         .background(picked ? N.accent.opacity(0.16) : c.bg)
         .contentShape(Rectangle())
         .onTapGesture { if pickable { onPick?(line) } }
-        .help(pickable ? (picked ? "Picked. Click to drop it." : "Click to pick this line") : "")
+        .help(pickable ? (pickContext ? "Click to leave a note on this line" : (picked ? "Picked. Click to drop it." : "Click to pick this line")) : "")
         .modifier(PickableLine(line: line, picked: picked, onPick: pickable ? onPick : nil))
     }
 }
@@ -249,6 +261,7 @@ private struct SideLine: View {
     var isOld: Bool
     var picked = false
     var onPick: ((DiffLine) -> Void)? = nil
+    var pickContext = false
 
     var body: some View {
         let c = line.map { colors($0.kind) } ?? (Color.white.opacity(0.015), N.faint, N.faint, .clear)
@@ -264,7 +277,7 @@ private struct SideLine: View {
         .overlay(alignment: .leading) { if picked { Rectangle().fill(N.accent).frame(width: 3) } }
         .clipped()
         .contentShape(Rectangle())
-        .onTapGesture { if let line, line.kind != .context { onPick?(line) } }
-        .modifier(PickableLine(line: line, picked: picked, onPick: line?.kind == .context ? nil : onPick))
+        .onTapGesture { if let line, line.kind != .context || pickContext { onPick?(line) } }
+        .modifier(PickableLine(line: line, picked: picked, onPick: line?.kind == .context && !pickContext ? nil : onPick))
     }
 }
