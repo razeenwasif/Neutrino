@@ -9,6 +9,9 @@
 //! starts and ends.
 
 pub mod runner;
+mod upkeep;
+mod vault;
+mod workspace;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,7 +23,7 @@ use anyhow::{Context, Result, bail};
 use neutrino_ci::expr::{self, Status};
 use neutrino_ci::{Event, Executor, Workflow};
 use neutrino_proto::{CiInfo, LogChunk, Run, RunState, WorkflowFile};
-use neutrino_store::NewJob;
+use neutrino_store::{NewJob, NewRun};
 use serde_json::{Map, Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Notify, mpsc, watch};
@@ -38,6 +41,14 @@ pub struct CiOptions {
     pub memory_mib: u64,
     /// How long a workflow's "minute" is: a minute, except in tests.
     pub minute: Duration,
+    /// Caches kept, at most, in MiB; the least recently used go first.
+    pub cache_mib: u64,
+    /// Logs and artifacts of finished runs are kept this many days.
+    pub retention_days: u32,
+    /// Where nightly database snapshots go (`<state>/backups` when unset).
+    pub backup_dir: Option<PathBuf>,
+    /// Snapshots kept.
+    pub backups_kept: usize,
 }
 
 impl std::fmt::Debug for CiOptions {
@@ -48,7 +59,16 @@ impl std::fmt::Debug for CiOptions {
 
 impl Default for CiOptions {
     fn default() -> Self {
-        CiOptions { runner: Runner::Graviton(Graviton { socket: runner::graviton_socket() }), cpus: 4, memory_mib: 6 * 1024, minute: Duration::from_secs(60) }
+        CiOptions {
+            runner: Runner::Graviton(Graviton { socket: runner::graviton_socket() }),
+            cpus: 4,
+            memory_mib: 6 * 1024,
+            minute: Duration::from_secs(60),
+            cache_mib: 10 * 1024,
+            retention_days: 30,
+            backup_dir: None,
+            backups_kept: 14,
+        }
     }
 }
 
@@ -57,6 +77,7 @@ struct Active {
     memory_mib: u64,
     cancel: watch::Sender<bool>,
     container: Option<String>,
+    services: Vec<String>,
 }
 
 pub struct Ci {
@@ -157,10 +178,25 @@ impl Daemon {
     #[allow(clippy::too_many_arguments)]
     fn create_run(&self, repo: &str, file: &str, parsed: Result<Workflow, neutrino_ci::Error>, event: &str, branch: Option<&str>, sha: &str, pull: Option<u32>) -> Result<i64> {
         let store = self.store()?;
+        let mut new = NewRun {
+            repo: repo.into(),
+            workflow: file.into(),
+            name: file.into(),
+            event: event.into(),
+            branch: branch.map(String::from),
+            sha: sha.into(),
+            pull,
+            ..Default::default()
+        };
         let wf = match parsed {
             Ok(wf) => wf,
-            Err(e) => return store.create_run(repo, file, file, event, branch, sha, pull, &[], &[], Some(&e.0)),
+            Err(e) => {
+                new.error = Some(e.0);
+                return store.create_run(&new, &[]);
+            }
         };
+        new.name = wf.name.clone();
+        new.warnings = wf.warnings.clone();
         let probe = Run {
             id: 0,
             repo: repo.into(),
@@ -177,11 +213,29 @@ impl Daemon {
             started_at: None,
             finished_at: None,
         };
-        let base = expr::Context::default().with("neutrino", run_context(&probe)).with("env", json!(wf.env));
+        let vars = store.variables_for(repo, "")?;
+        let base = expr::Context::default()
+            .with("neutrino", run_context(&probe))
+            .with("env", json!(wf.env))
+            .with("vars", Value::Object(vars.into_iter().map(|(k, v)| (k, json!(v))).collect()));
         let planned = match neutrino_ci::plan(&wf, &base) {
             Ok(p) => p,
-            Err(e) => return store.create_run(repo, file, &wf.name, event, branch, sha, pull, &[], &wf.warnings, Some(&format!("{file}: {e}"))),
+            Err(e) => {
+                new.error = Some(format!("{file}: {e}"));
+                return store.create_run(&new, &[]);
+            }
         };
+        let group = match &wf.concurrency {
+            Some(c) => match expr::interpolate(&c.group, &base) {
+                Ok(g) => Some((g, c.cancel_in_progress)),
+                Err(e) => {
+                    new.error = Some(format!("{file}: concurrency: {e}"));
+                    return store.create_run(&new, &[]);
+                }
+            },
+            None => None,
+        };
+        new.concurrency = group.as_ref().map(|(g, _)| g.clone());
         let jobs: Vec<NewJob> = planned
             .iter()
             .map(|p| {
@@ -195,13 +249,23 @@ impl Daemon {
                     needs: p.needs.clone(),
                     executor: def.runs_on.name().into(),
                     image: def.image.as_ref().map(|i| expr::interpolate(i, &cx).unwrap_or_else(|_| i.clone())),
-                    cpus: def.cpus,
-                    memory_mib: def.memory_mib,
+                    // Services share the job's budget.
+                    cpus: def.cpus + def.services.iter().map(|s| s.cpus).sum::<u32>(),
+                    memory_mib: def.memory_mib + def.services.iter().map(|s| s.memory_mib).sum::<u64>(),
                     steps: step_names(def, &cx),
+                    environment: def.environment.as_ref().map(|e| expr::interpolate(e, &cx).unwrap_or_else(|_| e.clone())),
+                    concurrency: def.concurrency.as_ref().map(|c| expr::interpolate(&c.group, &cx).unwrap_or_else(|_| c.group.clone())),
                 }
             })
             .collect();
-        store.create_run(repo, file, &wf.name, event, branch, sha, pull, &jobs, &wf.warnings, None)
+        let id = store.create_run(&new, &jobs)?;
+        // A new run in a group that cancels in progress stops the ones before it.
+        if let Some((g, true)) = &group {
+            for older in store.runs_in_group(repo, g, id)?.into_iter().filter(|o| *o < id) {
+                let _ = self.cancel(repo, older);
+            }
+        }
+        Ok(id)
     }
 
     /// Start the runs an event triggers. Returns their ids.
@@ -357,6 +421,30 @@ impl Daemon {
         Ok(LogChunk { job, offset, text, next, done })
     }
 
+    /// Part of an artifact. Only files recorded as a run's artifacts are served.
+    pub(crate) fn artifact_chunk(&self, repo_id: &str, run: i64, path: &str, offset: u64) -> Result<neutrino_proto::ArtifactChunk> {
+        use base64::Engine as _;
+        use std::io::{Read, Seek, SeekFrom};
+        let store = self.store()?;
+        if store.run(run)?.repo != repo_id {
+            bail!("run {run} isn't in {repo_id}");
+        }
+        let artifact = store
+            .artifacts(run)?
+            .into_iter()
+            .find(|a| format!("{}/{}", a.job, a.path) == path || a.path == path)
+            .with_context(|| format!("run {run} has no artifact {path}"))?;
+        let file = self.state_dir.join("artifacts").join(run.to_string()).join(&artifact.job).join(&artifact.path);
+        let days = self.ci()?.options.retention_days;
+        let mut f = std::fs::File::open(&file).with_context(|| format!("{path} is gone (logs and artifacts are kept {days} days)"))?;
+        let size = f.metadata()?.len();
+        f.seek(SeekFrom::Start(offset.min(size)))?;
+        let mut buf = Vec::new();
+        f.take(512 * 1024).read_to_end(&mut buf)?;
+        let next = offset.min(size) + buf.len() as u64;
+        Ok(neutrino_proto::ArtifactChunk { path: path.into(), offset, size, data: base64::engine::general_purpose::STANDARD.encode(&buf), done: next >= size })
+    }
+
     pub(crate) async fn ci_info(&self) -> Result<CiInfo> {
         let ci = self.ci()?;
         let (used_cpus, used_memory_mib) = ci.used();
@@ -389,7 +477,32 @@ impl Daemon {
             this.recover().await;
             this.reap().await;
             let mut last_reap = Instant::now();
+            let mut last_prune: Option<Instant> = None;
+            let mut last_minute = neutrino_store::now().div_euclid(60);
             loop {
+                // Schedules, once per minute of wall-clock time.
+                let minute = neutrino_store::now().div_euclid(60);
+                if minute != last_minute {
+                    last_minute = minute;
+                    let t = Arc::clone(&this);
+                    let _ = tokio::task::spawn_blocking(move || t.fire_schedules(minute * 60)).await;
+                }
+                if last_prune.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                    last_prune = Some(Instant::now());
+                    let t = Arc::clone(&this);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Err(e) = t.prune() {
+                            eprintln!("CI upkeep: {e:#}");
+                        }
+                        if t.backup_due() {
+                            match t.backup_now() {
+                                Ok(p) => eprintln!("database snapshot: {}", p.display()),
+                                Err(e) => eprintln!("database snapshot failed: {e:#}"),
+                            }
+                        }
+                    })
+                    .await;
+                }
                 if let Err(e) = this.schedule() {
                     eprintln!("CI scheduler: {e:#}");
                 }
@@ -434,7 +547,7 @@ impl Daemon {
     /// Remove containers and workspaces no live job owns.
     async fn reap(self: &Arc<Self>) {
         let Some(ci) = self.ci.as_ref() else { return };
-        let live: Vec<String> = ci.active.lock().unwrap().values().filter_map(|a| a.container.clone()).collect();
+        let live: Vec<String> = ci.active.lock().unwrap().values().flat_map(|a| a.container.iter().chain(a.services.iter()).cloned().collect::<Vec<_>>()).collect();
         let pending_names: Vec<i64> = ci.active.lock().unwrap().keys().copied().collect();
         if let Ok(owned) = ci.options.runner.owned().await {
             for c in owned {
@@ -536,6 +649,35 @@ impl Daemon {
                 self.settled(q.run, &run.repo);
                 continue;
             }
+            // Concurrency: an older run in the same group goes first, and a
+            // job's group runs one job at a time.
+            if let Some(g) = &q.run_concurrency {
+                if store.runs_in_group(&run.repo, g, q.run)?.into_iter().any(|o| o < q.run) {
+                    continue;
+                }
+            }
+            if let Some(g) = &q.concurrency {
+                if store.job_group_busy(&run.repo, g, q.id)? {
+                    continue;
+                }
+            }
+            // Environments: which branches may deploy, and whether someone has to say yes.
+            if let Some(env) = &q.environment {
+                if let Some(e) = store.environment(&run.repo, env)? {
+                    let allowed = e.branches.is_empty() || run.branch.as_deref().is_some_and(|b| e.branches.iter().any(|p| neutrino_ci::glob(p, b)));
+                    if !allowed {
+                        let why = format!("{} can't deploy to {env}; only {} can", run.branch.as_deref().unwrap_or("this ref"), e.branches.join(", "));
+                        store.finish_job(q.id, RunState::Failure, Some(&why))?;
+                        self.settled(q.run, &run.repo);
+                        continue;
+                    }
+                    if e.require_approval && q.approved_by.is_none() {
+                        store.set_waiting(q.id)?;
+                        self.runs_changed(&run.repo);
+                        continue;
+                    }
+                }
+            }
             if def.runs_on != Executor::Graviton {
                 store.finish_job(q.id, RunState::Failure, Some(&format!("runs-on: {} arrives with milestone 7; use graviton for now", def.runs_on.name())))?;
                 self.settled(q.run, &run.repo);
@@ -558,7 +700,7 @@ impl Daemon {
             let name = format!("{}{}-{}-{}", runner::CONTAINER_PREFIX, q.run, q.id, q.attempt);
             store.start_job(q.id, &name)?;
             let (cancel, cancelled) = watch::channel(false);
-            ci.active.lock().unwrap().insert(q.id, Active { cpus: q.cpus, memory_mib: q.memory_mib, cancel, container: None });
+            ci.active.lock().unwrap().insert(q.id, Active { cpus: q.cpus, memory_mib: q.memory_mib, cancel, container: None, services: Vec::new() });
             self.runs_changed(&run.repo);
             let this = Arc::clone(self);
             tokio::spawn(async move {
@@ -622,6 +764,114 @@ impl Daemon {
             return Ok(());
         }
 
+        // Secrets and variables for this repo and environment. Values live only
+        // in memory and in each step's own environment; the log masks them.
+        let env_name = q.environment.clone().unwrap_or_default();
+        let secrets = match self.secrets_for_job(&run.repo, &env_name) {
+            Ok(s) => s,
+            Err(e) => {
+                log.note(&format!("can't open this job's secrets: {e:#}")).await?;
+                store.finish_job(q.id, RunState::Failure, Some("secrets unavailable"))?;
+                let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
+                return Ok(());
+            }
+        };
+        log.masker = Some(neutrino_vault::Masker::new(secrets.iter().map(|(_, v)| v.as_str())));
+        let vars = store.variables_for(&run.repo, &env_name)?;
+        cx = cx
+            .with("secrets", Value::Object(secrets.iter().map(|(k, v)| (k.clone(), json!(v))).collect()))
+            .with("vars", Value::Object(vars.into_iter().map(|(k, v)| (k, json!(v))).collect()));
+        cx.root = Some(workspace.clone());
+        if let Some(e) = &q.environment {
+            log.note(&format!("deploying to {e}{}", q.approved_by.as_ref().map(|b| format!(", approved by {b}")).unwrap_or_default())).await?;
+        }
+
+        // Caches: the exact key, else the newest match for a restore key.
+        let mut caches: Vec<(String, Vec<String>, workspace::Restored)> = Vec::new();
+        for c in &def.cache {
+            let key = match expr::interpolate(&c.key, &cx) {
+                Ok(k) if !k.trim().is_empty() => k,
+                Ok(_) => {
+                    log.note("a cache key came out empty; skipping that cache").await?;
+                    continue;
+                }
+                Err(e) => {
+                    log.note(&format!("cache key: {e}")).await?;
+                    continue;
+                }
+            };
+            let mut found = if store.use_cache(&run.repo, &key)? { Some((key.clone(), workspace::Restored::Hit)) } else { None };
+            if found.is_none() {
+                for prefix in &c.restore_keys {
+                    let prefix = expr::interpolate(prefix, &cx).unwrap_or_else(|_| prefix.clone());
+                    if let Some(k) = store.cache_with_prefix(&run.repo, &prefix)? {
+                        store.use_cache(&run.repo, &k)?;
+                        found = Some((k.clone(), workspace::Restored::From(k)));
+                        break;
+                    }
+                }
+            }
+            let outcome = match found {
+                Some((from, outcome)) => {
+                    let dir = workspace::cache_dir(&self.state_dir, &run.repo, &from);
+                    let (paths, ws) = (c.paths.clone(), workspace.clone());
+                    match tokio::task::spawn_blocking(move || workspace::restore(&dir, &paths, &ws)).await? {
+                        Ok(()) => {
+                            log.note(&match &outcome {
+                                workspace::Restored::Hit => format!("cache {key} restored"),
+                                workspace::Restored::From(k) => format!("cache {key} not found; restored {k}"),
+                                workspace::Restored::Miss => unreachable!(),
+                            })
+                            .await?;
+                            outcome
+                        }
+                        Err(e) => {
+                            log.note(&format!("couldn't restore cache {from}: {e:#}")).await?;
+                            workspace::Restored::Miss
+                        }
+                    }
+                }
+                None => {
+                    log.note(&format!("cache {key} not found")).await?;
+                    workspace::Restored::Miss
+                }
+            };
+            caches.push((key, c.paths.clone(), outcome));
+        }
+
+        // Services, started first so they're up when the steps begin.
+        let mut services: Vec<String> = Vec::new();
+        let mut service_env: Vec<(String, String)> = Vec::new();
+        for svc in &def.services {
+            let sb = runner::ServiceBox {
+                name: format!("{name}-{}", svc.name),
+                image: svc.image.clone(),
+                env: svc.env.iter().map(|(k, v)| (k.clone(), expr::interpolate(v, &cx).unwrap_or_else(|_| v.clone()))).collect(),
+                cpus: svc.cpus,
+                memory_mib: svc.memory_mib,
+            };
+            log.note(&format!("starting service {} ({})", svc.name, svc.image)).await?;
+            match runner.start_service(&sb).await {
+                Ok((id, host)) => {
+                    service_env.push((format!("{}_HOST", svc.name.to_ascii_uppercase()), host));
+                    services.push(id);
+                }
+                Err(e) => {
+                    log.note(&format!("couldn't start service {}: {e:#}", svc.name)).await?;
+                    for id in &services {
+                        runner.stop(id).await;
+                        runner.remove(id).await;
+                    }
+                    store.finish_job(q.id, RunState::Failure, Some(&format!("service {} didn't start", svc.name)))?;
+                    let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
+                    return Ok(());
+                }
+            }
+        }
+        if let Some(a) = ci.active.lock().unwrap().get_mut(&q.id) {
+            a.services = services.clone();
+        }
+
         // The container.
         let image = def.image.clone().map(|i| expr::interpolate(&i, &cx).unwrap_or(i)).unwrap_or_default();
         log.note(&format!("starting {image} with {} CPUs and {} MiB on {}", def.cpus, def.memory_mib, runner.name())).await?;
@@ -639,6 +889,10 @@ impl Daemon {
                 // It may have started after all; the reaper catches it otherwise.
                 runner.stop(&name).await;
                 runner.remove(&name).await;
+                for id in &services {
+                    runner.stop(id).await;
+                    runner.remove(id).await;
+                }
                 let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
                 return Ok(());
             }
@@ -664,6 +918,7 @@ impl Daemon {
         if let Some(n) = run.pull {
             env.push(("NEUTRINO_PULL_REQUEST".into(), n.to_string()));
         }
+        env.extend(service_env.iter().cloned());
         let mut env_cx = Map::new();
         for (k, v) in cx.values.get("env").and_then(|v| v.as_object()).cloned().unwrap_or_default() {
             env_cx.insert(k, v);
@@ -761,6 +1016,7 @@ impl Daemon {
                 }
             }
             let result = exec.await?;
+            log.flush().await?;
             let state = if let Some(why) = &why_stopped {
                 stopped = true;
                 log.note(why).await?;
@@ -792,11 +1048,6 @@ impl Daemon {
             self.runs_changed(&run.repo);
         }
 
-        // Teardown runs whatever happened.
-        runner.stop(&container).await;
-        runner.remove(&container).await;
-        let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
-
         let state = if was_cancelled {
             RunState::Cancelled
         } else if failed && !def.continue_on_error {
@@ -804,6 +1055,49 @@ impl Daemon {
         } else {
             RunState::Success
         };
+
+        // Artifacts, whatever the steps did (a failed build's logs are worth keeping); not after a cancel.
+        if !def.artifacts.is_empty() && !was_cancelled {
+            let dest = self.state_dir.join("artifacts").join(run.id.to_string()).join(&q.key);
+            let (ws, patterns) = (workspace.clone(), def.artifacts.clone());
+            match tokio::task::spawn_blocking(move || workspace::collect(&ws, &patterns, &dest)).await? {
+                Ok(kept) if kept.is_empty() => log.note("no files matched the artifacts").await?,
+                Ok(kept) => {
+                    let total: u64 = kept.iter().map(|(_, n)| n).sum();
+                    for (path, size) in &kept {
+                        store.add_artifact(run.id, &q.key, path, *size)?;
+                    }
+                    log.note(&format!("kept {} artifact file{} ({} KB)", kept.len(), if kept.len() == 1 { "" } else { "s" }, total.div_ceil(1024))).await?;
+                }
+                Err(e) => log.note(&format!("couldn't keep the artifacts: {e:#}")).await?,
+            }
+        }
+        // Caches are saved after a job that passed, unless they were an exact hit.
+        if state == RunState::Success {
+            for (key, paths, outcome) in &caches {
+                if *outcome == workspace::Restored::Hit {
+                    continue;
+                }
+                let dir = workspace::cache_dir(&self.state_dir, &run.repo, key);
+                let (p, ws) = (paths.clone(), workspace.clone());
+                match tokio::task::spawn_blocking(move || workspace::save(&dir, &p, &ws)).await? {
+                    Ok(size) => {
+                        store.save_cache(&run.repo, key, size)?;
+                        log.note(&format!("saved cache {key} ({} KB)", size.div_ceil(1024))).await?;
+                    }
+                    Err(e) => log.note(&format!("couldn't save cache {key}: {e:#}")).await?,
+                }
+            }
+        }
+
+        // Teardown runs whatever happened.
+        runner.stop(&container).await;
+        runner.remove(&container).await;
+        for id in &services {
+            runner.stop(id).await;
+            runner.remove(id).await;
+        }
+        let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
         log.note(&format!("job {}", state.name())).await?;
         store.finish_job(q.id, state, job_error.as_deref())?;
         Ok(())
@@ -815,16 +1109,35 @@ struct Log {
     file: tokio::fs::File,
     offset: u64,
     at_line_start: bool,
+    /// Replaces secrets in everything written.
+    masker: Option<neutrino_vault::Masker>,
 }
 
 impl Log {
     async fn open(path: &Path) -> Result<Log> {
         let file = tokio::fs::OpenOptions::new().create(true).append(true).open(path).await.with_context(|| format!("opening {}", path.display()))?;
         let offset = file.metadata().await?.len();
-        Ok(Log { file, offset, at_line_start: true })
+        Ok(Log { file, offset, at_line_start: true, masker: None })
     }
 
+    /// Output from a step: masked, so part of it may be held back until the next write.
     async fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        let masked = match self.masker.as_mut() {
+            Some(m) => m.push(bytes),
+            None => bytes.to_vec(),
+        };
+        self.raw(&masked).await
+    }
+
+    /// Whatever the masker held back.
+    async fn flush(&mut self) -> Result<()> {
+        if let Some(rest) = self.masker.as_mut().map(|m| m.flush()) {
+            self.raw(&rest).await?;
+        }
+        Ok(())
+    }
+
+    async fn raw(&mut self, bytes: &[u8]) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
@@ -836,8 +1149,10 @@ impl Log {
 
     /// A line from Neutrino itself, marked so the app can tell it apart.
     async fn note(&mut self, text: &str) -> Result<()> {
+        self.flush().await?;
+        let text = self.masker.as_ref().map(|m| m.mask(text)).unwrap_or_else(|| text.to_string());
         let lead = if self.at_line_start { "" } else { "\n" };
-        self.write(format!("{lead}\u{25b8} {text}\n").as_bytes()).await
+        self.raw(format!("{lead}\u{25b8} {text}\n").as_bytes()).await
     }
 }
 

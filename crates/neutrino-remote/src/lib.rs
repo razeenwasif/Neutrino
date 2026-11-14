@@ -178,17 +178,18 @@ impl Remote {
         Ok(Response::Paired { token, device_id, host: self.host.clone() })
     }
 
-    fn authenticate(&self, token: &str) -> bool {
+    /// The name of the device this token belongs to, if any.
+    fn authenticate(&self, token: &str) -> Option<String> {
         let hash = sha256_hex(token.as_bytes());
         let mut state = self.state.lock().unwrap();
-        let mut found = false;
+        let mut found = None;
         for d in state.devices.iter_mut() {
             if constant_time_eq(d.token_sha256.as_bytes(), hash.as_bytes()) {
                 d.last_seen = Some(now_secs());
-                found = true;
+                found = Some(d.name.clone());
             }
         }
-        if found {
+        if found.is_some() {
             let devices = state.devices.clone();
             drop(state);
             self.save(&devices);
@@ -214,7 +215,8 @@ impl Remote {
     /// TLS handshake, then the first message: pair or authenticate. Returns the
     /// session once it's authenticated, or `None` when the connection is done
     /// (pairing answered, or refused).
-    pub async fn accept(&self, tcp: tokio::net::TcpStream, role: &str) -> Result<Option<Session>> {
+    /// Hand back the session and the paired device's name once it has authenticated.
+    pub async fn accept(&self, tcp: tokio::net::TcpStream, role: &str) -> Result<Option<(Session, String)>> {
         let mut tls = tokio::time::timeout(Duration::from_secs(10), self.acceptor.accept(tcp)).await.context("TLS handshake timed out")??;
         let mut first = String::new();
         {
@@ -230,14 +232,16 @@ impl Remote {
         }
         let (id, request) = decode_request(first.trim());
         let id = id.unwrap_or(0);
-        let (reply, authenticated) = match request {
-            Ok(Request::Pair { code, device }) => (self.pair(&code, &device).unwrap_or_else(|e| Response::Error { message: e.to_string() }), false),
-            Ok(Request::Auth { token }) if self.authenticate(&token) => (Response::Authenticated { host: self.host.clone(), role: role.to_string() }, true),
-            Ok(Request::Auth { .. }) => (Response::Error { message: "this device isn't paired with this server any more".into() }, false),
-            _ => (Response::Error { message: "pair or authenticate first".into() }, false),
+        let (reply, device) = match request {
+            Ok(Request::Pair { code, device }) => (self.pair(&code, &device).unwrap_or_else(|e| Response::Error { message: e.to_string() }), None),
+            Ok(Request::Auth { token }) => match self.authenticate(&token) {
+                Some(name) => (Response::Authenticated { host: self.host.clone(), role: role.to_string() }, Some(name)),
+                None => (Response::Error { message: "this device isn't paired with this server any more".into() }, None),
+            },
+            _ => (Response::Error { message: "pair or authenticate first".into() }, None),
         };
         tls.write_all(format!("{}\n", encode_response(id, &reply)).as_bytes()).await?;
-        Ok(if authenticated { Some(tls) } else { None })
+        Ok(device.map(|d| (tls, d)))
     }
 }
 
@@ -404,17 +408,17 @@ mod tests {
         let typed = format!("{}-{}", &info.code[..4].to_lowercase(), &info.code[4..]);
         let Response::Paired { token, device_id, .. } = remote.pair(&typed, "MacBook").unwrap() else { panic!() };
         assert!(remote.pair(&info.code, "again").is_err(), "codes work once");
-        assert!(remote.authenticate(&token));
-        assert!(!remote.authenticate("not-a-token"));
+        assert!(remote.authenticate(&token).is_some());
+        assert!(remote.authenticate("not-a-token").is_none());
 
         // Tokens survive a restart (only their hashes are stored), and revoking stops them.
         let stored = fs::read_to_string(dir.path().join("remote/devices.json")).unwrap();
         assert!(!stored.contains(&token));
         let again = Remote::open(dir.path(), 0, false).unwrap();
         assert_eq!(again.fingerprint, remote.fingerprint, "the certificate is kept");
-        assert!(again.authenticate(&token));
+        assert!(again.authenticate(&token).is_some());
         again.revoke(&device_id).unwrap();
-        assert!(!again.authenticate(&token));
+        assert!(again.authenticate(&token).is_none());
     }
 
     #[test]

@@ -151,7 +151,9 @@ async fn runs_from_pushes_and_pull_requests() {
             memory_mib: 8192,
             // A workflow minute lasts a second here.
             minute: Duration::from_secs(1),
+            ..Default::default()
         },
+        vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
     };
     let daemon = neutrinod::Daemon::with(&root.join("server"), options).unwrap();
     let d = Arc::clone(&daemon);
@@ -313,6 +315,7 @@ async fn graviton() {
         remote_port: None,
         advertise: false,
         ci: neutrinod::ci::CiOptions { cpus: 2, memory_mib: 1024, ..Default::default() },
+        vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
     };
     let daemon = neutrinod::Daemon::with(&root.join("server"), options).unwrap();
     let d = Arc::clone(&daemon);

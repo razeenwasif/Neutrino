@@ -8,7 +8,7 @@ extension AppModel {
     var selectedJob: RunJob? { runDetail?.jobs.first { $0.id == runJobID } }
 
     /// Find the hosted repo for the selection; says why not when there isn't one.
-    private func hostedTarget() async -> String? {
+    func hostedTarget() async -> String? {
         guard pullService != nil else {
             pullRepo = nil
             pullRepoProblem = serverLink == nil
@@ -18,7 +18,7 @@ extension AppModel {
         }
         guard let hosted = await resolvePullRepo() else {
             pullRepo = nil
-            pullRepoProblem = "\(repo?.name ?? "This repository") isn't on \(serverLink?.name ?? "the server") yet. Publish it from the sidebar to run its workflows."
+            pullRepoProblem = "\(repo?.name ?? "This repository") isn't on \(serverLink?.name ?? "the server") yet. Publish it from the sidebar to use its pull requests, runs and secrets."
             return nil
         }
         if pullRepo != hosted {

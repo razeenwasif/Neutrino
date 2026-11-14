@@ -69,19 +69,32 @@ pub struct Options {
     pub advertise: bool,
     /// Server only: where CI jobs run and what they may use.
     pub ci: ci::CiOptions,
+    /// Server only: where the vault's master key is kept.
+    pub vault: neutrino_vault::KeyStore,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { role: Role::Workstation, remote_port: None, advertise: false, ci: ci::CiOptions::default() }
+        Options { role: Role::Workstation, remote_port: None, advertise: false, ci: ci::CiOptions::default(), vault: neutrino_vault::KeyStore::Keychain }
     }
 }
 
 /// Who a connection is: this Mac's own user, or a paired device over TLS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     Local,
-    Remote,
+    /// The device's name.
+    Remote(String),
+}
+
+impl Scope {
+    /// How an approval records who gave it.
+    fn who(&self) -> String {
+        match self {
+            Scope::Local => "the server".into(),
+            Scope::Remote(device) => device.clone(),
+        }
+    }
 }
 
 /// What a paired device may ask: reading hosted repos, creating one, and
@@ -119,6 +132,19 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::DispatchRun { .. }
             | Request::Workflows { .. }
             | Request::CiInfo
+            | Request::VaultInfo
+            | Request::ListSecrets { .. }
+            | Request::SetSecret { .. }
+            | Request::DeleteSecret { .. }
+            | Request::ListVariables { .. }
+            | Request::SetVariable { .. }
+            | Request::DeleteVariable { .. }
+            | Request::ListEnvironments { .. }
+            | Request::SetEnvironment { .. }
+            | Request::DeleteEnvironment { .. }
+            | Request::ApproveJob { .. }
+            | Request::ListArtifacts { .. }
+            | Request::ArtifactData { .. }
             | Request::Subscribe
             | Request::Cancel { .. }
     )
@@ -139,6 +165,8 @@ pub struct Daemon {
     store: Option<neutrino_store::Store>,
     /// The CI scheduler; the server's only.
     ci: Option<ci::Ci>,
+    /// Secrets' key; the server's only.
+    vault: Option<neutrino_vault::Vault>,
     /// The socket hooks call back on; set by `serve`.
     socket: Mutex<Option<PathBuf>>,
     /// The TLS port actually bound (the option may be 0 for "any").
@@ -165,9 +193,14 @@ impl Daemon {
             Role::Server => Some(ci::Ci::new(options.ci.clone())),
             Role::Workstation => None,
         };
+        let vault = match options.role {
+            Role::Server => Some(neutrino_vault::Vault::new(options.vault.clone())),
+            Role::Workstation => None,
+        };
         Ok(Arc::new(Daemon {
             store,
             ci,
+            vault,
             state_dir: state_dir.to_path_buf(),
             registry: Registry::load(state_dir)?,
             diffs: DiffCache::default(),
@@ -458,6 +491,53 @@ impl Daemon {
             Request::Workflows { repo: id, branch } => Response::Workflows(self.workflow_files(&id, &branch)?),
             Request::CiInfo => bail!("CI info is answered before this"),
 
+            // Vault, environments, approvals, artifacts
+            Request::VaultInfo => Response::Vault(self.vault_info()?),
+            Request::VaultSetup => Response::RecoveryCode { code: self.vault()?.setup()? },
+            Request::VaultRecover { code } => {
+                self.vault()?.recover(&code)?;
+                Response::Vault(self.vault_info()?)
+            }
+            Request::ListSecrets { scope } => Response::Secrets(self.secrets(&scope)?),
+            Request::SetSecret { scope, name, value } => self.set_secret(&scope, &name, &value)?,
+            Request::DeleteSecret { scope, name } => {
+                let s = neutrino_store::Scope::from(&scope)?;
+                self.store()?.delete_secret(&s, &name)?;
+                Response::Secrets(self.store()?.secrets(&s)?)
+            }
+            Request::ListVariables { scope } => Response::Variables(self.store()?.variables(&neutrino_store::Scope::from(&scope)?)?),
+            Request::SetVariable { scope, name, value } => {
+                let s = neutrino_store::Scope::from(&scope)?;
+                if !s.repo.is_empty() {
+                    self.registry.get(&s.repo)?;
+                }
+                self.store()?.set_variable(&s, &name, &value)?;
+                Response::Variables(self.store()?.variables(&s)?)
+            }
+            Request::DeleteVariable { scope, name } => {
+                let s = neutrino_store::Scope::from(&scope)?;
+                self.store()?.delete_variable(&s, &name)?;
+                Response::Variables(self.store()?.variables(&s)?)
+            }
+            Request::ListEnvironments { repo: id } => {
+                self.registry.get(&id)?;
+                Response::Environments(self.store()?.environments(&id)?)
+            }
+            Request::SetEnvironment { environment } => self.set_environment(&environment)?,
+            Request::DeleteEnvironment { repo: id, name } => {
+                self.store()?.delete_environment(&id, &name)?;
+                Response::Environments(self.store()?.environments(&id)?)
+            }
+            Request::ApproveJob { .. } => bail!("approvals are answered by the connection"),
+            Request::ListArtifacts { repo: id, run } => {
+                if self.store()?.run(run)?.repo != id {
+                    bail!("run {run} isn't in {id}");
+                }
+                Response::Artifacts(self.store()?.artifacts(run)?)
+            }
+            Request::ArtifactData { repo: id, run, path, offset } => Response::ArtifactChunk(self.artifact_chunk(&id, run, &path, offset)?),
+            Request::Backup => Response::Done { output: format!("{}", self.backup_now()?.display()) },
+
             // Pairing
             Request::PairBegin => Response::Pairing(self.pairing()?.begin_pairing()?),
             Request::ListDevices => Response::Devices(self.pairing()?.devices()),
@@ -518,8 +598,19 @@ where
             }
         };
         let id = id.unwrap_or(0);
-        if scope == Scope::Remote && !allowed_remotely(&request) {
+        if matches!(scope, Scope::Remote(_)) && !allowed_remotely(&request) {
             let _ = tx.send(encode_response(id, &Response::Error { message: "only available on the server itself".into() })).await;
+            continue;
+        }
+        // Approvals record who gave them, which only the connection knows.
+        if let Request::ApproveJob { repo, job, approve } = &request {
+            let (d, who, (repo, job, approve)) = (Arc::clone(&daemon), scope.who(), (repo.clone(), *job, *approve));
+            let response = tokio::task::spawn_blocking(move || d.approve(&repo, job, approve, &who))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .and_then(|r| r)
+                .unwrap_or_else(|e| Response::Error { message: format!("{e:#}") });
+            let _ = tx.send(encode_response(id, &response)).await;
             continue;
         }
         if let Request::Cancel { id: target } = request {
@@ -580,9 +671,9 @@ async fn serve_remote(daemon: Arc<Daemon>, remote: Arc<Remote>, listener: tokio:
         let (daemon, remote) = (Arc::clone(&daemon), Arc::clone(&remote));
         tokio::spawn(async move {
             match remote.accept(tcp, daemon.options.role.name()).await {
-                Ok(Some(session)) => {
+                Ok(Some((session, device))) => {
                     let (read, write) = tokio::io::split(session);
-                    connection(daemon, read, write, Scope::Remote).await;
+                    connection(daemon, read, write, Scope::Remote(device)).await;
                 }
                 Ok(None) => {}
                 Err(e) => eprintln!("remote {peer}: {e:#}"),

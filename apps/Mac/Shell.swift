@@ -19,6 +19,7 @@ struct RootView: View {
                         case .branches: BranchesScreen()
                         case .pulls: PullsScreen()
                         case .runs: RunsScreen()
+                        case .secrets: SecretsScreen()
                         }
                     }
                 }
@@ -197,6 +198,10 @@ struct Sidebar: View {
                    count: model.runList.filter { !$0.state.finished }.count,
                    help: model.serverLink == nil ? "CI runs on your server. Pair with it first." : nil) {
                 model.section = .runs
+            }
+            NavRow(title: "Secrets", icon: "key", selected: model.section == .secrets,
+                   help: model.serverLink == nil ? "Secrets live on your server. Pair with it first." : nil) {
+                model.section = .secrets
             }
 
             ServerSection()

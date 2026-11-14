@@ -255,3 +255,22 @@ let runLine = #"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number"
     #expect(missingChecks(["ci", "lint"], in: [ok]) == ["lint"])
     #expect(missingChecks(["ci.yml"], in: [ok]).isEmpty)
 }
+
+@Test func vaultWire() throws {
+    let set = try json(Wire.line(id: 1, .setSecret(scope: VaultScope(repo: "app", environment: "prod"), name: "TOKEN", value: "v")))
+    #expect(set == ["id": 1, "method": "set_secret", "params": ["scope": ["repo": "app", "environment": "prod"], "name": "TOKEN", "value": "v"]] as NSDictionary)
+    let global = try json(Wire.line(id: 2, .listSecrets(scope: VaultScope())))
+    #expect(global == ["id": 2, "method": "list_secrets", "params": ["scope": [:]]] as NSDictionary)
+    let env = try json(Wire.line(id: 3, .setEnvironment(DeployEnvironment(repo: "app", name: "prod", requireApproval: true, branches: ["main"]))))
+    #expect(env == ["id": 3, "method": "set_environment", "params": ["environment": ["repo": "app", "name": "prod", "require_approval": true, "branches": ["main"]]]] as NSDictionary)
+    let approve = try json(Wire.line(id: 4, .approveJob(repo: "app", job: 9, approve: false)))
+    #expect(approve == ["id": 4, "method": "approve_job", "params": ["repo": "app", "job": 9, "approve": false]] as NSDictionary)
+    guard case let .secrets(list) = try Wire.decode(Data(#"{"id":1,"type":"secrets","data":[{"scope":{"repo":"app","environment":null},"name":"TOKEN","updated_at":5}]}"#.utf8)).1 else {
+        Issue.record("not secrets"); return
+    }
+    #expect(list[0].scope == VaultScope(repo: "app") && list[0].scope.label == "app")
+    guard case let .run(d) = try Wire.decode(Data(#"{"id":1,"type":"run","data":{"run":{"id":1,"repo":"app","number":1,"workflow":"ci.yml","name":"ci","event":"push","branch":"main","sha":"a","pull":null,"state":"waiting","error":null,"created_at":0,"started_at":null,"finished_at":null},"jobs":[{"id":2,"run":1,"key":"deploy","name":"deploy","executor":"graviton","image":"x","state":"waiting","error":null,"needs":[],"environment":"prod","approved_by":null,"attempt":1,"started_at":null,"finished_at":null,"steps":[]}],"warnings":[]}}"#.utf8)).1 else {
+        Issue.record("not a run"); return
+    }
+    #expect(d.run.state == .waiting && !d.run.state.finished && d.jobs[0].environment == "prod")
+}

@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use neutrino_proto::{
-    Area, BranchRule, ChangeStatus, Head, LineKind, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, RunDetail, RunState, Side, WorkingStatus,
+    Area, BranchRule, ChangeStatus, Head, LineKind, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, RunDetail, RunState, Side, VaultScope, WorkingStatus,
     decode_response, encode_request,
 };
 
@@ -150,6 +150,96 @@ enum Cmd {
     },
     /// Server: what CI is doing, and whether Graviton answers.
     Ci,
+    /// Server: the vault's key: status, `setup` (once) or `recover CODE`.
+    Vault {
+        #[command(subcommand)]
+        action: Option<VaultCmd>,
+    },
+    /// Server: secrets for workflows. Values go in, never come out.
+    #[command(subcommand)]
+    Secret(SecretCmd),
+    /// Server: variables for workflows (`vars.NAME`).
+    #[command(subcommand)]
+    Var(VarCmd),
+    /// Server: deployment environments of a hosted repository.
+    #[command(subcommand)]
+    Env(EnvCmd),
+    /// Server: snapshot the database now.
+    Backup,
+}
+
+/// Where a secret or variable applies: this repo (default), every repo, or one environment.
+#[derive(clap::Args)]
+struct ScopeArgs {
+    /// Every repository.
+    #[arg(long, conflicts_with = "env")]
+    global: bool,
+    /// Only jobs deploying to this environment.
+    #[arg(long)]
+    env: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum VaultCmd {
+    /// Create the key and print its recovery code, once.
+    Setup,
+    /// Put the key back from a recovery code (a new server, say).
+    Recover { code: String },
+}
+
+#[derive(Subcommand)]
+enum SecretCmd {
+    List {
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+    /// Set NAME; the value is read from standard input (typed without echo).
+    Set {
+        name: String,
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+    Rm {
+        name: String,
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum VarCmd {
+    List {
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+    Set {
+        name: String,
+        value: String,
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+    Rm {
+        name: String,
+        #[command(flatten)]
+        scope: ScopeArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnvCmd {
+    List,
+    /// Add an environment, or change one.
+    Set {
+        name: String,
+        /// Jobs wait until someone approves them.
+        #[arg(long)]
+        approval: bool,
+        /// A branch (or pattern) that may deploy here; repeat for more. Default: any.
+        #[arg(long = "branch")]
+        branches: Vec<String>,
+    },
+    /// Remove it, with its secrets and variables.
+    Rm { name: String },
 }
 
 #[derive(Subcommand)]
@@ -168,6 +258,29 @@ enum RunCmd {
     Cancel { number: u32 },
     /// The same workflow on the same commit again.
     Rerun { number: u32 },
+    /// Let a job waiting on its environment run.
+    Approve {
+        number: u32,
+        /// The job (its key). Default: the one that's waiting.
+        #[arg(long, short = 'j')]
+        job: Option<String>,
+    },
+    /// Turn a waiting job down.
+    Reject {
+        number: u32,
+        #[arg(long, short = 'j')]
+        job: Option<String>,
+    },
+    /// Files the run kept.
+    Artifacts { number: u32 },
+    /// Save an artifact (JOB/PATH, as `artifacts` lists it).
+    Download {
+        number: u32,
+        path: String,
+        /// Where to save it. Default: its file name, here.
+        #[arg(long, short = 'o')]
+        out: Option<PathBuf>,
+    },
     /// Start a workflow that has workflow_dispatch.
     Start {
         workflow: String,
@@ -770,6 +883,99 @@ fn main() -> Result<()> {
                 r => return Err(unexpected(r)),
             }
         }
+        Cmd::Vault { action } => {
+            let request = match action {
+                None => Request::VaultInfo,
+                Some(VaultCmd::Setup) => Request::VaultSetup,
+                Some(VaultCmd::Recover { code }) => Request::VaultRecover { code },
+            };
+            match c.call(request)? {
+                Response::Vault(v) => {
+                    if v.set_up {
+                        writeln!(out, "The vault is set up; its key is in the {}.", if v.key_store == "keychain" { "login Keychain" } else { "key file" })?;
+                    } else {
+                        writeln!(out, "The vault isn't set up. Run `ntr vault setup` to create its key.")?;
+                    }
+                }
+                Response::RecoveryCode { code } => {
+                    writeln!(out, "Recovery code\n\n    {}\n", style.paint("1;35", &code))?;
+                    writeln!(out, "Write it down somewhere safe, away from this Mac. It's shown only now. With it, a")?;
+                    writeln!(out, "database backup's secrets open on another server (`ntr vault recover`); without")?;
+                    writeln!(out, "it they have to be entered again.")?;
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Secret(cmd) => {
+            let (scope, request) = match cmd {
+                SecretCmd::List { scope } => {
+                    let s = vault_scope(&mut c, cli.repo, scope)?;
+                    (s.clone(), Request::ListSecrets { scope: s })
+                }
+                SecretCmd::Set { name, scope } => {
+                    let s = vault_scope(&mut c, cli.repo, scope)?;
+                    let value = read_secret(&name)?;
+                    (s.clone(), Request::SetSecret { scope: s, name, value })
+                }
+                SecretCmd::Rm { name, scope } => {
+                    let s = vault_scope(&mut c, cli.repo, scope)?;
+                    (s.clone(), Request::DeleteSecret { scope: s, name })
+                }
+            };
+            match c.call(request)? {
+                Response::Secrets(list) => {
+                    if list.is_empty() {
+                        writeln!(out, "No secrets{}.", scope_text(&scope))?;
+                    }
+                    for s in list {
+                        writeln!(out, "{:<28} {:<24} {}", style.paint("1", &s.name), scope_text(&s.scope).trim_start(), style.paint("2", &ago(s.updated_at)))?;
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Var(cmd) => {
+            let request = match cmd {
+                VarCmd::List { scope } => Request::ListVariables { scope: vault_scope(&mut c, cli.repo, scope)? },
+                VarCmd::Set { name, value, scope } => Request::SetVariable { scope: vault_scope(&mut c, cli.repo, scope)?, name, value },
+                VarCmd::Rm { name, scope } => Request::DeleteVariable { scope: vault_scope(&mut c, cli.repo, scope)?, name },
+            };
+            match c.call(request)? {
+                Response::Variables(list) => {
+                    if list.is_empty() {
+                        writeln!(out, "No variables.")?;
+                    }
+                    for v in list {
+                        writeln!(out, "{:<28} {:<24} {}", style.paint("1", &v.name), scope_text(&v.scope).trim_start(), v.value)?;
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Env(cmd) => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            let request = match cmd {
+                EnvCmd::List => Request::ListEnvironments { repo },
+                EnvCmd::Set { name, approval, branches } => {
+                    Request::SetEnvironment { environment: neutrino_proto::Environment { repo, name, require_approval: approval, branches } }
+                }
+                EnvCmd::Rm { name } => Request::DeleteEnvironment { repo, name },
+            };
+            match c.call(request)? {
+                Response::Environments(list) => {
+                    if list.is_empty() {
+                        writeln!(out, "No environments. Add one with `ntr env set production --approval --branch main`.")?;
+                    }
+                    for e in list {
+                        let who = if e.branches.is_empty() { "any branch".to_string() } else { e.branches.join(", ") };
+                        let gate = if e.require_approval { "needs approval" } else { "no approval" };
+                        writeln!(out, "{:<20} {gate}, {who}", style.paint("1", &e.name))?;
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Backup => done(out, c.call(Request::Backup)?)?,
         Cmd::Ci => match c.call(Request::CiInfo)? {
             Response::Ci(i) => {
                 let g = if i.graviton { style.paint("32", "answers") } else { style.paint("31", &format!("unreachable: {}", i.graviton_error.unwrap_or_default())) };
@@ -809,6 +1015,7 @@ fn state_mark(s: RunState, style: &Style) -> String {
         RunState::Failure => ("31", "failure  "),
         RunState::Cancelled => ("2", "cancelled"),
         RunState::Skipped => ("2", "skipped  "),
+        RunState::Waiting => ("35", "waiting  "),
     };
     style.paint(code, text)
 }
@@ -853,6 +1060,67 @@ fn print_run(out: &mut impl Write, style: &Style, d: &RunDetail) -> Result<()> {
     Ok(())
 }
 
+/// Approve or turn down the waiting job of a run.
+fn decide(c: &mut Conn, out: &mut impl Write, repo: &str, number: u32, job: Option<String>, approve: bool) -> Result<()> {
+    let id = run_id(c, repo, number)?;
+    let d = match c.call(Request::Run { repo: repo.into(), id })? {
+        Response::Run(d) => d,
+        r => return Err(unexpected(r)),
+    };
+    let waiting: Vec<_> = d.jobs.iter().filter(|j| j.state == RunState::Waiting).collect();
+    let j = match &job {
+        Some(k) => waiting.iter().find(|j| &j.key == k).copied().ok_or_else(|| anyhow!("job {k} of run {number} isn't waiting"))?,
+        None => match waiting.as_slice() {
+            [one] => *one,
+            [] => bail!("nothing in run {number} is waiting for approval"),
+            many => bail!("several jobs are waiting ({}); pick one with --job", many.iter().map(|j| j.key.as_str()).collect::<Vec<_>>().join(", ")),
+        },
+    };
+    match c.call(Request::ApproveJob { repo: repo.into(), job: j.id, approve })? {
+        Response::Run(_) => writeln!(out, "{} {} ({}).", if approve { "Approved" } else { "Turned down" }, j.name, j.environment.as_deref().unwrap_or(""))?,
+        r => return Err(unexpected(r)),
+    }
+    Ok(())
+}
+
+/// `--global`, `--env NAME` or this repo.
+fn vault_scope(c: &mut Conn, repo: Option<String>, scope: ScopeArgs) -> Result<VaultScope> {
+    if scope.global {
+        return Ok(VaultScope::default());
+    }
+    Ok(VaultScope { repo: Some(pick_repo(c, repo)?), environment: scope.env })
+}
+
+fn scope_text(s: &VaultScope) -> String {
+    match (&s.repo, &s.environment) {
+        (None, _) => " (every repo)".into(),
+        (Some(r), None) => format!(" in {r}"),
+        (Some(r), Some(e)) => format!(" in {r}, {e}"),
+    }
+}
+
+/// A secret's value from standard input; typed without echo at a terminal.
+fn read_secret(name: &str) -> Result<String> {
+    let tty = std::io::stdin().is_terminal();
+    if tty {
+        eprint!("Value for {name} (not shown): ");
+        let _ = std::process::Command::new("stty").arg("-echo").stdin(std::process::Stdio::inherit()).status();
+    }
+    let mut value = String::new();
+    let read = if tty { std::io::stdin().read_line(&mut value).map(|_| ()) } else { std::io::Read::read_to_string(&mut std::io::stdin(), &mut value).map(|_| ()) };
+    if tty {
+        let _ = std::process::Command::new("stty").arg("echo").stdin(std::process::Stdio::inherit()).status();
+        eprintln!();
+    }
+    read?;
+    // A trailing newline from `echo` or the Return key isn't part of it.
+    let value = value.strip_suffix('\n').map(|v| v.strip_suffix('\r').unwrap_or(v)).unwrap_or(&value).to_string();
+    if value.is_empty() {
+        bail!("no value given");
+    }
+    Ok(value)
+}
+
 fn run_cmd(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: RunCmd) -> Result<()> {
     let detail = |r: Response| -> Result<RunDetail> {
         match r {
@@ -861,6 +1129,43 @@ fn run_cmd(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd:
         }
     };
     match cmd {
+        RunCmd::Approve { number, job } => decide(c, out, &repo, number, job, true)?,
+        RunCmd::Reject { number, job } => decide(c, out, &repo, number, job, false)?,
+        RunCmd::Artifacts { number } => {
+            let id = run_id(c, &repo, number)?;
+            match c.call(Request::ListArtifacts { repo, run: id })? {
+                Response::Artifacts(list) => {
+                    if list.is_empty() {
+                        writeln!(out, "Run {number} kept no artifacts.")?;
+                    }
+                    for a in list {
+                        writeln!(out, "{}/{}  {}", style.paint("2", &a.job), a.path, style.paint("2", &format!("{} KB", a.size.div_ceil(1024))))?;
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        RunCmd::Download { number, path, out: dest } => {
+            use base64::Engine as _;
+            let id = run_id(c, &repo, number)?;
+            let dest = dest.unwrap_or_else(|| PathBuf::from(Path::new(&path).file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "artifact".into())));
+            let mut file = std::fs::File::create(&dest).with_context(|| format!("creating {}", dest.display()))?;
+            let mut offset = 0;
+            loop {
+                match c.call(Request::ArtifactData { repo: repo.clone(), run: id, path: path.clone(), offset })? {
+                    Response::ArtifactChunk(chunk) => {
+                        let bytes = base64::engine::general_purpose::STANDARD.decode(&chunk.data).context("reading the artifact")?;
+                        file.write_all(&bytes)?;
+                        offset += bytes.len() as u64;
+                        if chunk.done || bytes.is_empty() {
+                            break;
+                        }
+                    }
+                    r => return Err(unexpected(r)),
+                }
+            }
+            writeln!(out, "Saved {} ({} KB).", dest.display(), offset.div_ceil(1024))?;
+        }
         RunCmd::Show { number } => {
             let id = run_id(c, &repo, number)?;
             print_run(out, style, &detail(c.call(Request::Run { repo, id })?)?)?;

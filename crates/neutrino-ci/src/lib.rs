@@ -2,6 +2,7 @@
 //! expression language, which workflows an event triggers, and the jobs a run
 //! is made of. The daemon schedules and executes what this plans.
 
+pub mod cron;
 pub mod expr;
 pub mod workflow;
 
@@ -40,6 +41,8 @@ pub enum Event {
     PullRequest { number: u32, source: String, target: String, sha: String },
     /// Started by hand on a branch.
     Dispatch { branch: String, sha: String },
+    /// A cron line came due; runs on the default branch.
+    Schedule { branch: String, sha: String },
 }
 
 impl Event {
@@ -48,12 +51,13 @@ impl Event {
             Event::Push { .. } => "push",
             Event::PullRequest { .. } => "pull_request",
             Event::Dispatch { .. } => "workflow_dispatch",
+            Event::Schedule { .. } => "schedule",
         }
     }
 
     pub fn sha(&self) -> &str {
         match self {
-            Event::Push { sha, .. } | Event::PullRequest { sha, .. } | Event::Dispatch { sha, .. } => sha,
+            Event::Push { sha, .. } | Event::PullRequest { sha, .. } | Event::Dispatch { sha, .. } | Event::Schedule { sha, .. } => sha,
         }
     }
 
@@ -62,7 +66,7 @@ impl Event {
         match self {
             Event::Push { name, .. } => name.strip_prefix("refs/heads/"),
             Event::PullRequest { source, .. } => Some(source),
-            Event::Dispatch { branch, .. } => Some(branch),
+            Event::Dispatch { branch, .. } | Event::Schedule { branch, .. } => Some(branch),
         }
     }
 
@@ -86,7 +90,7 @@ impl Event {
                 o.insert("base_branch".into(), json!(target));
                 o.insert("pull_request".into(), json!(number));
             }
-            Event::Dispatch { branch, .. } => {
+            Event::Dispatch { branch, .. } | Event::Schedule { branch, .. } => {
                 o.insert("ref".into(), json!(format!("refs/heads/{branch}")));
                 o.insert("branch".into(), json!(branch));
             }
@@ -152,6 +156,8 @@ impl Workflow {
             // Pull request filters are about the target branch.
             Event::PullRequest { target, .. } => self.on.pull_request.as_ref().is_some_and(|f| f.branch(target)),
             Event::Dispatch { .. } => self.on.dispatch,
+            // Which line fired is the scheduler's business; any schedule qualifies.
+            Event::Schedule { .. } => !self.on.schedule.is_empty(),
         }
     }
 }

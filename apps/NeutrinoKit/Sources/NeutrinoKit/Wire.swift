@@ -3,7 +3,7 @@ import Foundation
 // Mirrors crates/neutrino-proto. Keys are snake_case on the wire and
 // camelCase here (the coders convert); enum values keep their wire spelling.
 
-public let protocolVersion: UInt32 = 5
+public let protocolVersion: UInt32 = 6
 
 // MARK: - Repositories and refs
 
@@ -546,6 +546,19 @@ public enum Request: Sendable, Equatable {
     case dispatchRun(repo: String, workflow: String, branch: String)
     case workflows(repo: String, branch: String)
     case ciInfo
+    case vaultInfo
+    case listSecrets(scope: VaultScope)
+    case setSecret(scope: VaultScope, name: String, value: String)
+    case deleteSecret(scope: VaultScope, name: String)
+    case listVariables(scope: VaultScope)
+    case setVariable(scope: VaultScope, name: String, value: String)
+    case deleteVariable(scope: VaultScope, name: String)
+    case listEnvironments(repo: String)
+    case setEnvironment(DeployEnvironment)
+    case deleteEnvironment(repo: String, name: String)
+    case approveJob(repo: String, job: Int64, approve: Bool)
+    case listArtifacts(repo: String, run: Int64)
+    case artifactData(repo: String, run: Int64, path: String, offset: UInt64)
     case pair(code: String, device: String)
     case auth(token: String)
     case cancel(id: UInt64)
@@ -577,6 +590,12 @@ public enum Response: Sendable, Equatable {
     case jobLog(LogChunk)
     case ci(CiInfo)
     case workflows([WorkflowFile])
+    case vault(VaultInfo)
+    case secrets([SecretInfo])
+    case variables([Variable])
+    case environments([DeployEnvironment])
+    case artifacts([Artifact])
+    case artifactChunk(ArtifactChunk)
     case paired(token: String, deviceID: String, host: String)
     case authenticated(host: String, role: String)
     case cancelled
@@ -641,6 +660,14 @@ public enum Wire {
     private struct JobLogParam: Encodable { var repo: String; var job: Int64; var offset: UInt64 }
     private struct DispatchParam: Encodable { var repo: String; var workflow: String; var branch: String }
     private struct BranchParam: Encodable { var repo: String; var branch: String }
+    private struct ScopeParam: Encodable { var scope: VaultScope }
+    private struct NamedValueParam: Encodable { var scope: VaultScope; var name: String; var value: String }
+    private struct NamedParam: Encodable { var scope: VaultScope; var name: String }
+    private struct EnvironmentParam: Encodable { var environment: DeployEnvironment }
+    private struct RepoNameParam: Encodable { var repo: String; var name: String }
+    private struct ApproveParam: Encodable { var repo: String; var job: Int64; var approve: Bool }
+    private struct ArtifactsParam: Encodable { var repo: String; var run: Int64 }
+    private struct ArtifactDataParam: Encodable { var repo: String; var run: Int64; var path: String; var offset: UInt64 }
     private struct DiffParam: Encodable {
         var repo: String
         var sha: String
@@ -710,6 +737,19 @@ public enum Wire {
         case let .dispatchRun(repo, workflow, branch): try line(id, "dispatch_run", DispatchParam(repo: repo, workflow: workflow, branch: branch))
         case let .workflows(repo, branch): try line(id, "workflows", BranchParam(repo: repo, branch: branch))
         case .ciInfo: try line(id, "ci_info", NoParams?.none)
+        case .vaultInfo: try line(id, "vault_info", NoParams?.none)
+        case let .listSecrets(scope): try line(id, "list_secrets", ScopeParam(scope: scope))
+        case let .setSecret(scope, name, value): try line(id, "set_secret", NamedValueParam(scope: scope, name: name, value: value))
+        case let .deleteSecret(scope, name): try line(id, "delete_secret", NamedParam(scope: scope, name: name))
+        case let .listVariables(scope): try line(id, "list_variables", ScopeParam(scope: scope))
+        case let .setVariable(scope, name, value): try line(id, "set_variable", NamedValueParam(scope: scope, name: name, value: value))
+        case let .deleteVariable(scope, name): try line(id, "delete_variable", NamedParam(scope: scope, name: name))
+        case let .listEnvironments(repo): try line(id, "list_environments", RepoParam(repo: repo))
+        case let .setEnvironment(env): try line(id, "set_environment", EnvironmentParam(environment: env))
+        case let .deleteEnvironment(repo, name): try line(id, "delete_environment", RepoNameParam(repo: repo, name: name))
+        case let .approveJob(repo, job, approve): try line(id, "approve_job", ApproveParam(repo: repo, job: job, approve: approve))
+        case let .listArtifacts(repo, run): try line(id, "list_artifacts", ArtifactsParam(repo: repo, run: run))
+        case let .artifactData(repo, run, path, offset): try line(id, "artifact_data", ArtifactDataParam(repo: repo, run: run, path: path, offset: offset))
         case let .pair(code, device): try line(id, "pair", PairParam(code: code, device: device))
         case let .auth(token): try line(id, "auth", AuthParam(token: token))
         case let .cancel(target): try line(id, "cancel", IDParam(id: target))
@@ -765,6 +805,12 @@ public enum Wire {
         case "job_log": .jobLog(try data(LogChunk.self))
         case "ci": .ci(try data(CiInfo.self))
         case "workflows": .workflows(try data([WorkflowFile].self))
+        case "vault": .vault(try data(VaultInfo.self))
+        case "secrets": .secrets(try data([SecretInfo].self))
+        case "variables": .variables(try data([Variable].self))
+        case "environments": .environments(try data([DeployEnvironment].self))
+        case "artifacts": .artifacts(try data([Artifact].self))
+        case "artifact_chunk": .artifactChunk(try data(ArtifactChunk.self))
         case "paired": try { let p = try data(Paired.self); return .paired(token: p.token, deviceID: p.deviceId, host: p.host) }()
         case "authenticated": try { let a = try data(Authenticated.self); return .authenticated(host: a.host, role: a.role) }()
         case "cancelled": .cancelled

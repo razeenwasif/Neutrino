@@ -4,7 +4,14 @@ import Observation
 import SwiftUI
 
 enum Section: String, CaseIterable {
-    case changes, history, branches, pulls, runs
+    case changes, history, branches, pulls, runs, secrets
+}
+
+/// Which secrets and variables the Secrets screen shows.
+enum VaultView: Hashable {
+    case repo
+    case everyRepo
+    case environment(String)
 }
 
 enum PullFilter: String {
@@ -137,6 +144,15 @@ final class AppModel {
     var runBusy: String?
     var ciInfo: CiInfo?
     var runsTask: Task<Void, Never>?
+    var artifactList: [Artifact] = []
+
+    // Secrets (methods in SecretsModel.swift)
+    var vaultInfo: VaultInfo?
+    var vaultView: VaultView = .repo
+    var secretList: [SecretInfo] = []
+    var variableList: [Variable] = []
+    var environmentList: [DeployEnvironment] = []
+    var secretsError: String?
 
     // Menu bar panel (methods in MenuBar.swift)
     /// Status of every working copy, refreshed when the panel opens.
@@ -300,7 +316,8 @@ final class AppModel {
         async let s: Void = loadStatus()
         async let p: Void = section == .pulls ? loadPulls() : ()
         async let r: Void = section == .runs ? loadRuns() : ()
-        _ = await (h, b, s, p, r)
+        async let v: Void = section == .secrets ? loadSecrets() : ()
+        _ = await (h, b, s, p, r, v)
         if source == .local, let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
             repos[i] = updated
         }

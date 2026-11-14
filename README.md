@@ -5,14 +5,14 @@ branches, pull requests, diff review, CI/CD and secrets, on your own
 machines. A Rust engine reads git repositories in-process with gitoxide; a
 SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> Status: **milestone 5 done** (CI). Pushes and pull requests run the workflows
-> in `.neutrino/workflows/`, each job in its own Graviton VM, within a fixed
-> budget of CPUs and memory, with live logs, timeouts, cancelling and a reaper.
-> Pull requests show their checks, and branch rules can require them.
-> Milestone 4 gave pull requests and branch rules; 3 the server on atlas; 1 and
-> 2 history, diffs, staging by line, commits and branches. Graviton still has
-> to be installed on atlas before jobs there can run. Secrets, caches and
-> artifacts come next.
+> Status: **milestone 6 done** (the vault and the rest of CI). Secrets are
+> sealed on the server and masked in logs; environments can need your approval;
+> jobs get caches, keep artifacts, take turns in concurrency groups and run on
+> schedules; old logs are pruned and the database is snapshotted nightly.
+> Milestone 5 gave CI on Graviton; 4 pull requests and branch rules; 3 the
+> server on atlas; 1 and 2 history, diffs, staging by line, commits and
+> branches. Graviton still has to be installed on atlas, and service
+> containers wait on a Graviton fix that lets its guests reach each other.
 
 ## Layout
 
@@ -25,7 +25,8 @@ crates/
                    forge.rs compares branches, checks and does merges, follows lines
   neutrino-store   The server's SQLite database: pull requests, versions, notes, rules, overrides,
                    runs, jobs and steps
-  neutrino-ci      Workflow files, the ${{ }} expression language, triggers and matrix planning
+  neutrino-ci      Workflow files, the ${{ }} expression language, triggers, matrix planning, cron
+  neutrino-vault   Sealing secrets (XChaCha20-Poly1305), the master key, masking logs
   neutrino-remote  The server's TLS endpoint: certificate, pairing codes, device tokens, Bonjour
   neutrinod        The daemon, as workstation or --server: repo registry, Unix socket and TLS,
                    concurrent requests, cancel, file watching and change events, hosting, hooks
@@ -33,11 +34,13 @@ crates/
 apps/
   project.yml      XcodeGen spec → Neutrino.xcodeproj (generated, not committed)
   NeutrinoKit/     Swift package: wire mirror, socket client, demo data, theme
-  Mac/             macOS app: Changes, History, commit panel, diff view, Branches, Pull requests, Runs
+  Mac/             macOS app: Changes, History, commit panel, diff view, Branches, Pull requests,
+                   Runs, Secrets
 design/            App icon sources; make-icons.sh renders them into the asset catalog
 scripts/
   dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
   install-launch-agent.sh  Run neutrinod at login (--server on atlas, --uninstall to remove)
+  deploy-server.sh         Build, sign and copy neutrinod and ntr to the server, then restart it
 ```
 
 ## Running it
@@ -148,14 +151,33 @@ jobs:
         run: echo "${{ matrix.toolchain }} failed"
 ```
 
-Supported now: `on` (push with branch and tag filters, pull_request,
-workflow_dispatch), `env` at every level, `needs`, `if` with `success()
-failure() always() cancelled()`, `strategy.matrix` with include and exclude,
-`timeout-minutes` and `idle-timeout-minutes`, `continue-on-error`,
-`working-directory`, and `${{ }}` with the `neutrino`, `env`, `matrix` and
-`needs` contexts. `uses:` is refused. `services`, `cache`, `artifacts`,
-`environment`, `concurrency` and `outputs` are read and warned about;
-`schedule` is parsed but doesn't fire yet.
+Supported: `on` (push with branch and tag filters, pull_request,
+workflow_dispatch, schedule), `env` at every level, `needs`, `if` with
+`success() failure() always() cancelled()`, `strategy.matrix` with include and
+exclude, `timeout-minutes` and `idle-timeout-minutes`, `continue-on-error`,
+`working-directory`, `environment`, `concurrency` (workflow and job, with
+`cancel-in-progress`), `cache`, `artifacts`, `services`, and `${{ }}` with the
+`neutrino`, `env`, `matrix`, `needs`, `vars` and `secrets` contexts and
+`hashFiles()`. `uses:` is refused; `outputs` is read and warned about.
+
+```yaml
+jobs:
+  build:
+    image: rust:1.85
+    cache:
+      - key: cargo-${{ hashFiles('Cargo.lock') }}
+        path: [target, .cargo]          # inside the workspace; set CARGO_HOME=.cargo
+        restore-keys: [cargo-]
+    artifacts: [target/release/app]
+    services: { db: { image: postgres:17, env: { POSTGRES_PASSWORD: dev } } }   # $DB_HOST
+  deploy:
+    needs: build
+    environment: production             # its secrets; waits for approval if it needs one
+    concurrency: production
+    steps:
+      - run: ./deploy.sh
+        env: { TOKEN: "${{ secrets.DEPLOY_TOKEN }}" }
+```
 
 Each job checks its commit out into `~/.neutrino/runs/<run>/<job>/workspace`,
 starts a container named `ntr-…` through Graviton with the workspace at
@@ -166,6 +188,13 @@ deleted, whatever happened. A step past its timeout, or a cancelled run, stops
 the container. A reaper removes `ntr-` containers and workspaces no job owns,
 at start and every minute; jobs that were running when neutrinod stopped are
 tried once more.
+
+Caches are folders inside the workspace, saved after a passing job and copied
+back before the next one with APFS clones, so restoring costs nothing; the
+least recently used go past `--ci-cache 10G`. Artifacts are copied out after
+the job and kept with its logs for `--retention-days 30`. Schedules are cron
+lines in UTC, run on each repo's default branch. Services start before the
+job's container, through Graviton, and the job reaches each at `<NAME>_HOST`.
 
 CI gets a fixed budget on atlas (`--ci-cpus 4 --ci-memory 6G` by default);
 jobs start in order while there's room, and one that asks for more than the
@@ -180,7 +209,45 @@ ntr -r myapp run cancel 12           # or: rerun 12, start ci -b main
 ntr -r myapp workflows -b main       # the files on a branch, checked
 ntr -r myapp ci                      # Graviton, the budget, what's queued
 ntr -r myapp rules set main --check ci   # merging into main needs ci to pass
+ntr -r myapp run approve 12          # let a job waiting on its environment run (or: reject)
+ntr -r myapp run artifacts 12        # then: run download 12 build/target/release/app
 ```
+
+### Secrets, variables and environments
+
+```bash
+ntr vault setup                            # on the server, once: prints the recovery code
+echo -n "$TOKEN" | ntr -r myapp secret set DEPLOY_TOKEN --env production
+ntr secret set NPM_TOKEN --global          # typed without echo
+ntr -r myapp secret list                   # names only, never values
+ntr -r myapp var set REGION eu
+ntr -r myapp env set production --approval --branch main
+ntr backup                                 # a database snapshot now
+```
+
+Secrets are sealed with XChaCha20-Poly1305 under one master key, bound to
+their name and scope so a sealed value can't be moved to another; the key is
+in the server's login Keychain (`--vault-key-file` keeps it in a file instead).
+The recovery code `ntr vault setup` prints is that key: write it down away from
+the server, since with a database backup it's what opens the secrets anywhere
+else (`ntr vault recover`). Nothing reads a secret back, not `ntr` and not the
+app. A job gets the secrets of its repo, every repo and its environment, the
+most specific of each name winning, only as the values its steps ask for; the
+log masks each of them, their base64 form and each line of a multi-line one,
+even when a value is split between two chunks of output. A job can still
+write a secret into an artifact.
+
+An environment can require approval: its jobs wait in the Runs screen (or
+`ntr run approve`) and record who let them go; it can also limit which
+branches may deploy. The server's login Keychain must be unlocked, so atlas
+has to be logged in, as it already is for Nexus. `scripts/deploy-server.sh`
+signs `neutrinod` with your Apple Development certificate before copying it,
+so the Keychain keeps trusting it across deploys.
+
+The database is snapshotted every night after 03:30 UTC to `--backup-dir`
+(default `~/.neutrino/backups`; point it at an external disk or a synced
+folder to keep copies off the server), keeping the last 14. Secrets in a
+snapshot stay sealed; the recovery code opens them.
 
 ### Working copies
 
@@ -205,8 +272,8 @@ cd apps && xcodegen generate && open Neutrino.xcodeproj
 
 It connects to neutrinod when it's running and shows the prototype's demo
 repository otherwise; it notices the daemon starting or stopping on its own.
-⌘O adds a repository, ⌘R reloads, ⌘1 to ⌘5 switch between Changes, History,
-Branches, Pull requests and Runs, ⌘F searches, ↑ and ↓ move through commits, ⌘⇧D gives the diff
+⌘O adds a repository, ⌘R reloads, ⌘1 to ⌘6 switch between Changes, History,
+Branches, Pull requests, Runs and Secrets, ⌘F searches, ↑ and ↓ move through commits, ⌘⇧D gives the diff
 the full width. In Changes, tick a file to stage it, or click lines in its
 diff to pick them and stage, unstage or discard just those (⌘⇧S); each hunk
 has its own button; ⌘↩ commits.
@@ -218,6 +285,7 @@ cargo test --workspace                     # builds real repos with git in temp 
 swift test --package-path apps/NeutrinoKit
 NEUTRINO_LIVE=1 swift test --package-path apps/NeutrinoKit   # also drives a running neutrinod
 NEUTRINO_LIVE_GRAVITON=1 cargo test -p neutrinod --test ci graviton   # a real job in a Graviton VM
+NEUTRINO_LIVE_GRAVITON=1 cargo test -p neutrinod --test vault graviton_services   # a service it reaches
 ```
 
 ## Protocol
@@ -272,9 +340,12 @@ checked.
 - CI: Graviton guests are arm64 Linux, so x86-only images won't run. A job's
   container keeps its root filesystem in RAM (a Graviton limit), so big images
   need memory to match. After a timeout or a cancel the container is gone, so
-  `if: always()` steps after it don't run. No secrets, caches, artifacts or
-  service containers yet (milestone 6), and no host or Nexus executors
-  (milestone 7). Logs are plain files and aren't pruned yet.
+  `if: always()` steps after it don't run. No host or Nexus executors yet
+  (milestone 7). Service containers start, but Graviton's guests can't reach
+  each other yet, so a job can't talk to its services until Graviton allows
+  it. Caches and artifacts are paths inside the workspace. Secrets can't be
+  revealed in the app (Touch ID-gated reveal is still to come). Schedules
+  don't catch up on minutes the server was down.
 - Status reads the index but doesn't write back refreshed stat data, so after
   a large checkout the first status re-hashes files that git would have
   marked clean.

@@ -48,7 +48,8 @@ fn parses_a_workflow() {
     assert_eq!(test.steps[0].label(), "cargo test --${{ matrix.mode }}");
     assert_eq!(test.steps[1].label(), "Lint");
     assert_eq!(wf.jobs[1].needs, vec!["test"]);
-    assert_eq!(wf.warnings, vec!["jobs.deploy.services is ignored for now: service containers arrive with milestone 6"]);
+    assert!(wf.warnings.is_empty(), "{:?}", wf.warnings);
+    assert_eq!(wf.jobs[1].services[0].image, "postgres:17");
     assert_eq!(wf.env["CARGO_TERM_COLOR"], "always");
     assert!(wf.on.dispatch);
 }
@@ -131,4 +132,61 @@ fn memory_units() {
     assert_eq!(workflow::parse_memory("1.5GiB"), Some(1536));
     assert_eq!(workflow::parse_memory("2048"), Some(2048));
     assert_eq!(workflow::parse_memory("big"), None);
+}
+
+#[test]
+fn the_rest_of_ci() {
+    let src = r#"
+on:
+  schedule: [{ cron: "0 3 * * *" }]
+  push: {}
+concurrency: { group: "deploy-${{ neutrino.branch }}", cancel-in-progress: true }
+jobs:
+  build:
+    image: rust:1.85
+    environment: production
+    concurrency: prod
+    cache:
+      - key: cargo-${{ hashFiles('Cargo.lock', '**/*.toml') }}
+        path: [target, .cargo]
+        restore-keys: [cargo-]
+    artifacts: [target/release/app, "dist/*.zip"]
+    services:
+      db: { image: postgres:17, env: { POSTGRES_PASSWORD: dev } }
+      cache: redis:7
+    steps: [{ run: make }]
+"#;
+    let wf = Workflow::parse("deploy.yml", src).unwrap();
+    assert!(wf.warnings.is_empty(), "{:?}", wf.warnings);
+    assert_eq!(wf.concurrency.as_ref().unwrap().group, "deploy-${{ neutrino.branch }}");
+    let j = &wf.jobs[0];
+    assert_eq!(j.environment.as_deref(), Some("production"));
+    assert_eq!(j.concurrency.as_ref().unwrap(), &workflow::Concurrency { group: "prod".into(), cancel_in_progress: false });
+    assert_eq!(j.cache[0].paths, vec!["target", ".cargo"]);
+    assert_eq!(j.artifacts, vec!["target/release/app", "dist/*.zip"]);
+    assert_eq!(j.services.iter().map(|s| (s.name.as_str(), s.image.as_str())).collect::<Vec<_>>(), vec![("db", "postgres:17"), ("cache", "redis:7")]);
+    assert!(wf.triggered_by(&Event::Schedule { branch: "main".into(), sha: "s".into() }));
+
+    let bad = |src: &str, needle: &str| {
+        let e = Workflow::parse("x.yml", src).unwrap_err().0;
+        assert!(e.contains(needle), "{e}");
+    };
+    bad("on: push\njobs: { a: { image: x, cache: [{ key: k, path: /etc }], steps: [{ run: ls }] } }", "inside the workspace");
+    bad("on: push\njobs: { a: { image: x, artifacts: [../up], steps: [{ run: ls }] } }", "inside the workspace");
+    bad("on: { schedule: [{ cron: '61 * * * *' }] }\njobs: { a: { image: x, steps: [{ run: ls }] } }", "outside 0-59");
+
+    // hashFiles reads the workspace.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Cargo.lock"), "a").unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/x.toml"), "b").unwrap();
+    let mut cx = expr::Context::default();
+    cx.root = Some(dir.path().to_path_buf());
+    let one = expr::interpolate("${{ hashFiles('Cargo.lock') }}", &cx).unwrap();
+    let both = expr::interpolate("${{ hashFiles('Cargo.lock', '**/*.toml') }}", &cx).unwrap();
+    assert_eq!(one.len(), 64);
+    assert_ne!(one, both);
+    assert_eq!(expr::interpolate("${{ hashFiles('nothing') }}", &cx).unwrap(), "");
+    std::fs::write(dir.path().join("Cargo.lock"), "changed").unwrap();
+    assert_ne!(expr::interpolate("${{ hashFiles('Cargo.lock') }}", &cx).unwrap(), one, "the hash follows the contents");
 }

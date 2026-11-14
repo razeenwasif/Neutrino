@@ -72,6 +72,15 @@ impl Runner {
         }
     }
 
+    /// Start a service container with its image's own command; returns its
+    /// id and the address the job reaches it at.
+    pub async fn start_service(&self, b: &ServiceBox) -> Result<(String, String)> {
+        match self {
+            Runner::Graviton(g) => g.start_service(b).await,
+            Runner::Local(_) => bail!("service containers need Graviton; this server runs steps without containers"),
+        }
+    }
+
     /// Run `script` with `sh -e` in `dir` (relative to the workspace); output
     /// goes to `out` as it comes. Returns the exit code.
     pub async fn exec(&self, container: &str, dir: &str, script: &str, env: &[(String, String)], out: mpsc::Sender<Vec<u8>>) -> Result<i32> {
@@ -129,7 +138,8 @@ pub struct Graviton {
 struct RunSpec<'a> {
     image: &'a str,
     name: &'a str,
-    command: Vec<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<Vec<&'a str>>,
     env: Vec<String>,
     cpus: u32,
     memory_mib: u64,
@@ -142,6 +152,18 @@ struct Container {
     id: String,
     name: String,
     status: String,
+    #[serde(default)]
+    ip_address: Option<String>,
+}
+
+/// A service container to start beside a job.
+#[derive(Debug, Clone)]
+pub struct ServiceBox {
+    pub name: String,
+    pub image: String,
+    pub env: Vec<(String, String)>,
+    pub cpus: u32,
+    pub memory_mib: u64,
 }
 
 /// `$GRAVITON_SOCKET`, else where Graviton.app's daemon listens.
@@ -191,7 +213,7 @@ impl Graviton {
             image: &b.image,
             name: &b.name,
             // Idle until the steps come; sleep's `infinity` isn't in every image's sleep.
-            command: vec!["sh", "-c", "while :; do sleep 3600; done"],
+            command: Some(vec!["sh", "-c", "while :; do sleep 3600; done"]),
             env: vec!["CI=true".into()],
             cpus: b.cpus,
             memory_mib: b.memory_mib,
@@ -201,6 +223,40 @@ impl Graviton {
         let v = self.call(json!({ "method": "run", "params": spec })).await?;
         let c: Container = serde_json::from_value(v["data"].clone()).context("reading the new container")?;
         Ok(c.id)
+    }
+
+    async fn start_service(&self, b: &ServiceBox) -> Result<(String, String)> {
+        let spec = RunSpec {
+            image: &b.image,
+            name: &b.name,
+            command: None,
+            env: b.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
+            cpus: b.cpus,
+            memory_mib: b.memory_mib,
+            ports: vec![],
+            volumes: vec![],
+        };
+        let v = self.call(json!({ "method": "run", "params": spec })).await?;
+        let c: Container = serde_json::from_value(v["data"].clone()).context("reading the service container")?;
+        if let Some(ip) = c.ip_address.filter(|ip| !ip.is_empty()) {
+            return Ok((c.id, ip));
+        }
+        // The address arrives once the guest's network is up.
+        for _ in 0..80 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let v = self.call(json!({ "method": "list_containers" })).await?;
+            let list: Vec<Container> = serde_json::from_value(v["data"].clone()).unwrap_or_default();
+            if let Some(found) = list.into_iter().find(|x| x.id == c.id) {
+                if found.status != "running" {
+                    bail!("service {} stopped as it started", b.name);
+                }
+                if let Some(ip) = found.ip_address.filter(|ip| !ip.is_empty()) {
+                    return Ok((c.id, ip));
+                }
+            }
+        }
+        self.call(json!({ "method": "stop", "params": { "id": c.id } })).await.ok();
+        bail!("service {} never got a network address", b.name)
     }
 
     async fn exec(&self, container: &str, dir: &str, script: &str, env: &[(String, String)], out: mpsc::Sender<Vec<u8>>) -> Result<i32> {

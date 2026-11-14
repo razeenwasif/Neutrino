@@ -27,6 +27,43 @@ pub struct Context {
     /// `neutrino`, `env`, `matrix`, `needs`, `vars`, `secrets`, … as one object.
     pub values: Map<String, Value>,
     pub status: Status,
+    /// The workspace, for `hashFiles()`; without one it hashes nothing.
+    pub root: Option<std::path::PathBuf>,
+}
+
+/// SHA-256 over the contents of every file in `root` matching one of the
+/// patterns, in path order; empty when none match. `.git` is skipped.
+pub fn hash_files(root: &std::path::Path, patterns: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    fn walk(dir: &std::path::Path, rel: &str, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            match e.file_type() {
+                Ok(t) if t.is_dir() => walk(&e.path(), &path, out),
+                Ok(t) if t.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(root, "", &mut files);
+    files.sort();
+    let matched: Vec<&String> = files.iter().filter(|f| patterns.iter().any(|p| crate::glob(p.trim_start_matches("./"), f))).collect();
+    if matched.is_empty() {
+        return String::new();
+    }
+    let mut all = Sha256::new();
+    for f in matched {
+        if let Ok(bytes) = std::fs::read(root.join(f)) {
+            all.update(Sha256::digest(&bytes));
+        }
+    }
+    all.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl Context {
@@ -431,6 +468,10 @@ fn eval(n: &Node, cx: &Context) -> Result<Value, Error> {
                         Some(v) => Value::String(to_text(v)),
                         None => return Err(Error::new("join() needs an array")),
                     }
+                }
+                "hashfiles" => {
+                    let patterns: Vec<String> = vals.iter().map(to_text).collect();
+                    Value::String(cx.root.as_deref().map(|r| hash_files(r, &patterns)).unwrap_or_default())
                 }
                 "tojson" => {
                     arity(1)?;

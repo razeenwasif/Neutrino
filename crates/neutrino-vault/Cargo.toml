@@ -1,0 +1,15 @@
+[package]
+name = "neutrino-vault"
+description = "Neutrino's secrets: encryption at rest, the master key, and masking logs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+getrandom = "0.2"
+base64 = "0.22"
+security-framework = "3"
+
+[dev-dependencies]
+tempfile.workspace = true

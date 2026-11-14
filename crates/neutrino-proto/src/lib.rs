@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a breaking change is made to the control API.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// TCP port of the server's paired TLS endpoint, and its Bonjour service type.
 pub const REMOTE_PORT: u16 = 7844;
@@ -517,11 +517,13 @@ pub enum RunState {
     Cancelled,
     /// Its condition said not to run, or what it needed failed.
     Skipped,
+    /// Waiting for someone to approve its environment.
+    Waiting,
 }
 
 impl RunState {
     pub fn finished(self) -> bool {
-        !matches!(self, RunState::Queued | RunState::Running)
+        !matches!(self, RunState::Queued | RunState::Running | RunState::Waiting)
     }
 
     pub fn name(self) -> &'static str {
@@ -532,6 +534,7 @@ impl RunState {
             RunState::Failure => "failure",
             RunState::Cancelled => "cancelled",
             RunState::Skipped => "skipped",
+            RunState::Waiting => "waiting",
         }
     }
 
@@ -542,9 +545,74 @@ impl RunState {
             "failure" => RunState::Failure,
             "cancelled" => RunState::Cancelled,
             "skipped" => RunState::Skipped,
+            "waiting" => RunState::Waiting,
             _ => RunState::Queued,
         }
     }
+}
+
+/// Where a secret or variable applies. Neither set: every repo.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultScope {
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Only for jobs deploying to this environment (needs `repo`).
+    #[serde(default)]
+    pub environment: Option<String>,
+}
+
+/// A secret's name and where it applies; never its value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretInfo {
+    pub scope: VaultScope,
+    pub name: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Variable {
+    pub scope: VaultScope,
+    pub name: String,
+    pub value: String,
+    pub updated_at: i64,
+}
+
+/// A deployment target with its own secrets, which can need approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Environment {
+    pub repo: String,
+    pub name: String,
+    /// Jobs wait until someone approves them.
+    pub require_approval: bool,
+    /// Branches that may deploy here (patterns with `*`); empty means any.
+    #[serde(default)]
+    pub branches: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Artifact {
+    pub run: i64,
+    pub job: String,
+    /// Relative to the job's workspace.
+    pub path: String,
+    pub size: u64,
+}
+
+/// Part of an artifact, base64-encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactChunk {
+    pub path: String,
+    pub offset: u64,
+    pub size: u64,
+    pub data: String,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultInfo {
+    pub set_up: bool,
+    /// `keychain` or `file`.
+    pub key_store: String,
 }
 
 /// A workflow file and whether it parses.
@@ -608,6 +676,12 @@ pub struct RunJob {
     pub state: RunState,
     pub error: Option<String>,
     pub needs: Vec<String>,
+    /// The environment it deploys to, whose secrets it gets.
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Who let it run, when its environment needs approval.
+    #[serde(default)]
+    pub approved_by: Option<String>,
     pub attempt: u32,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
@@ -851,6 +925,29 @@ pub enum Request {
     Workflows { repo: String, branch: String },
     CiInfo,
 
+    // --- Vault and the rest of CI (server) ---
+    VaultInfo,
+    /// Create the master key; answers its recovery code, once. Local only.
+    VaultSetup,
+    /// Put the master key back from its recovery code. Local only.
+    VaultRecover { code: String },
+    ListSecrets { #[serde(default)] scope: VaultScope },
+    /// Write-only: there's no request that reads a secret back.
+    SetSecret { scope: VaultScope, name: String, value: String },
+    DeleteSecret { scope: VaultScope, name: String },
+    ListVariables { #[serde(default)] scope: VaultScope },
+    SetVariable { scope: VaultScope, name: String, value: String },
+    DeleteVariable { scope: VaultScope, name: String },
+    ListEnvironments { repo: String },
+    SetEnvironment { environment: Environment },
+    DeleteEnvironment { repo: String, name: String },
+    /// Let a job waiting on its environment run, or turn it down.
+    ApproveJob { repo: String, job: i64, approve: bool },
+    ListArtifacts { repo: String, run: i64 },
+    ArtifactData { repo: String, run: i64, path: String, #[serde(default)] offset: u64 },
+    /// Snapshot the database now. Local only.
+    Backup,
+
     // --- Pairing (server) ---
     /// A one-time pairing code. Local only.
     PairBegin,
@@ -922,6 +1019,14 @@ pub enum Response {
     Ci(CiInfo),
     /// Each workflow file on a branch: its name and either its triggers or what's wrong with it.
     Workflows(Vec<WorkflowFile>),
+    Vault(VaultInfo),
+    /// The vault's recovery code, shown once.
+    RecoveryCode { code: String },
+    Secrets(Vec<SecretInfo>),
+    Variables(Vec<Variable>),
+    Environments(Vec<Environment>),
+    Artifacts(Vec<Artifact>),
+    ArtifactChunk(ArtifactChunk),
     Authenticated { host: String, role: String },
     /// The request was cancelled before it finished.
     Cancelled,

@@ -32,6 +32,7 @@ struct RunStateIcon: View {
         case .failure: ("xmark.circle.fill", N.danger)
         case .cancelled: ("slash.circle", N.faint)
         case .skipped: ("minus.circle", N.faint)
+        case .waiting: ("hand.raised.circle", N.warn)
         }
         Image(systemName: symbol)
             .font(.system(size: size, weight: .semibold))
@@ -231,7 +232,28 @@ struct RunHeader: View {
             ForEach(detail.warnings, id: \.self) { w in
                 Label(w, systemImage: "exclamationmark.triangle").font(.system(size: 11.5)).foregroundStyle(N.warn)
             }
+            if !model.artifactList.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "shippingbox").font(.system(size: 11)).foregroundStyle(N.faint)
+                    ForEach(model.artifactList.prefix(6)) { a in
+                        Button {
+                            Task { await model.save(a) }
+                        } label: {
+                            Text((a.path as NSString).lastPathComponent).font(N.mono(11.5))
+                        }
+                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 22))
+                        .help("Save \(a.job)/\(a.path) (\(a.size.formatted(.byteCount(style: .file))))")
+                    }
+                    if model.artifactList.count > 6 {
+                        Menu("\(model.artifactList.count - 6) more") {
+                            ForEach(model.artifactList.dropFirst(6)) { a in Button("\(a.job)/\(a.path)") { Task { await model.save(a) } } }
+                        }
+                        .menuStyle(.button).buttonStyle(.plain).fixedSize().font(.system(size: 11.5))
+                    }
+                }
+            }
         }
+        .task(id: "\(r.id):\(r.state.rawValue)") { await model.loadArtifacts() }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -292,6 +314,14 @@ struct JobLogView: View {
                 }
                 .padding(.horizontal, 14)
                 .frame(height: 40)
+                if job.state == .waiting {
+                    ApprovalBanner(job: job)
+                } else if let by = job.approvedBy, let env = job.environment {
+                    Label("Deployed to \(env), approved by \(by)", systemImage: "checkmark.seal")
+                        .font(.system(size: 11.5)).foregroundStyle(N.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14).padding(.bottom, 8)
+                }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 4) {
@@ -484,5 +514,32 @@ struct DispatchSheet: View {
             files = await model.workflowFiles(branch: branch)
             if !startable.contains(where: { $0.file == workflow }) { workflow = startable.first?.file ?? "" }
         }
+    }
+}
+
+/// A job waiting on its environment: who may let it go.
+struct ApprovalBanner: View {
+    @Environment(AppModel.self) private var model
+    var job: RunJob
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "hand.raised.fill").foregroundStyle(N.warn)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Waiting to deploy to \(job.environment ?? "its environment")").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(N.text)
+                Text("It runs with that environment's secrets once you approve it.").font(.system(size: 11.5)).foregroundStyle(N.muted)
+            }
+            Spacer()
+            Button(model.runBusy == "Turning down" ? "Turning down…" : "Turn down") { Task { await model.decide(job: job, approve: false) } }
+                .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                .disabled(model.runBusy != nil)
+            Button(model.runBusy == "Approving" ? "Approving…" : "Approve") { Task { await model.decide(job: job, approve: true) } }
+                .buttonStyle(PillButtonStyle(kind: .primary, height: 28))
+                .disabled(model.runBusy != nil)
+        }
+        .padding(12)
+        .background(N.warn.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
 }

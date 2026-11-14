@@ -11,7 +11,9 @@ use neutrino_proto::{BranchRule, Note, PullRequest, PullState, PullVersion, Rule
 use rusqlite::{Connection, OptionalExtension, params};
 
 mod runs;
-pub use runs::{NewJob, QueuedJob};
+mod vault;
+pub use runs::{NewJob, NewRun, QueuedJob};
+pub use vault::{Scope, check_name as vault_check_name};
 
 /// Each step brings the schema from version `i` to `i + 1`.
 const MIGRATIONS: &[&str] = &[
@@ -120,6 +122,55 @@ const MIGRATIONS: &[&str] = &[
         finished_at INTEGER,
         PRIMARY KEY (job, idx)
     );",
+    "CREATE TABLE secrets (
+        repo TEXT NOT NULL DEFAULT '',
+        environment TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL,
+        sealed BLOB NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (repo, environment, name)
+    );
+    CREATE TABLE variables (
+        repo TEXT NOT NULL DEFAULT '',
+        environment TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (repo, environment, name)
+    );
+    CREATE TABLE environments (
+        repo TEXT NOT NULL,
+        name TEXT NOT NULL,
+        require_approval INTEGER NOT NULL,
+        branches TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (repo, name)
+    );
+    CREATE TABLE caches (
+        repo TEXT NOT NULL,
+        key TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used INTEGER NOT NULL,
+        PRIMARY KEY (repo, key)
+    );
+    CREATE TABLE artifacts (
+        run INTEGER NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+        job TEXT NOT NULL,
+        path TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        PRIMARY KEY (run, job, path)
+    );
+    CREATE TABLE schedule_marks (
+        repo TEXT NOT NULL,
+        workflow TEXT NOT NULL,
+        cron TEXT NOT NULL,
+        minute INTEGER NOT NULL,
+        PRIMARY KEY (repo, workflow, cron)
+    );
+    ALTER TABLE jobs ADD COLUMN environment TEXT;
+    ALTER TABLE jobs ADD COLUMN approved_by TEXT;
+    ALTER TABLE jobs ADD COLUMN concurrency TEXT;
+    ALTER TABLE runs ADD COLUMN concurrency TEXT;",
 ];
 
 pub struct Store {

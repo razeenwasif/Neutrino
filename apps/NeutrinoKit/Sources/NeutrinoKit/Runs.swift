@@ -4,9 +4,9 @@ import Foundation
 // on the server, so `ServerService` serves them.
 
 public enum RunState: String, Codable, Hashable, Sendable {
-    case queued, running, success, failure, cancelled, skipped
+    case queued, running, success, failure, cancelled, skipped, waiting
 
-    public var finished: Bool { self != .queued && self != .running }
+    public var finished: Bool { self != .queued && self != .running && self != .waiting }
 
     public var label: String {
         switch self {
@@ -16,6 +16,7 @@ public enum RunState: String, Codable, Hashable, Sendable {
         case .failure: "Failed"
         case .cancelled: "Cancelled"
         case .skipped: "Skipped"
+        case .waiting: "Waiting for approval"
         }
     }
 }
@@ -95,6 +96,8 @@ public struct RunJob: Codable, Hashable, Identifiable, Sendable {
     public var state: RunState
     public var error: String?
     public var needs: [String]
+    public var environment: String?
+    public var approvedBy: String?
     public var attempt: UInt32
     public var startedAt: Int64?
     public var finishedAt: Int64?
@@ -203,5 +206,155 @@ extension ServerService: RunService {
     public func ciInfo() async throws -> CiInfo {
         guard case let .ci(info) = try await call(.ciInfo) else { throw ServiceError.unexpectedResponse }
         return info
+    }
+}
+
+// MARK: - Vault, environments, artifacts
+
+public struct VaultScope: Codable, Hashable, Sendable {
+    public var repo: String?
+    public var environment: String?
+
+    public init(repo: String? = nil, environment: String? = nil) {
+        self.repo = repo
+        self.environment = environment
+    }
+
+    public var label: String {
+        switch (repo, environment) {
+        case (nil, _): "Every repository"
+        case let (r?, nil): r
+        case let (r?, e?): "\(r) · \(e)"
+        }
+    }
+}
+
+public struct SecretInfo: Codable, Hashable, Identifiable, Sendable {
+    public var scope: VaultScope
+    public var name: String
+    public var updatedAt: Int64
+    public var id: String { "\(scope.repo ?? "")/\(scope.environment ?? "")/\(name)" }
+}
+
+public struct Variable: Codable, Hashable, Identifiable, Sendable {
+    public var scope: VaultScope
+    public var name: String
+    public var value: String
+    public var updatedAt: Int64
+    public var id: String { "\(scope.repo ?? "")/\(scope.environment ?? "")/\(name)" }
+}
+
+public struct DeployEnvironment: Codable, Hashable, Identifiable, Sendable {
+    public var repo: String
+    public var name: String
+    public var requireApproval: Bool
+    public var branches: [String]
+    public var id: String { name }
+
+    public init(repo: String, name: String, requireApproval: Bool, branches: [String] = []) {
+        self.repo = repo
+        self.name = name
+        self.requireApproval = requireApproval
+        self.branches = branches
+    }
+}
+
+public struct Artifact: Codable, Hashable, Identifiable, Sendable {
+    public var run: Int64
+    public var job: String
+    public var path: String
+    public var size: UInt64
+    public var id: String { "\(job)/\(path)" }
+}
+
+public struct ArtifactChunk: Codable, Hashable, Sendable {
+    public var path: String
+    public var offset: UInt64
+    public var size: UInt64
+    public var data: String
+    public var done: Bool
+}
+
+public struct VaultInfo: Codable, Hashable, Sendable {
+    public var setUp: Bool
+    public var keyStore: String
+}
+
+public protocol VaultService: Sendable {
+    func vaultInfo() async throws -> VaultInfo
+    func secrets(scope: VaultScope) async throws -> [SecretInfo]
+    func setSecret(scope: VaultScope, name: String, value: String) async throws -> [SecretInfo]
+    func deleteSecret(scope: VaultScope, name: String) async throws -> [SecretInfo]
+    func variables(scope: VaultScope) async throws -> [Variable]
+    func setVariable(scope: VaultScope, name: String, value: String) async throws -> [Variable]
+    func deleteVariable(scope: VaultScope, name: String) async throws -> [Variable]
+    func environments(repo: String) async throws -> [DeployEnvironment]
+    func setEnvironment(_ env: DeployEnvironment) async throws -> [DeployEnvironment]
+    func deleteEnvironment(repo: String, name: String) async throws -> [DeployEnvironment]
+    func approve(repo: String, job: Int64, approve: Bool) async throws -> RunDetail
+    func artifacts(repo: String, run: Int64) async throws -> [Artifact]
+    /// The whole file, read in pieces.
+    func download(repo: String, run: Int64, path: String) async throws -> Data
+}
+
+extension ServerService: VaultService {
+    private func secretList(_ r: Request) async throws -> [SecretInfo] {
+        guard case let .secrets(list) = try await call(r) else { throw ServiceError.unexpectedResponse }
+        return list
+    }
+
+    private func variableList(_ r: Request) async throws -> [Variable] {
+        guard case let .variables(list) = try await call(r) else { throw ServiceError.unexpectedResponse }
+        return list
+    }
+
+    private func environmentList(_ r: Request) async throws -> [DeployEnvironment] {
+        guard case let .environments(list) = try await call(r) else { throw ServiceError.unexpectedResponse }
+        return list
+    }
+
+    public func vaultInfo() async throws -> VaultInfo {
+        guard case let .vault(v) = try await call(.vaultInfo) else { throw ServiceError.unexpectedResponse }
+        return v
+    }
+
+    public func secrets(scope: VaultScope) async throws -> [SecretInfo] { try await secretList(.listSecrets(scope: scope)) }
+    public func setSecret(scope: VaultScope, name: String, value: String) async throws -> [SecretInfo] {
+        try await secretList(.setSecret(scope: scope, name: name, value: value))
+    }
+    public func deleteSecret(scope: VaultScope, name: String) async throws -> [SecretInfo] { try await secretList(.deleteSecret(scope: scope, name: name)) }
+    public func variables(scope: VaultScope) async throws -> [Variable] { try await variableList(.listVariables(scope: scope)) }
+    public func setVariable(scope: VaultScope, name: String, value: String) async throws -> [Variable] {
+        try await variableList(.setVariable(scope: scope, name: name, value: value))
+    }
+    public func deleteVariable(scope: VaultScope, name: String) async throws -> [Variable] { try await variableList(.deleteVariable(scope: scope, name: name)) }
+    public func environments(repo: String) async throws -> [DeployEnvironment] { try await environmentList(.listEnvironments(repo: repo)) }
+    public func setEnvironment(_ env: DeployEnvironment) async throws -> [DeployEnvironment] { try await environmentList(.setEnvironment(env)) }
+    public func deleteEnvironment(repo: String, name: String) async throws -> [DeployEnvironment] {
+        try await environmentList(.deleteEnvironment(repo: repo, name: name))
+    }
+
+    public func approve(repo: String, job: Int64, approve: Bool) async throws -> RunDetail {
+        guard case let .run(d) = try await call(.approveJob(repo: repo, job: job, approve: approve)) else { throw ServiceError.unexpectedResponse }
+        return d
+    }
+
+    public func artifacts(repo: String, run: Int64) async throws -> [Artifact] {
+        guard case let .artifacts(list) = try await call(.listArtifacts(repo: repo, run: run)) else { throw ServiceError.unexpectedResponse }
+        return list
+    }
+
+    public func download(repo: String, run: Int64, path: String) async throws -> Data {
+        var out = Data()
+        var offset: UInt64 = 0
+        while true {
+            guard case let .artifactChunk(chunk) = try await call(.artifactData(repo: repo, run: run, path: path, offset: offset)) else {
+                throw ServiceError.unexpectedResponse
+            }
+            guard let bytes = Data(base64Encoded: chunk.data) else { throw ServiceError.io("the artifact came back unreadable") }
+            out.append(bytes)
+            offset += UInt64(bytes.count)
+            if chunk.done || bytes.isEmpty { return out }
+        }
     }
 }

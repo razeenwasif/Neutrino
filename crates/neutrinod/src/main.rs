@@ -36,6 +36,19 @@ struct Args {
     /// Server: gravitond's socket. Default `$GRAVITON_SOCKET`, else Graviton.app's.
     #[arg(long)]
     graviton_socket: Option<PathBuf>,
+    /// Server: caches kept at most (10G).
+    #[arg(long, default_value = "10G")]
+    ci_cache: String,
+    /// Server: days to keep finished runs' logs and artifacts.
+    #[arg(long, default_value_t = 30)]
+    retention_days: u32,
+    /// Server: where nightly database snapshots go. Default `<state>/backups`;
+    /// an external disk or a synced folder keeps them off this Mac.
+    #[arg(long)]
+    backup_dir: Option<PathBuf>,
+    /// Server: keep the vault's master key in this file instead of the Keychain.
+    #[arg(long)]
+    vault_key_file: Option<PathBuf>,
     /// Server: run CI steps as plain processes on this Mac, with no isolation. For testing.
     #[arg(long, hide = true)]
     ci_unisolated: bool,
@@ -81,6 +94,15 @@ async fn run(args: Args, socket: PathBuf) -> Result<()> {
             memory_mib: neutrino_ci::workflow::parse_memory(&args.ci_memory)
                 .ok_or_else(|| anyhow::anyhow!("--ci-memory {:?} should look like 512M or 6G", args.ci_memory))?,
             minute: std::time::Duration::from_secs(60),
+            cache_mib: neutrino_ci::workflow::parse_memory(&args.ci_cache)
+                .ok_or_else(|| anyhow::anyhow!("--ci-cache {:?} should look like 512M or 10G", args.ci_cache))?,
+            retention_days: args.retention_days.max(1),
+            backup_dir: args.backup_dir.clone(),
+            backups_kept: 14,
+        },
+        vault: match &args.vault_key_file {
+            Some(path) => neutrino_vault::KeyStore::File(path.clone()),
+            None => neutrino_vault::KeyStore::Keychain,
         },
     };
     let daemon = neutrinod::Daemon::with(&state, options)?;

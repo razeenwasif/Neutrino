@@ -301,7 +301,6 @@ struct ServerSection: View {
                     .buttonStyle(.plain)
                 }
             }
-            NavRow(title: "Secrets", icon: "key", enabled: false, help: "Arrives with milestone 6.")
         }
         .sheet(isPresented: $pairing) { PairSheet() }
         .sheet(isPresented: $publishing) { PublishSheet() }
