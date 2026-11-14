@@ -52,7 +52,72 @@ targets:
           CODE_SIGN_IDENTITY: "Apple Development"
           DEVELOPMENT_TEAM: YOUR_TEAM_ID
 
+  NeutrinoIOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources: [iOS]
+    dependencies:
+      - package: NeutrinoKit
+      - target: NeutrinoNotify
+    info:
+      path: iOS/Info.plist
+      properties:
+        NSLocalNetworkUsageDescription: Neutrino looks for your Neutrino server on the local network so you can pair with it.
+        NSBonjourServices: [_neutrino._tcp]
+        NSFaceIDUsageDescription: Face ID confirms merges, approvals and cancels before they're signed and sent to your server.
+        UIBackgroundModes: [remote-notification]
+    entitlements:
+      path: iOS/Neutrino.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups: [group.dev.neutrino]
+        keychain-access-groups: ["$(AppIdentifierPrefix)dev.neutrino.shared"]
+    settings:
+      base:
+        PRODUCT_NAME: Neutrino
+        PRODUCT_BUNDLE_IDENTIFIER: dev.neutrino.ios
+        TARGETED_DEVICE_FAMILY: "1"
+        DEVELOPMENT_TEAM: YOUR_TEAM_ID
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_KEY_CFBundleDisplayName: Neutrino
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+
+  NeutrinoNotify:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources: [iOSNotify]
+    dependencies:
+      - package: NeutrinoKit
+    info:
+      path: iOSNotify/Info.plist
+      properties:
+        CFBundleDisplayName: Neutrino Notifications
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    entitlements:
+      path: iOSNotify/NeutrinoNotify.entitlements
+      properties:
+        com.apple.security.application-groups: [group.dev.neutrino]
+        keychain-access-groups: ["$(AppIdentifierPrefix)dev.neutrino.shared"]
+    settings:
+      base:
+        PRODUCT_NAME: NeutrinoNotify
+        PRODUCT_BUNDLE_IDENTIFIER: dev.neutrino.ios.notify
+        DEVELOPMENT_TEAM: YOUR_TEAM_ID
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+
 schemes:
+  NeutrinoIOS:
+    build:
+      targets: { NeutrinoIOS: all }
+    run:
+      config: Debug
   NeutrinoMac:
     build:
       targets: { NeutrinoMac: all }

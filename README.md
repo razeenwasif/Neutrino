@@ -5,13 +5,14 @@ branches, pull requests, diff review, CI/CD and secrets, on your own
 machines. A Rust engine reads git repositories in-process with gitoxide; a
 SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> Status: **milestone 7 done** (the other executors). Besides Graviton VMs, CI
-> jobs can run as plain processes on the server's macOS (`runs-on: host`) or go
-> to forge and the other nodes through Nexus (`runs-on: nexus`), and workflows
-> can filter on the paths a push changed. Nexus's own three GitHub workflows
-> are translated in `docs/examples/nexus/`. Milestone 6 gave the vault and the
-> rest of CI; 5 CI on Graviton; 4 pull requests; 3 the server on atlas; 1 and 2
-> the client. The iPhone app comes next.
+> Status: **milestone 8 done** (the iPhone app). The phone shows what needs
+> you (deploys waiting for approval, pull requests ready to merge, runs) and
+> approves, turns down, merges and cancels, each signed with a key in its
+> Secure Enclave after Face ID. Push notifications go through APNs carrying no
+> details; the phone fetches the text from the server. Milestone 7 gave the
+> other executors (`runs-on: host`, `runs-on: nexus`); 6 the vault and the rest
+> of CI; 5 CI on Graviton; 4 pull requests; 3 the server on atlas; 1 and 2 the
+> client.
 
 ## Layout
 
@@ -35,6 +36,8 @@ apps/
   NeutrinoKit/     Swift package: wire mirror, socket client, demo data, theme
   Mac/             macOS app: Changes, History, commit panel, diff view, Branches, Pull requests,
                    Runs, Secrets
+  iOS/             iPhone app: Inbox, pull requests with diffs, runs with logs, approvals
+  iOSNotify/       Notification service extension: swaps a push's placeholder for the real text
 design/            App icon sources; make-icons.sh renders them into the asset catalog
 scripts/
   dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
@@ -278,6 +281,44 @@ The database is snapshotted every night after 03:30 UTC to `--backup-dir`
 folder to keep copies off the server), keeping the last 14. Secrets in a
 snapshot stay sealed; the recovery code opens them.
 
+### The iPhone app
+
+```bash
+cd apps && xcodegen generate && open Neutrino.xcodeproj   # scheme NeutrinoIOS
+```
+
+Pair it like the Mac app: on atlas run `ntr pair`, pick the server on the
+phone (or type its address), check the fingerprint, enter the code. Pairing
+also makes a P-256 key in the phone's Secure Enclave, usable only after Face
+ID or the passcode, and gives the server its public half (once: a device can't
+swap its key later). The Inbox lists deploys waiting for approval, pull
+requests ready to merge and the rest that are open, unfinished and recent runs,
+and what happened lately; a pull request opens to its checks and diff, a run
+to its jobs, steps and logs.
+
+Approving, turning down, merging and cancelling from the phone are signed: the
+request, the time and a random nonce, so the server refuses one that was
+changed, is more than five minutes old, or was sent before. Once a device has a
+key the server refuses those requests from it unsigned, so a stolen token alone
+can't approve a deploy. `ntr devices` shows which devices sign; the approver is
+recorded by device name.
+
+Notifications need an APNs key from your Apple developer account (Keys, with
+Apple Push Notification service). The server seals it like a secret, so set up
+the vault first. On atlas:
+
+```bash
+ntr notify setup --key AuthKey_ABC123.p8 --key-id ABC123 --team-id YOUR_TEAM_ID --topic dev.neutrino.ios
+ntr notify test                            # to every phone that takes pushes
+ntr notify                                 # what's set up, and who receives
+```
+
+The server pushes when a deploy starts waiting for approval and when a run
+fails. The push itself says only "Something
+needs you" with an id; the notification extension asks the server for the
+words, so repo names and branches never pass through Apple. Phones choose
+which kinds they take in Settings.
+
 ### Working copies
 
 Writes go through the `git` binary (Homebrew's, else Xcode's; `NEUTRINO_GIT`
@@ -355,6 +396,10 @@ checked.
 - The diff cache is in memory and capped at 512 diffs; it isn't kept on disk.
 - The watcher skips common build folders (`target`, `node_modules`, `.build`,
   `DerivedData` and a few more) by name rather than by `.gitignore`.
+- The phone talks to the server directly, so away from home it needs a way
+  back to atlas (Tailscale or similar); there's no relay.
+- Push delivery hasn't been tried against Apple's servers yet: it needs your
+  APNs key. The sender is tested against the signed JWT and payload shape.
 - Line staging uses the working tree's bytes as they are, without git's
   clean filters (LFS, CRLF conversion); files that rely on them should be
   staged whole.

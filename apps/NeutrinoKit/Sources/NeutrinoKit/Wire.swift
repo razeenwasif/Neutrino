@@ -3,7 +3,7 @@ import Foundation
 // Mirrors crates/neutrino-proto. Keys are snake_case on the wire and
 // camelCase here (the coders convert); enum values keep their wire spelling.
 
-public let protocolVersion: UInt32 = 6
+public let protocolVersion: UInt32 = 7
 
 // MARK: - Repositories and refs
 
@@ -559,6 +559,11 @@ public enum Request: Sendable, Equatable {
     case approveJob(repo: String, job: Int64, approve: Bool)
     case listArtifacts(repo: String, run: Int64)
     case artifactData(repo: String, run: Int64, path: String, offset: UInt64)
+    case registerKey(publicKey: String)
+    case registerPush(token: String?, sandbox: Bool, events: [String])
+    case signed(request: String, at: Int64, nonce: String, signature: String)
+    case inbox
+    case notification(id: String)
     case pair(code: String, device: String)
     case auth(token: String)
     case cancel(id: UInt64)
@@ -596,6 +601,8 @@ public enum Response: Sendable, Equatable {
     case environments([DeployEnvironment])
     case artifacts([Artifact])
     case artifactChunk(ArtifactChunk)
+    case inbox(Inbox)
+    case notification(NotificationText)
     case paired(token: String, deviceID: String, host: String)
     case authenticated(host: String, role: String)
     case cancelled
@@ -668,6 +675,10 @@ public enum Wire {
     private struct ApproveParam: Encodable { var repo: String; var job: Int64; var approve: Bool }
     private struct ArtifactsParam: Encodable { var repo: String; var run: Int64 }
     private struct ArtifactDataParam: Encodable { var repo: String; var run: Int64; var path: String; var offset: UInt64 }
+    private struct KeyParam: Encodable { var publicKey: String }
+    private struct PushParam2: Encodable { var token: String?; var sandbox: Bool; var events: [String] }
+    private struct SignedParam: Encodable { var request: String; var at: Int64; var nonce: String; var signature: String }
+    private struct NotificationParam: Encodable { var id: String }
     private struct DiffParam: Encodable {
         var repo: String
         var sha: String
@@ -750,6 +761,11 @@ public enum Wire {
         case let .approveJob(repo, job, approve): try line(id, "approve_job", ApproveParam(repo: repo, job: job, approve: approve))
         case let .listArtifacts(repo, run): try line(id, "list_artifacts", ArtifactsParam(repo: repo, run: run))
         case let .artifactData(repo, run, path, offset): try line(id, "artifact_data", ArtifactDataParam(repo: repo, run: run, path: path, offset: offset))
+        case let .registerKey(key): try line(id, "register_key", KeyParam(publicKey: key))
+        case let .registerPush(token, sandbox, events): try line(id, "register_push", PushParam2(token: token, sandbox: sandbox, events: events))
+        case let .signed(request, at, nonce, signature): try line(id, "signed", SignedParam(request: request, at: at, nonce: nonce, signature: signature))
+        case .inbox: try line(id, "inbox", NoParams?.none)
+        case let .notification(nid): try line(id, "notification", NotificationParam(id: nid))
         case let .pair(code, device): try line(id, "pair", PairParam(code: code, device: device))
         case let .auth(token): try line(id, "auth", AuthParam(token: token))
         case let .cancel(target): try line(id, "cancel", IDParam(id: target))
@@ -811,6 +827,8 @@ public enum Wire {
         case "environments": .environments(try data([DeployEnvironment].self))
         case "artifacts": .artifacts(try data([Artifact].self))
         case "artifact_chunk": .artifactChunk(try data(ArtifactChunk.self))
+        case "inbox": .inbox(try data(Inbox.self))
+        case "notification": .notification(try data(NotificationText.self))
         case "paired": try { let p = try data(Paired.self); return .paired(token: p.token, deviceID: p.deviceId, host: p.host) }()
         case "authenticated": try { let a = try data(Authenticated.self); return .authenticated(host: a.host, role: a.role) }()
         case "cancelled": .cancelled

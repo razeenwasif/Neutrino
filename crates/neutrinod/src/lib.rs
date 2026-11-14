@@ -10,6 +10,8 @@
 
 pub mod ci;
 pub mod hosting;
+mod phone;
+pub use neutrino_remote;
 mod pulls;
 mod registry;
 mod watch;
@@ -83,8 +85,8 @@ impl Default for Options {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     Local,
-    /// The device's name.
-    Remote(String),
+    /// A paired device: its id and name.
+    Remote { id: String, name: String },
 }
 
 impl Scope {
@@ -92,7 +94,7 @@ impl Scope {
     fn who(&self) -> String {
         match self {
             Scope::Local => "the server".into(),
-            Scope::Remote(device) => device.clone(),
+            Scope::Remote { name, .. } => name.clone(),
         }
     }
 }
@@ -145,6 +147,11 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::ApproveJob { .. }
             | Request::ListArtifacts { .. }
             | Request::ArtifactData { .. }
+            | Request::RegisterKey { .. }
+            | Request::RegisterPush { .. }
+            | Request::Inbox
+            | Request::Notification { .. }
+            | Request::PushInfo
             | Request::Subscribe
             | Request::Cancel { .. }
     )
@@ -167,6 +174,10 @@ pub struct Daemon {
     ci: Option<ci::Ci>,
     /// Secrets' key; the server's only.
     vault: Option<neutrino_vault::Vault>,
+    /// Nonces of signed requests seen lately, so none is used twice.
+    nonces: Mutex<HashMap<String, i64>>,
+    /// Apple's push service, once it has a key.
+    apns: phone::Apns,
     /// The socket hooks call back on; set by `serve`.
     socket: Mutex<Option<PathBuf>>,
     /// The TLS port actually bound (the option may be 0 for "any").
@@ -198,6 +209,8 @@ impl Daemon {
             Role::Workstation => None,
         };
         Ok(Arc::new(Daemon {
+            nonces: Mutex::new(HashMap::new()),
+            apns: phone::Apns::default(),
             store,
             ci,
             vault,
@@ -287,6 +300,12 @@ impl Daemon {
 
     /// Answer one request. Git work runs on the blocking pool.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+        if request == Request::PushTest {
+            return match self.push_test().await {
+                Ok(output) => Response::Done { output },
+                Err(e) => Response::Error { message: format!("{e:#}") },
+            };
+        }
         if request == Request::CiInfo {
             return match self.ci_info().await {
                 Ok(info) => Response::Ci(info),
@@ -539,6 +558,16 @@ impl Daemon {
             Request::ArtifactData { repo: id, run, path, offset } => Response::ArtifactChunk(self.artifact_chunk(&id, run, &path, offset)?),
             Request::Backup => Response::Done { output: format!("{}", self.backup_now()?.display()) },
 
+            // The phone
+            Request::Inbox => Response::Inbox(Box::new(self.inbox()?)),
+            Request::Notification { id } => Response::Notification(self.store()?.notification(&id)?.context("that notification is gone")?),
+            Request::PushSetup { key_p8, key_id, team_id, topic } => self.push_setup(&key_p8, &key_id, &team_id, &topic)?,
+            Request::PushInfo => Response::Push(self.push_info()?),
+            Request::PushTest => bail!("a test push is sent by the connection"),
+            Request::RegisterKey { .. } | Request::RegisterPush { .. } | Request::Signed { .. } => {
+                bail!("only a paired device can do that, over its own connection")
+            }
+
             // Pairing
             Request::PairBegin => Response::Pairing(self.pairing()?.begin_pairing()?),
             Request::ListDevices => Response::Devices(self.pairing()?.devices()),
@@ -599,8 +628,24 @@ where
             }
         };
         let id = id.unwrap_or(0);
-        if matches!(scope, Scope::Remote(_)) && !allowed_remotely(&request) {
+        // A signed request: check it, then treat what's inside as the request.
+        let (request, signed) = match request {
+            Request::Signed { request: inner, at, nonce, signature } => match daemon.unwrap_signed(&scope, &inner, at, &nonce, &signature) {
+                Ok(r) => (r, true),
+                Err(e) => {
+                    let _ = tx.send(encode_response(id, &Response::Error { message: format!("{e:#}") })).await;
+                    continue;
+                }
+            },
+            r => (r, false),
+        };
+        if matches!(scope, Scope::Remote { .. }) && !allowed_remotely(&request) {
             let _ = tx.send(encode_response(id, &Response::Error { message: "only available on the server itself".into() })).await;
+            continue;
+        }
+        // The phone's own settings, and the requests it has to sign.
+        if let Some(response) = daemon.device_request(&scope, &request, signed) {
+            let _ = tx.send(encode_response(id, &response)).await;
             continue;
         }
         // Approvals record who gave them, which only the connection knows.
@@ -672,9 +717,9 @@ async fn serve_remote(daemon: Arc<Daemon>, remote: Arc<Remote>, listener: tokio:
         let (daemon, remote) = (Arc::clone(&daemon), Arc::clone(&remote));
         tokio::spawn(async move {
             match remote.accept(tcp, daemon.options.role.name()).await {
-                Ok(Some((session, device))) => {
+                Ok(Some((session, id, name))) => {
                     let (read, write) = tokio::io::split(session);
-                    connection(daemon, read, write, Scope::Remote(device)).await;
+                    connection(daemon, read, write, Scope::Remote { id, name }).await;
                 }
                 Ok(None) => {}
                 Err(e) => eprintln!("remote {peer}: {e:#}"),

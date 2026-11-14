@@ -6,11 +6,10 @@ secret storage. The server runs on atlas (the always-on Mac mini); the MacBook
 is a client. CI jobs run in Graviton containers on atlas. Nothing leaves your
 machines.
 
-Status: milestones 1 to 7 are built (CI on Graviton, the host and through
-Nexus, with secrets, environments, caches, artifacts and schedules), and the
-server runs on atlas. See the README for what was measured. Milestone 8 (the
-iPhone) is design. Graviton isn't on atlas yet, so Graviton jobs there fail at
-"couldn't start the container" until it is.
+Status: milestones 1 to 8 are built (CI on Graviton, the host and through
+Nexus, with secrets, environments, caches, artifacts and schedules; the iPhone
+app with signed approvals and content-free push notifications), and the server
+runs on atlas. See the README for what was measured and what's left.
 
 ## 1. Decisions and what they rest on
 
@@ -297,15 +296,17 @@ Revoking the device on the Mac stops the token working.
 
 **Approvals**: approving a deploy, merging, and cancelling a run ask for Face
 ID. At pairing the phone makes a key in its Secure Enclave and gives the
-server the public half; those three requests are signed with it, so a stolen
-token alone cannot approve anything.
+server the public half; those requests (and turning a deploy down) are
+signed with it over the request, the time and a one-use nonce, so a stolen
+token alone cannot approve anything, and a captured request can't be replayed
+or altered. A device with a key can't send them unsigned.
 
 **Notifications** are the one place the design leaves the house: iOS wakes a
 closed app only through Apple's push service (APNs), so Neutrino uses it, and
 keeps what it sends to a minimum.
 
 - **What atlas sends**: a push whose payload is only an opaque event id and a
-  generic alert ("Neutrino: something needs you"). No repo names, branches,
+  generic alert ("Something needs you"). No repo names, branches,
   commit messages, or log text. Apple learns that something happened, not
   what.
 - **What the phone does**: a Notification Service Extension wakes on the
@@ -315,7 +316,7 @@ keeps what it sends to a minimum.
 - **Which events**: a deploy waiting for approval and failed checks, each a
   switch on the phone. Everything else waits for the app to open.
 - **Setup**: an APNs auth key (`.p8`) from your Apple Developer account,
-  stored in atlas's Keychain next to the vault key, plus the app's Push
+  sealed under the vault's key (which is in atlas's Keychain), plus the app's Push
   Notifications entitlement. The phone gives atlas its device token at
   pairing; revoking the device deletes it.
 - **Without the key** everything else works; the Inbox is current whenever the

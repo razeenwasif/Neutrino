@@ -73,26 +73,38 @@ public enum ServerStore {
     private static let key = "server"
     private static let service = "dev.neutrino.server"
 
+    /// Set at launch by an app that shares its pairing with an extension (the
+    /// iPhone app and its notification extension): the app group for the link
+    /// and the Keychain access group for the token.
+    nonisolated(unsafe) public static var shared: (appGroup: String, keychainGroup: String)?
+
+    private static var defaults: UserDefaults {
+        shared.flatMap { UserDefaults(suiteName: $0.appGroup) } ?? .standard
+    }
+
     /// The paired server, if any. Doesn't touch the Keychain: reading it can
     /// put up a prompt, which mustn't hold up launch. The token is read when
     /// `ServerService` connects, and a missing one reads as unpaired then.
     public static func load() -> ServerLink? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        guard let data = defaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(ServerLink.self, from: data)
     }
 
     public static func save(_ link: ServerLink, token: String? = nil) throws {
         if let token { try setToken(token, for: link.deviceID) }
-        UserDefaults.standard.set(try JSONEncoder().encode(link), forKey: key)
+        defaults.set(try JSONEncoder().encode(link), forKey: key)
     }
 
     public static func forget() {
         if let link = load() { deleteToken(for: link.deviceID) }
-        UserDefaults.standard.removeObject(forKey: key)
+        defaults.removeObject(forKey: key)
+        DeviceKey.forget()
     }
 
     private static func query(_ id: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: id]
+        var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: id]
+        if let group = shared?.keychainGroup { q[kSecAttrAccessGroup as String] = group }
+        return q
     }
 
     static func setToken(_ token: String, for id: String) throws {

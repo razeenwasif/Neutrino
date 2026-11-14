@@ -696,6 +696,15 @@ impl Daemon {
                     if e.require_approval && q.approved_by.is_none() {
                         store.set_waiting(q.id)?;
                         self.runs_changed(&run.repo);
+                        let job_name = store.job(q.id).map(|j| j.name).unwrap_or_else(|_| q.key.clone());
+                        self.notify(
+                            "approval",
+                            format!("{env} needs your approval"),
+                            format!("{} run {} wants to deploy {job_name} from {} ({})", run.name, run.number, run.branch.as_deref().unwrap_or("a commit"), run.repo),
+                            &run.repo,
+                            Some(run.id),
+                            run.pull,
+                        );
                         continue;
                     }
                 }
@@ -758,9 +767,21 @@ impl Daemon {
         Ok(())
     }
 
-    fn settled(&self, run: i64, repo: &str) {
+    fn settled(self: &Arc<Self>, run: i64, repo: &str) {
         if let Ok(store) = self.store() {
-            let _ = store.settle_run(run);
+            let before = store.run(run).map(|r| r.state).ok();
+            if let (Ok(RunState::Failure), Some(b)) = (store.settle_run(run), before) {
+                if !b.finished() {
+                    if let Ok(r) = store.run(run) {
+                        let at = match (r.pull, &r.branch) {
+                            (Some(n), _) => format!("pull request #{n}"),
+                            (None, Some(b)) => b.clone(),
+                            _ => r.sha.chars().take(7).collect(),
+                        };
+                        self.notify("failure", format!("{} failed", r.name), format!("{repo} · {at} · run {}", r.number), repo, Some(run), r.pull);
+                    }
+                }
+            }
         }
         self.runs_changed(repo);
     }

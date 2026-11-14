@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use neutrino_proto::{BranchRule, Note, PullRequest, PullState, PullVersion, RuleOverride, Side};
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod phone;
 mod runs;
 mod vault;
 pub use runs::{NewJob, NewRun, QueuedJob};
@@ -171,6 +172,23 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE jobs ADD COLUMN approved_by TEXT;
     ALTER TABLE jobs ADD COLUMN concurrency TEXT;
     ALTER TABLE runs ADD COLUMN concurrency TEXT;",
+    "CREATE TABLE notifications (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        run INTEGER,
+        pull INTEGER,
+        at INTEGER NOT NULL
+    );
+    CREATE TABLE push_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        key_id TEXT NOT NULL,
+        team_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        sealed_key BLOB NOT NULL
+    );",
 ];
 
 pub struct Store {

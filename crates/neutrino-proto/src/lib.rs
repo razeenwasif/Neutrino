@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a breaking change is made to the control API.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// TCP port of the server's paired TLS endpoint, and its Bonjour service type.
 pub const REMOTE_PORT: u16 = 7844;
@@ -362,6 +362,12 @@ pub struct PairedDevice {
     /// Unix seconds.
     pub paired_at: u64,
     pub last_seen: Option<u64>,
+    /// It signs approvals with a key in its Secure Enclave.
+    #[serde(default)]
+    pub signs: bool,
+    /// It gets push notifications.
+    #[serde(default)]
+    pub push: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +619,61 @@ pub struct VaultInfo {
     pub set_up: bool,
     /// `keychain` or `file`.
     pub key_store: String,
+}
+
+/// A job waiting for someone to approve its environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waiting {
+    pub repo: String,
+    pub run: i64,
+    pub number: u32,
+    pub run_name: String,
+    pub job: i64,
+    pub job_name: String,
+    pub environment: Option<String>,
+    pub branch: Option<String>,
+    /// When the run was created.
+    pub since: i64,
+}
+
+/// What needs you, across every hosted repo.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Inbox {
+    /// Deploys waiting for approval.
+    pub waiting: Vec<Waiting>,
+    /// Open pull requests that merge cleanly and whose required checks passed.
+    pub ready: Vec<PullRequest>,
+    /// Other open pull requests.
+    pub open: Vec<PullRequest>,
+    /// Running runs, then recent ones, newest first.
+    pub runs: Vec<Run>,
+    /// What was notified lately, newest first.
+    #[serde(default)]
+    pub events: Vec<NotificationText>,
+}
+
+/// The real text of a push notification, fetched by the phone over the paired
+/// connection: Apple only ever carries its id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationText {
+    pub id: String,
+    /// `approval` or `failure`.
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub repo: String,
+    pub run: Option<i64>,
+    pub pull: Option<u32>,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushInfo {
+    /// An APNs key is stored.
+    pub configured: bool,
+    pub topic: Option<String>,
+    /// Devices that get pushes.
+    pub devices: u32,
 }
 
 /// A workflow file and whether it parses.
@@ -954,6 +1015,33 @@ pub enum Request {
     /// Snapshot the database now. Local only.
     Backup,
 
+    // --- The phone (server) ---
+    /// Over TLS, once after pairing: the device's Secure Enclave public key
+    /// (an uncompressed P-256 point, base64). From then on its merges,
+    /// approvals and cancels must come wrapped in `Signed`.
+    RegisterKey { public_key: String },
+    /// Over TLS: where to push, and for what (`approvals`, `failures`); no token turns pushes off.
+    RegisterPush {
+        #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
+        sandbox: bool,
+        #[serde(default)]
+        events: Vec<String>,
+    },
+    /// A request signed with the device's key: `signature` (DER, base64) is
+    /// over `"{at}\n{nonce}\n{request}"`, where `request` is the inner
+    /// request's JSON line. Good for five minutes, once.
+    Signed { request: String, at: i64, nonce: String, signature: String },
+    Inbox,
+    /// The text behind a push's id.
+    Notification { id: String },
+    /// Store an APNs auth key (.p8 contents) to push with. Local only.
+    PushSetup { key_p8: String, key_id: String, team_id: String, topic: String },
+    PushInfo,
+    /// Send a test push to every device that takes them. Local only.
+    PushTest,
+
     // --- Pairing (server) ---
     /// A one-time pairing code. Local only.
     PairBegin,
@@ -1033,6 +1121,9 @@ pub enum Response {
     Environments(Vec<Environment>),
     Artifacts(Vec<Artifact>),
     ArtifactChunk(ArtifactChunk),
+    Inbox(Box<Inbox>),
+    Notification(NotificationText),
+    Push(PushInfo),
     Authenticated { host: String, role: String },
     /// The request was cancelled before it finished.
     Cancelled,

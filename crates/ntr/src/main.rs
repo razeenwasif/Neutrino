@@ -166,6 +166,33 @@ enum Cmd {
     Env(EnvCmd),
     /// Server: snapshot the database now.
     Backup,
+    /// Server: what needs you: deploys to approve, pull requests ready to merge, runs.
+    Inbox,
+    /// Server: push notifications to paired phones (through Apple; only an id goes there).
+    Notify {
+        #[command(subcommand)]
+        action: Option<PushCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PushCmd {
+    /// Store the APNs auth key from your Apple Developer account.
+    Setup {
+        /// The AuthKey_XXXXXXXXXX.p8 file.
+        #[arg(long)]
+        key: PathBuf,
+        /// Its ten-character key id. Default: from the file's name.
+        #[arg(long)]
+        key_id: Option<String>,
+        #[arg(long)]
+        team_id: String,
+        /// The iPhone app's bundle id.
+        #[arg(long, default_value = "dev.neutrino.ios")]
+        topic: String,
+    },
+    /// Send a test push to every phone that takes them.
+    Test,
 }
 
 /// Where a secret or variable applies: this repo (default), every repo, or one environment.
@@ -764,7 +791,13 @@ fn main() -> Result<()> {
                 }
                 for d in list {
                     let seen = d.last_seen.map(|t| ago(t as i64)).unwrap_or_else(|| "never".into());
-                    writeln!(out, "{}  {:<24} paired {}, last seen {}", style.paint("33", &d.id), d.name, ago(d.paired_at as i64), seen)?;
+                    let extra = match (d.signs, d.push) {
+                        (true, true) => "  signs approvals, takes pushes",
+                        (true, false) => "  signs approvals",
+                        (false, true) => "  takes pushes",
+                        _ => "",
+                    };
+                    writeln!(out, "{}  {:<24} paired {}, last seen {}{extra}", style.paint("33", &d.id), d.name, ago(d.paired_at as i64), seen)?;
                 }
             }
             r => return Err(unexpected(r)),
@@ -976,6 +1009,69 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Backup => done(out, c.call(Request::Backup)?)?,
+        Cmd::Inbox => match c.call(Request::Inbox)? {
+            Response::Inbox(i) => {
+                if i.waiting.is_empty() && i.ready.is_empty() && i.open.is_empty() {
+                    writeln!(out, "Nothing needs you.")?;
+                }
+                for w in &i.waiting {
+                    writeln!(
+                        out,
+                        "{} {} run {}: {} to {}  ({})",
+                        style.paint("35", "approve"),
+                        w.repo,
+                        w.number,
+                        w.job_name,
+                        w.environment.as_deref().unwrap_or("?"),
+                        ago(w.since)
+                    )?;
+                }
+                for p in &i.ready {
+                    writeln!(out, "{} {} #{} {}", style.paint("32", "ready  "), p.repo, p.number, p.title)?;
+                }
+                for p in &i.open {
+                    writeln!(out, "{} {} #{} {}", style.paint("2", "open   "), p.repo, p.number, p.title)?;
+                }
+                let running: Vec<_> = i.runs.iter().filter(|r| !r.state.finished()).collect();
+                if !running.is_empty() {
+                    writeln!(out)?;
+                }
+                for r in running {
+                    writeln!(out, "{} {} {} {}", state_mark(r.state, &style), r.repo, r.name, r.number)?;
+                }
+            }
+            r => return Err(unexpected(r)),
+        },
+        Cmd::Notify { action } => {
+            let request = match action {
+                None => Request::PushInfo,
+                Some(PushCmd::Test) => Request::PushTest,
+                Some(PushCmd::Setup { key, key_id, team_id, topic }) => {
+                    let key_p8 = std::fs::read_to_string(&key).with_context(|| format!("reading {}", key.display()))?;
+                    let key_id = match key_id {
+                        Some(k) => k,
+                        None => key
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .and_then(|s| s.strip_prefix("AuthKey_"))
+                            .map(String::from)
+                            .ok_or_else(|| anyhow!("give --key-id; it isn't in the file's name"))?,
+                    };
+                    Request::PushSetup { key_p8, key_id, team_id, topic }
+                }
+            };
+            match c.call(request)? {
+                Response::Push(p) => {
+                    if p.configured {
+                        writeln!(out, "Pushes go out for {} to {} phone{}.", p.topic.unwrap_or_default(), p.devices, if p.devices == 1 { "" } else { "s" })?;
+                    } else {
+                        writeln!(out, "No APNs key yet: `ntr notify setup --key AuthKey_….p8 --team-id …`. Everything else works without it.")?;
+                    }
+                }
+                Response::Done { output } => writeln!(out, "{output}")?,
+                r => return Err(unexpected(r)),
+            }
+        }
         Cmd::Ci => match c.call(Request::CiInfo)? {
             Response::Ci(i) => {
                 let g = if i.graviton { style.paint("32", "answers") } else { style.paint("31", &format!("unreachable: {}", i.graviton_error.unwrap_or_default())) };

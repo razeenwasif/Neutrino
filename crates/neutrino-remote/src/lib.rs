@@ -39,7 +39,27 @@ struct Device {
     token_sha256: String,
     paired_at: u64,
     last_seen: Option<u64>,
+    /// A P-256 public key (X9.63, base64) from the device's Secure Enclave.
+    /// Once set, approvals from this device must be signed with it.
+    #[serde(default)]
+    signing_key: Option<String>,
+    /// Where Apple's push service reaches this device, and what for.
+    #[serde(default)]
+    push: Option<PushTarget>,
 }
+
+/// A device's APNs token and the events it wants to hear about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushTarget {
+    pub token: String,
+    /// The development push service (an app built from Xcode) rather than production.
+    pub sandbox: bool,
+    /// `approvals`, `failures`.
+    pub events: Vec<String>,
+}
+
+/// How long a signed request stays good, either side of the server's clock.
+pub const SIGNATURE_WINDOW_SECS: i64 = 300;
 
 struct PendingCode {
     code: String,
@@ -129,8 +149,76 @@ impl Remote {
             .unwrap()
             .devices
             .iter()
-            .map(|d| PairedDevice { id: d.id.clone(), name: d.name.clone(), paired_at: d.paired_at, last_seen: d.last_seen })
+            .map(|d| PairedDevice {
+                id: d.id.clone(),
+                name: d.name.clone(),
+                paired_at: d.paired_at,
+                last_seen: d.last_seen,
+                signs: d.signing_key.is_some(),
+                push: d.push.is_some(),
+            })
             .collect()
+    }
+
+    /// Give a device its signing key. Only once: a stolen token mustn't be
+    /// able to swap in its own key.
+    pub fn set_signing_key(&self, device: &str, key_b64: &str) -> Result<()> {
+        use base64::Engine as _;
+        let key = base64::engine::general_purpose::STANDARD.decode(key_b64.trim()).context("the key isn't base64")?;
+        if key.len() != 65 || key[0] != 4 {
+            bail!("the key should be an uncompressed P-256 point (65 bytes)");
+        }
+        let mut state = self.state.lock().unwrap();
+        let d = state.devices.iter_mut().find(|d| d.id == device).context("this device isn't paired any more")?;
+        match &d.signing_key {
+            Some(existing) if existing == key_b64.trim() => return Ok(()),
+            Some(_) => bail!("this device already has a signing key; pair it again to change it"),
+            None => d.signing_key = Some(key_b64.trim().to_string()),
+        }
+        let devices = state.devices.clone();
+        drop(state);
+        self.save(&devices);
+        Ok(())
+    }
+
+    /// Whether this device signs its approvals.
+    pub fn signs(&self, device: &str) -> bool {
+        self.state.lock().unwrap().devices.iter().any(|d| d.id == device && d.signing_key.is_some())
+    }
+
+    /// Check a signature over `message` (ECDSA P-256 with SHA-256, DER) made
+    /// with the device's key.
+    pub fn verify(&self, device: &str, message: &[u8], signature_b64: &str) -> Result<()> {
+        use base64::Engine as _;
+        let key = self
+            .state
+            .lock()
+            .unwrap()
+            .devices
+            .iter()
+            .find(|d| d.id == device)
+            .and_then(|d| d.signing_key.clone())
+            .context("this device has no signing key")?;
+        let key = base64::engine::general_purpose::STANDARD.decode(key)?;
+        let sig = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim()).context("the signature isn't base64")?;
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_ASN1, key)
+            .verify(message, &sig)
+            .map_err(|_| anyhow::anyhow!("the signature doesn't match this device's key"))
+    }
+
+    pub fn set_push(&self, device: &str, push: Option<PushTarget>) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        let d = state.devices.iter_mut().find(|d| d.id == device).context("this device isn't paired any more")?;
+        d.push = push;
+        let devices = state.devices.clone();
+        drop(state);
+        self.save(&devices);
+        Ok(())
+    }
+
+    /// Devices that want to hear about `event`.
+    pub fn push_targets(&self, event: &str) -> Vec<PushTarget> {
+        self.state.lock().unwrap().devices.iter().filter_map(|d| d.push.clone()).filter(|p| p.events.iter().any(|e| e == event)).collect()
     }
 
     pub fn revoke(&self, id: &str) -> Result<String> {
@@ -170,6 +258,8 @@ impl Remote {
             token_sha256: sha256_hex(token.as_bytes()),
             paired_at: now_secs(),
             last_seen: Some(now_secs()),
+            signing_key: None,
+            push: None,
         };
         let device_id = entry.id.clone();
         state.devices.push(entry);
@@ -178,15 +268,15 @@ impl Remote {
         Ok(Response::Paired { token, device_id, host: self.host.clone() })
     }
 
-    /// The name of the device this token belongs to, if any.
-    fn authenticate(&self, token: &str) -> Option<String> {
+    /// The id and name of the device this token belongs to, if any.
+    fn authenticate(&self, token: &str) -> Option<(String, String)> {
         let hash = sha256_hex(token.as_bytes());
         let mut state = self.state.lock().unwrap();
         let mut found = None;
         for d in state.devices.iter_mut() {
             if constant_time_eq(d.token_sha256.as_bytes(), hash.as_bytes()) {
                 d.last_seen = Some(now_secs());
-                found = Some(d.name.clone());
+                found = Some((d.id.clone(), d.name.clone()));
             }
         }
         if found.is_some() {
@@ -215,8 +305,8 @@ impl Remote {
     /// TLS handshake, then the first message: pair or authenticate. Returns the
     /// session once it's authenticated, or `None` when the connection is done
     /// (pairing answered, or refused).
-    /// Hand back the session and the paired device's name once it has authenticated.
-    pub async fn accept(&self, tcp: tokio::net::TcpStream, role: &str) -> Result<Option<(Session, String)>> {
+    /// Hand back the session and the paired device's id and name once it has authenticated.
+    pub async fn accept(&self, tcp: tokio::net::TcpStream, role: &str) -> Result<Option<(Session, String, String)>> {
         let mut tls = tokio::time::timeout(Duration::from_secs(10), self.acceptor.accept(tcp)).await.context("TLS handshake timed out")??;
         let mut first = String::new();
         {
@@ -235,13 +325,13 @@ impl Remote {
         let (reply, device) = match request {
             Ok(Request::Pair { code, device }) => (self.pair(&code, &device).unwrap_or_else(|e| Response::Error { message: e.to_string() }), None),
             Ok(Request::Auth { token }) => match self.authenticate(&token) {
-                Some(name) => (Response::Authenticated { host: self.host.clone(), role: role.to_string() }, Some(name)),
+                Some(who) => (Response::Authenticated { host: self.host.clone(), role: role.to_string() }, Some(who)),
                 None => (Response::Error { message: "this device isn't paired with this server any more".into() }, None),
             },
             _ => (Response::Error { message: "pair or authenticate first".into() }, None),
         };
         tls.write_all(format!("{}\n", encode_response(id, &reply)).as_bytes()).await?;
-        Ok(device.map(|d| (tls, d)))
+        Ok(device.map(|(id, name)| (tls, id, name)))
     }
 }
 
