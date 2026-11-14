@@ -1,0 +1,7 @@
+/target
+.DS_Store
+apps/*.xcodeproj
+apps/DerivedData
+apps/build
+apps/**/.build
+apps/**/.swiftpm

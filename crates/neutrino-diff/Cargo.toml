@@ -1,0 +1,9 @@
+[package]
+name = "neutrino-diff"
+description = "Line and word diffs for Neutrino"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+neutrino-proto.workspace = true
+imara-diff = "0.2"

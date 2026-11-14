@@ -1,0 +1,14 @@
+[package]
+name = "neutrino-git"
+description = "Neutrino's git engine on gitoxide"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+neutrino-proto.workspace = true
+neutrino-diff.workspace = true
+thiserror.workspace = true
+gix = "0.90"
+
+[dev-dependencies]
+tempfile.workspace = true

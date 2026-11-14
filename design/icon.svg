@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Neutrino app icon, full bleed (iOS masks the corners itself).
+       A main track, a branch that leaves it and merges back, and a particle
+       on the branch: a commit in flight. Lavender #B9A6F5 is the app accent. -->
+  <defs>
+    <radialGradient id="ntBg" cx="38%" cy="30%" r="85%">
+      <stop offset="0" stop-color="#2B2342"/>
+      <stop offset="0.55" stop-color="#15121D"/>
+      <stop offset="1" stop-color="#0B0A10"/>
+    </radialGradient>
+    <radialGradient id="ntHalo" cx="491" cy="341" r="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#B9A6F5" stop-opacity="0.42"/>
+      <stop offset="0.45" stop-color="#B9A6F5" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#B9A6F5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ntTrail" x1="362" y1="662" x2="491" y2="341" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#B9A6F5" stop-opacity="0"/>
+      <stop offset="0.55" stop-color="#B9A6F5" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#E4DCFF" stop-opacity="1"/>
+    </linearGradient>
+    <radialGradient id="ntCore" cx="50%" cy="45%" r="55%">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.45" stop-color="#E4DCFF"/>
+      <stop offset="1" stop-color="#A28CEB"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#ntBg)"/>
+
+  <g transform="translate(40 50)">
+  <!-- main track -->
+  <path d="M222 802 L802 222" stroke="#463D60" stroke-width="30" stroke-linecap="round" fill="none"/>
+
+  <!-- branch, faint where the particle has not been -->
+  <path d="M362 662 C250 470 470 250 662 362" stroke="#4A3F6A" stroke-width="26" stroke-linecap="round" fill="none"/>
+
+  <!-- the particle's trail along the branch -->
+  <path d="M362 662 C283.6 527.6 367.9 379.5 491.4 340.5" stroke="url(#ntTrail)" stroke-width="28" stroke-linecap="round" fill="none"/>
+
+  <!-- fork and merge commits -->
+  <circle cx="362" cy="662" r="44" fill="#14111B" stroke="#8C7FB0" stroke-width="24"/>
+  <circle cx="662" cy="362" r="44" fill="#14111B" stroke="#8C7FB0" stroke-width="24"/>
+
+  <!-- particle -->
+  <circle cx="491" cy="341" r="230" fill="url(#ntHalo)"/>
+  <circle cx="491" cy="341" r="52" fill="url(#ntCore)"/>
+  </g>
+</svg>

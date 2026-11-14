@@ -1,0 +1,17 @@
+[package]
+name = "neutrinod"
+description = "Neutrino's daemon"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+neutrino-proto.workspace = true
+neutrino-git.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "neutrino-proto"
+description = "Wire types for Neutrino's control API"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
