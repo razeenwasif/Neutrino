@@ -8,6 +8,7 @@
 //! goes to `runs/<run>/<job>.log`; the database keeps where each step's part
 //! starts and ends.
 
+pub mod nexus;
 pub mod runner;
 mod upkeep;
 mod vault;
@@ -49,6 +50,11 @@ pub struct CiOptions {
     pub backup_dir: Option<PathBuf>,
     /// Snapshots kept.
     pub backups_kept: usize,
+    /// `runs-on: host`: steps as plain processes on this Mac, unisolated.
+    /// Off unless the server is started with `--host-executor`.
+    pub host: Option<Local>,
+    /// `runs-on: nexus`: jobs sent to the Nexus coordinator.
+    pub nexus: Option<nexus::Nexus>,
 }
 
 impl std::fmt::Debug for CiOptions {
@@ -68,6 +74,8 @@ impl Default for CiOptions {
             retention_days: 30,
             backup_dir: None,
             backups_kept: 14,
+            host: None,
+            nexus: None,
         }
     }
 }
@@ -268,8 +276,20 @@ impl Daemon {
         Ok(id)
     }
 
-    /// Start the runs an event triggers. Returns their ids.
-    pub(crate) fn trigger(&self, repo_id: &str, event: &Event) -> Vec<i64> {
+    /// The files changed from `from` to `to` (both sides of a rename), for
+    /// `paths` filters; `None` when there's nothing to compare with.
+    pub(crate) fn changed_files(&self, repo_id: &str, from: &str, to: &str) -> Option<Vec<String>> {
+        if from.bytes().all(|b| b == b'0') {
+            return None;
+        }
+        let repo = neutrino_git::local(&self.registry.get(repo_id).ok()?);
+        let files = neutrino_git::forge::compare(&repo, from, to).ok()?;
+        Some(files.into_iter().flat_map(|f| std::iter::once(f.path).chain(f.old_path)).collect())
+    }
+
+    /// Start the runs an event triggers. Returns their ids. `changed` is what
+    /// the event changed, for `paths` filters.
+    pub(crate) fn trigger(&self, repo_id: &str, event: &Event, changed: Option<&[String]>) -> Vec<i64> {
         let Some(ci) = self.ci.as_ref() else { return Vec::new() };
         let Ok(repo) = self.registry.get(repo_id).map(|r| neutrino_git::local(&r)) else { return Vec::new() };
         let files = match self.workflows_at(&repo, event.sha()) {
@@ -290,7 +310,7 @@ impl Daemon {
         let mut ids = Vec::new();
         for (file, parsed) in files {
             match &parsed {
-                Ok(wf) if !wf.triggered_by(event) => continue,
+                Ok(wf) if !wf.triggered_by_changes(event, changed) => continue,
                 // A broken file shows up on pushes and pull requests, where you'd look.
                 Err(_) if matches!(event, Event::Dispatch { .. }) => continue,
                 _ => {}
@@ -459,6 +479,8 @@ impl Daemon {
             used_memory_mib,
             running: ci.active.lock().unwrap().len() as u32,
             queued,
+            host: ci.options.host.is_some(),
+            nexus: ci.options.nexus.as_ref().map(|n| n.url.clone()),
         })
     }
 
@@ -678,8 +700,21 @@ impl Daemon {
                     }
                 }
             }
-            if def.runs_on != Executor::Graviton {
-                store.finish_job(q.id, RunState::Failure, Some(&format!("runs-on: {} arrives with milestone 7; use graviton for now", def.runs_on.name())))?;
+            let unavailable = match def.runs_on {
+                Executor::Graviton => None,
+                Executor::Host if ci.options.host.is_none() => {
+                    Some("this server doesn't run host jobs; they run unisolated on the server, so start neutrinod with --host-executor to allow them")
+                }
+                Executor::Nexus if ci.options.nexus.is_none() => Some("this server can't reach Nexus; start neutrinod with --nexus-token-file"),
+                _ => None,
+            };
+            if let Some(why) = unavailable {
+                store.finish_job(q.id, RunState::Failure, Some(why))?;
+                self.settled(q.run, &run.repo);
+                continue;
+            }
+            if def.runs_on != Executor::Graviton && !def.services.is_empty() {
+                store.finish_job(q.id, RunState::Failure, Some("services run only beside graviton jobs"))?;
                 self.settled(q.run, &run.repo);
                 continue;
             }
@@ -741,7 +776,13 @@ impl Daemon {
     ) -> Result<()> {
         let store = self.store()?;
         let ci = self.ci.as_ref().expect("server");
-        let runner = ci.options.runner.clone();
+        if def.runs_on == Executor::Nexus {
+            return self.execute_nexus(run, q, def, cx, cancelled).await;
+        }
+        let runner = match def.runs_on {
+            Executor::Host => Runner::Local(ci.options.host.clone().expect("checked when scheduled")),
+            _ => ci.options.runner.clone(),
+        };
         let (workspace, log_path) = self.job_paths(run.id, &q.key);
         if let Some(dir) = workspace.parent() {
             let _ = tokio::fs::remove_dir_all(dir).await;
@@ -874,7 +915,11 @@ impl Daemon {
 
         // The container.
         let image = def.image.clone().map(|i| expr::interpolate(&i, &cx).unwrap_or(i)).unwrap_or_default();
-        log.note(&format!("starting {image} with {} CPUs and {} MiB on {}", def.cpus, def.memory_mib, runner.name())).await?;
+        if def.runs_on == Executor::Host {
+            log.note("running on this Mac, unisolated").await?;
+        } else {
+            log.note(&format!("starting {image} with {} CPUs and {} MiB on {}", def.cpus, def.memory_mib, runner.name())).await?;
+        }
         let spec = runner::JobBox { name: name.clone(), image: image.clone(), cpus: def.cpus, memory_mib: def.memory_mib, workspace: workspace.clone() };
         let container = tokio::select! {
             started = runner.start(&spec) => started,
@@ -1105,23 +1150,23 @@ impl Daemon {
 }
 
 /// A job's log file, appended to.
-struct Log {
+pub(crate) struct Log {
     file: tokio::fs::File,
-    offset: u64,
+    pub(crate) offset: u64,
     at_line_start: bool,
     /// Replaces secrets in everything written.
     masker: Option<neutrino_vault::Masker>,
 }
 
 impl Log {
-    async fn open(path: &Path) -> Result<Log> {
+    pub(crate) async fn open(path: &Path) -> Result<Log> {
         let file = tokio::fs::OpenOptions::new().create(true).append(true).open(path).await.with_context(|| format!("opening {}", path.display()))?;
         let offset = file.metadata().await?.len();
         Ok(Log { file, offset, at_line_start: true, masker: None })
     }
 
     /// Output from a step: masked, so part of it may be held back until the next write.
-    async fn write(&mut self, bytes: &[u8]) -> Result<()> {
+    pub(crate) async fn write(&mut self, bytes: &[u8]) -> Result<()> {
         let masked = match self.masker.as_mut() {
             Some(m) => m.push(bytes),
             None => bytes.to_vec(),
@@ -1130,7 +1175,7 @@ impl Log {
     }
 
     /// Whatever the masker held back.
-    async fn flush(&mut self) -> Result<()> {
+    pub(crate) async fn flush(&mut self) -> Result<()> {
         if let Some(rest) = self.masker.as_mut().map(|m| m.flush()) {
             self.raw(&rest).await?;
         }
@@ -1148,7 +1193,7 @@ impl Log {
     }
 
     /// A line from Neutrino itself, marked so the app can tell it apart.
-    async fn note(&mut self, text: &str) -> Result<()> {
+    pub(crate) async fn note(&mut self, text: &str) -> Result<()> {
         self.flush().await?;
         let text = self.masker.as_ref().map(|m| m.mask(text)).unwrap_or_else(|| text.to_string());
         let lead = if self.at_line_start { "" } else { "\n" };

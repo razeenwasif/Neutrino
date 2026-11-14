@@ -70,7 +70,8 @@ impl Daemon {
         forge::keep_pull_head(&repo, number, &head.to_string())?;
         drop(_guard);
         self.pulls_changed(id);
-        self.trigger(id, &neutrino_ci::Event::PullRequest { number, source: source.into(), target: target.into(), sha: head.to_string() });
+        let changed = self.changed_files(id, &base.to_string(), &head.to_string());
+        self.trigger(id, &neutrino_ci::Event::PullRequest { number, source: source.into(), target: target.into(), sha: head.to_string() }, changed.as_deref());
         self.pull_detail(id, number)
     }
 
@@ -165,7 +166,8 @@ impl Daemon {
         let added = store.add_version(id, number, &head.to_string(), &base.to_string())?;
         if added.is_some() {
             forge::keep_pull_head(repo, number, &head.to_string())?;
-            self.trigger(id, &neutrino_ci::Event::PullRequest { number, source: source.into(), target: target.into(), sha: head.to_string() });
+            let changed = self.changed_files(id, &base.to_string(), &head.to_string());
+            self.trigger(id, &neutrino_ci::Event::PullRequest { number, source: source.into(), target: target.into(), sha: head.to_string() }, changed.as_deref());
         }
         Ok(added)
     }

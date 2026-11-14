@@ -140,6 +140,8 @@ public struct CiInfo: Codable, Hashable, Sendable {
     public var usedMemoryMib: UInt64
     public var running: UInt32
     public var queued: UInt32
+    public var host: Bool?
+    public var nexus: String?
 }
 
 public struct WorkflowFile: Codable, Hashable, Identifiable, Sendable {

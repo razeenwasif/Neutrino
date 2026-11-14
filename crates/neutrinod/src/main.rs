@@ -46,6 +46,17 @@ struct Args {
     /// an external disk or a synced folder keeps them off this Mac.
     #[arg(long)]
     backup_dir: Option<PathBuf>,
+    /// Server: allow `runs-on: host` jobs, which run as plain processes on this
+    /// Mac with no isolation. Only for repositories you trust.
+    #[arg(long)]
+    host_executor: bool,
+    /// Server: a Nexus coordinator token, for `runs-on: nexus` jobs. With the
+    /// request-only token every job is a ticket waiting for an Accept in Nexus.
+    #[arg(long)]
+    nexus_token_file: Option<PathBuf>,
+    /// Server: the Nexus coordinator. Default `$NEXUS_COORDINATOR`, else http://127.0.0.1:7420.
+    #[arg(long)]
+    nexus_coordinator: Option<String>,
     /// Server: keep the vault's master key in this file instead of the Keychain.
     #[arg(long)]
     vault_key_file: Option<PathBuf>,
@@ -99,6 +110,18 @@ async fn run(args: Args, socket: PathBuf) -> Result<()> {
             retention_days: args.retention_days.max(1),
             backup_dir: args.backup_dir.clone(),
             backups_kept: 14,
+            host: args.host_executor.then(neutrinod::ci::Local::default),
+            nexus: match &args.nexus_token_file {
+                Some(file) => {
+                    let url = args
+                        .nexus_coordinator
+                        .clone()
+                        .or_else(|| std::env::var("NEXUS_COORDINATOR").ok())
+                        .unwrap_or_else(|| "http://127.0.0.1:7420".into());
+                    Some(neutrinod::ci::nexus::Nexus::new(&url, file)?)
+                }
+                None => None,
+            },
         },
         vault: match &args.vault_key_file {
             Some(path) => neutrino_vault::KeyStore::File(path.clone()),

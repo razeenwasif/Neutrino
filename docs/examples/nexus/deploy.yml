@@ -1,0 +1,80 @@
+# Nexus's .github/workflows/deploy.yml, on Neutrino.
+#
+# Push to main: install, lint, build, deploy to Firebase Hosting's live
+# channel. Changes from the GitHub version:
+#   * a node:20 container on Graviton, with bun installed by npm, instead of
+#     ubuntu-latest + setup-bun
+#   * the six VITE_FIREBASE_* values are variables, not secrets: they're the
+#     public web config (the workflow said as much), and variables can be seen
+#   * FirebaseExtended/action-hosting-deploy becomes `firebase deploy --only
+#     hosting` with the production service account
+#
+# Set up once (on atlas):
+#   ntr -r nexus var set VITE_FIREBASE_API_KEY …   (and the other five)
+#   ntr -r nexus secret set FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER --env production < sa.json
+
+name: Deploy Nexus to Firebase Hosting
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'cluster/**'
+      - 'electron/**'
+      - 'build/**'
+      - electron-builder.yml
+  workflow_dispatch: {}
+
+# Let a deploy finish rather than kill it for a newer push.
+concurrency:
+  group: deploy-nexus
+  cancel-in-progress: false
+
+jobs:
+  build_and_deploy:
+    image: node:20
+    resources: { cpus: 4, memory: 4G }
+    timeout-minutes: 15
+    environment: production
+    cache:
+      - key: bun-${{ hashFiles('bun.lock', 'bun.lockb') }}
+        path: node_modules
+        restore-keys: [bun-]
+    env:
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+      GOOGLE_APPLICATION_CREDENTIALS: /tmp/firebase-sa.json
+    steps:
+      # Fail fast: a bundle built without the API key takes the whole site down.
+      - name: Verify the Firebase config is set
+        run: |
+          if [ -z "$VITE_FIREBASE_API_KEY" ]; then
+            echo "VITE_FIREBASE_API_KEY isn't set; refusing to deploy a broken bundle."
+            echo "Add the six VITE_FIREBASE_* variables with ntr var set."
+            exit 1
+          fi
+
+      - name: Install bun and firebase-tools
+        run: npm install -g bun firebase-tools@latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Build
+        run: bun run build
+
+      - name: Deploy to Firebase Hosting
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER }}
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
+          firebase deploy --only hosting --project nexus-cluster --non-interactive

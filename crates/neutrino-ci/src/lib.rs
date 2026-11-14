@@ -129,6 +129,18 @@ fn passes(patterns: &[String], name: &str) -> bool {
 }
 
 impl workflow::RefFilter {
+    /// Whether the changed files let it run. Unknown changes (`None`) always do.
+    fn files(&self, changed: Option<&[String]>) -> bool {
+        let Some(changed) = changed else { return true };
+        if !self.paths.is_empty() {
+            return changed.iter().any(|f| passes(&self.paths, f));
+        }
+        if !self.paths_ignore.is_empty() {
+            return !changed.iter().all(|f| self.paths_ignore.iter().any(|p| glob(p, f)));
+        }
+        true
+    }
+
     fn branch(&self, branch: &str) -> bool {
         if !self.branches.is_empty() {
             return passes(&self.branches, branch);
@@ -138,8 +150,24 @@ impl workflow::RefFilter {
 }
 
 impl Workflow {
-    /// Whether this event starts it.
+    /// Whether this event starts it, not knowing which files changed.
     pub fn triggered_by(&self, event: &Event) -> bool {
+        self.triggered_by_changes(event, None)
+    }
+
+    /// Whether this event starts it, given the files it changed (for `paths`
+    /// and `paths-ignore`; `None` when that isn't known, which lets it run).
+    pub fn triggered_by_changes(&self, event: &Event, changed: Option<&[String]>) -> bool {
+        let fires = self.fires(event);
+        let filter = match event {
+            Event::Push { name, .. } if name.starts_with("refs/heads/") => self.on.push.as_ref(),
+            Event::PullRequest { .. } => self.on.pull_request.as_ref(),
+            _ => None,
+        };
+        fires && filter.is_none_or(|f| f.files(changed))
+    }
+
+    fn fires(&self, event: &Event) -> bool {
         match event {
             Event::Push { name, .. } => {
                 let Some(f) = &self.on.push else { return false };

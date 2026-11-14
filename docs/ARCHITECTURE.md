@@ -6,12 +6,11 @@ secret storage. The server runs on atlas (the always-on Mac mini); the MacBook
 is a client. CI jobs run in Graviton containers on atlas. Nothing leaves your
 machines.
 
-Status: milestones 1 to 6 are built (CI with secrets, environments, caches,
-artifacts and schedules), and the server runs on atlas. See the README for what
-was measured. Milestones 7 and 8 are design, and their numbers are targets.
-Graviton isn't on atlas yet, so CI jobs there fail at "couldn't start the
-container" until it is; and Graviton's guests can't reach each other yet, so
-service containers wait on a Graviton fix.
+Status: milestones 1 to 7 are built (CI on Graviton, the host and through
+Nexus, with secrets, environments, caches, artifacts and schedules), and the
+server runs on atlas. See the README for what was measured. Milestone 8 (the
+iPhone) is design. Graviton isn't on atlas yet, so Graviton jobs there fail at
+"couldn't start the container" until it is.
 
 ## 1. Decisions and what they rest on
 

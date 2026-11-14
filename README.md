@@ -5,14 +5,13 @@ branches, pull requests, diff review, CI/CD and secrets, on your own
 machines. A Rust engine reads git repositories in-process with gitoxide; a
 SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> Status: **milestone 6 done** (the vault and the rest of CI). Secrets are
-> sealed on the server and masked in logs; environments can need your approval;
-> jobs get caches, keep artifacts, take turns in concurrency groups and run on
-> schedules; old logs are pruned and the database is snapshotted nightly.
-> Milestone 5 gave CI on Graviton; 4 pull requests and branch rules; 3 the
-> server on atlas; 1 and 2 history, diffs, staging by line, commits and
-> branches. Graviton still has to be installed on atlas, and service
-> containers wait on a Graviton fix that lets its guests reach each other.
+> Status: **milestone 7 done** (the other executors). Besides Graviton VMs, CI
+> jobs can run as plain processes on the server's macOS (`runs-on: host`) or go
+> to forge and the other nodes through Nexus (`runs-on: nexus`), and workflows
+> can filter on the paths a push changed. Nexus's own three GitHub workflows
+> are translated in `docs/examples/nexus/`. Milestone 6 gave the vault and the
+> rest of CI; 5 CI on Graviton; 4 pull requests; 3 the server on atlas; 1 and 2
+> the client. The iPhone app comes next.
 
 ## Layout
 
@@ -41,6 +40,7 @@ scripts/
   dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
   install-launch-agent.sh  Run neutrinod at login (--server on atlas, --uninstall to remove)
   deploy-server.sh         Build, sign and copy neutrinod and ntr to the server, then restart it
+  server-flags.sh          Set the flags the server's neutrinod starts with (executors, budget, backups)
 ```
 
 ## Running it
@@ -151,8 +151,8 @@ jobs:
         run: echo "${{ matrix.toolchain }} failed"
 ```
 
-Supported: `on` (push with branch and tag filters, pull_request,
-workflow_dispatch, schedule), `env` at every level, `needs`, `if` with
+Supported: `on` (push with branch, tag and `paths`/`paths-ignore` filters,
+pull_request with branch and path filters, workflow_dispatch, schedule), `env` at every level, `needs`, `if` with
 `success() failure() always() cancelled()`, `strategy.matrix` with include and
 exclude, `timeout-minutes` and `idle-timeout-minutes`, `continue-on-error`,
 `working-directory`, `environment`, `concurrency` (workflow and job, with
@@ -211,6 +211,35 @@ ntr -r myapp ci                      # Graviton, the budget, what's queued
 ntr -r myapp rules set main --check ci   # merging into main needs ci to pass
 ntr -r myapp run approve 12          # let a job waiting on its environment run (or: reject)
 ntr -r myapp run artifacts 12        # then: run download 12 build/target/release/app
+```
+
+### Where jobs run
+
+| `runs-on` | Where | Isolation | Notes |
+|---|---|---|---|
+| `graviton` (default) | a Linux arm64 VM on the server | a VM per job | needs `image:`; services, caches |
+| `host` | the server's macOS, as processes | none | for Xcode, signing, simulators; off unless `--host-executor` |
+| `nexus` | a Nexus node (forge for Windows and the GPU) | Nexus's | `nexus: { node, accelerator, gpu-memory }`; no secrets |
+
+Host jobs run in a fresh checkout in their own process group, so a timeout or
+a cancel takes the whole tree, with Homebrew's and your usual tool folders on
+the PATH. They can read anything your account on the server can, so keep them
+for your own repositories.
+
+Nexus jobs go to the coordinator the way `nexus cpu` does: Neutrino packs the
+commit with a small Python driver and the job's steps (each in its own `shell:`
+of bash, sh, cmd, pwsh or powershell), uploads it, submits it, follows its log,
+turning the driver's markers back into steps, and fetches the artifacts from
+the job's outputs. Nexus mirrors jobs and their logs to Firestore, so Neutrino
+refuses to send secrets: give such jobs variables. The server needs a Nexus
+token (`--nexus-token-file`; `--nexus-coordinator` if it isn't on the same
+Mac). With the request-only token every job is a ticket that waits for your
+Accept in Nexus, and can't be stopped from Neutrino; the full token runs them
+straight away.
+
+```bash
+scripts/server-flags.sh mini -- --host-executor --nexus-token-file /Users/you/.duet/neutrino-token
+ntr ci                                   # on the server: which executors are on
 ```
 
 ### Secrets, variables and environments
@@ -340,10 +369,12 @@ checked.
 - CI: Graviton guests are arm64 Linux, so x86-only images won't run. A job's
   container keeps its root filesystem in RAM (a Graviton limit), so big images
   need memory to match. After a timeout or a cancel the container is gone, so
-  `if: always()` steps after it don't run. No host or Nexus executors yet
-  (milestone 7). Service containers start, but Graviton's guests can't reach
-  each other yet, so a job can't talk to its services until Graviton allows
-  it. Caches and artifacts are paths inside the workspace. Secrets can't be
+  `if: always()` steps after it don't run. Caches and artifacts are paths
+  inside the workspace. Host jobs aren't recovered after a restart of
+  neutrinod (their processes keep going; the job is marked lost). A Nexus job's
+  steps can use `if:` conditions with the status functions, which the driver
+  applies; other conditions are worked out when the job is sent. Nexus jobs
+  get no caches or services. Secrets can't be
   revealed in the app (Touch ID-gated reveal is still to come). Schedules
   don't catch up on minutes the server was down.
 - Status reads the index but doesn't write back refreshed stat data, so after

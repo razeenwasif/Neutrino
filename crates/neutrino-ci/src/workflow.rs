@@ -40,6 +40,10 @@ pub struct RefFilter {
     pub branches: Vec<String>,
     pub branches_ignore: Vec<String>,
     pub tags: Vec<String>,
+    /// Run only when a changed file matches (a later `!pattern` excludes).
+    pub paths: Vec<String>,
+    /// Don't run when every changed file matches.
+    pub paths_ignore: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -60,6 +64,9 @@ pub struct Step {
     pub timeout_minutes: Option<u32>,
     pub working_directory: Option<String>,
     pub continue_on_error: bool,
+    /// `bash`, `sh`, `pwsh`, `powershell` or `cmd`. Default: bash where
+    /// there is one, else sh (or cmd on Windows).
+    pub shell: Option<String>,
 }
 
 impl Step {
@@ -106,6 +113,34 @@ pub struct Job {
     /// Paths (or patterns with `*`) in the workspace to keep after the job.
     pub artifacts: Vec<String>,
     pub services: Vec<Service>,
+    /// Where a `runs-on: nexus` job may go.
+    pub nexus: NexusPlacement,
+}
+
+/// What Nexus places a job by.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NexusPlacement {
+    /// Only this node (`forge`, say).
+    pub node: Option<String>,
+    /// `any`, `cuda`, `appleGPU` or `cpu`.
+    pub accelerator: Option<String>,
+    pub gpu_memory_gb: f64,
+}
+
+fn nexus_placement(v: Option<&Yaml>, job: &str) -> Result<NexusPlacement, Error> {
+    let Some(v) = v else { return Ok(NexusPlacement::default()) };
+    let Yaml::Mapping(m) = v else { return Err(Error::new(format!("jobs.{job}.nexus is {{ node, accelerator, gpu-memory }}"))) };
+    let accelerator = key(m, "accelerator").and_then(text);
+    if let Some(a) = &accelerator {
+        if !["any", "cuda", "appleGPU", "cpu"].contains(&a.as_str()) {
+            return Err(Error::new(format!("jobs.{job}.nexus.accelerator: use any, cuda, appleGPU or cpu")));
+        }
+    }
+    let gpu_memory_gb = match key(m, "gpu-memory") {
+        None => 0.0,
+        Some(g) => text(g).and_then(|s| parse_memory(&s)).map(|mib| mib as f64 / 1024.0).ok_or_else(|| Error::new(format!("jobs.{job}.nexus.gpu-memory should look like 8G")))?,
+    };
+    Ok(NexusPlacement { node: key(m, "node").and_then(text), accelerator, gpu_memory_gb })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,9 +259,14 @@ fn ref_filter(v: &Yaml, what: &str) -> Result<RefFilter, Error> {
                 branches: strings(key(m, "branches"), &format!("on.{what}.branches"))?,
                 branches_ignore: strings(key(m, "branches-ignore"), &format!("on.{what}.branches-ignore"))?,
                 tags: strings(key(m, "tags"), &format!("on.{what}.tags"))?,
+                paths: strings(key(m, "paths"), &format!("on.{what}.paths"))?,
+                paths_ignore: strings(key(m, "paths-ignore"), &format!("on.{what}.paths-ignore"))?,
             };
             if !f.branches.is_empty() && !f.branches_ignore.is_empty() {
                 return Err(Error::new(format!("on.{what}: use branches or branches-ignore, not both")));
+            }
+            if !f.paths.is_empty() && !f.paths_ignore.is_empty() {
+                return Err(Error::new(format!("on.{what}: use paths or paths-ignore, not both")));
             }
             Ok(f)
         }
@@ -380,6 +420,11 @@ fn step(v: &Yaml, job: &str, i: usize) -> Result<Step, Error> {
         timeout_minutes: minutes(key(m, "timeout-minutes"), &format!("{what}.timeout-minutes"))?,
         working_directory: key(m, "working-directory").and_then(text),
         continue_on_error: boolean(key(m, "continue-on-error"), &format!("{what}.continue-on-error"))?,
+        shell: match key(m, "shell").and_then(text) {
+            None => None,
+            Some(sh) if ["bash", "sh", "pwsh", "powershell", "cmd"].contains(&sh.as_str()) => Some(sh),
+            Some(other) => return Err(Error::new(format!("{what}.shell: {other:?} isn't a shell Neutrino knows; use bash, sh, pwsh, powershell or cmd"))),
+        },
     })
 }
 
@@ -523,7 +568,7 @@ fn job(id: &str, v: &Yaml, warnings: &mut Vec<String>) -> Result<Job, Error> {
         }
         if ![
             "name", "runs-on", "image", "resources", "timeout-minutes", "idle-timeout-minutes", "needs", "if", "env", "strategy", "continue-on-error", "steps",
-            "environment", "concurrency", "cache", "artifacts", "services",
+            "environment", "concurrency", "cache", "artifacts", "services", "nexus",
         ]
         .contains(&k.as_str())
         {
@@ -537,6 +582,9 @@ fn job(id: &str, v: &Yaml, warnings: &mut Vec<String>) -> Result<Job, Error> {
         Some(other) => return Err(Error::new(format!("jobs.{id}.runs-on: {other:?} isn't an executor; use graviton, host or nexus"))),
     };
     let image = key(m, "image").and_then(text);
+    if runs_on != Executor::Graviton && image.is_some() {
+        warnings.push(format!("jobs.{id}.image is ignored: {} jobs don't run in a container", runs_on.name()));
+    }
     if runs_on == Executor::Graviton && image.is_none() {
         return Err(Error::new(format!("jobs.{id} runs on graviton and needs image: (alpine:3.20, rust:1.85, …)")));
     }
@@ -591,6 +639,7 @@ fn job(id: &str, v: &Yaml, warnings: &mut Vec<String>) -> Result<Job, Error> {
             .map(|p| workspace_path(p, &format!("jobs.{id}.artifacts")))
             .collect::<Result<Vec<_>, _>>()?,
         services: services(key(m, "services"), id)?,
+        nexus: nexus_placement(key(m, "nexus"), id)?,
     })
 }
 

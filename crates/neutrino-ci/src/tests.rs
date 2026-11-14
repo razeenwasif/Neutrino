@@ -190,3 +190,49 @@ jobs:
     std::fs::write(dir.path().join("Cargo.lock"), "changed").unwrap();
     assert_ne!(expr::interpolate("${{ hashFiles('Cargo.lock') }}", &cx).unwrap(), one, "the hash follows the contents");
 }
+
+#[test]
+fn path_filters() {
+    let only = Workflow::parse("a.yml", "on: { push: { branches: [main], paths: ['firebase/*.rules', 'firebase/**', '!firebase/README.md'] } }\njobs: { a: { image: x, steps: [{ run: ls }] } }").unwrap();
+    let ignore = Workflow::parse("b.yml", "on: { push: { branches: [main], paths-ignore: ['docs/**', '*.md'] }, pull_request: { paths-ignore: ['docs/**'] } }\njobs: { a: { image: x, steps: [{ run: ls }] } }").unwrap();
+    let push = Event::Push { name: "refs/heads/main".into(), sha: "s".into() };
+    let files = |f: &[&str]| f.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert!(only.triggered_by_changes(&push, Some(&files(&["firebase/firestore.rules", "src/a.ts"]))));
+    assert!(!only.triggered_by_changes(&push, Some(&files(&["src/a.ts"]))));
+    assert!(!only.triggered_by_changes(&push, Some(&files(&["firebase/README.md"]))), "a later ! excludes");
+    assert!(only.triggered_by_changes(&push, None), "unknown changes run");
+    assert!(!ignore.triggered_by_changes(&push, Some(&files(&["docs/a.md", "README.md"]))), "only ignored files changed");
+    assert!(ignore.triggered_by_changes(&push, Some(&files(&["docs/a.md", "src/main.rs"]))));
+    let pr = Event::PullRequest { number: 1, source: "f".into(), target: "main".into(), sha: "s".into() };
+    assert!(!ignore.triggered_by_changes(&pr, Some(&files(&["docs/x"]))));
+    assert!(Workflow::parse("c.yml", "on: { push: { paths: [a], paths-ignore: [b] } }\njobs: { a: { image: x, steps: [{ run: ls }] } }").is_err());
+}
+
+/// Nexus's three GitHub workflows, translated (docs/examples/nexus), parse
+/// cleanly and fire when the originals did.
+#[test]
+fn nexus_workflows() {
+    let load = |f: &str, src: &str| {
+        let wf = Workflow::parse(f, src).unwrap_or_else(|e| panic!("{e}"));
+        assert!(wf.warnings.is_empty(), "{f}: {:?}", wf.warnings);
+        wf
+    };
+    let rules = load("deploy-firestore.yml", include_str!("../../../docs/examples/nexus/deploy-firestore.yml"));
+    let hosting = load("deploy.yml", include_str!("../../../docs/examples/nexus/deploy.yml"));
+    let windows = load("desktop-windows.yml", include_str!("../../../docs/examples/nexus/desktop-windows.yml"));
+    let main = Event::Push { name: "refs/heads/main".into(), sha: "s".into() };
+    let files = |f: &[&str]| f.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    assert!(rules.triggered_by_changes(&main, Some(&files(&["firebase/firestore.rules"]))));
+    assert!(!rules.triggered_by_changes(&main, Some(&files(&["src/App.tsx"]))));
+    assert!(hosting.triggered_by_changes(&main, Some(&files(&["src/App.tsx"]))));
+    assert!(!hosting.triggered_by_changes(&main, Some(&files(&["cluster/x.py", "README.md"]))));
+    assert!(!windows.triggered_by(&main));
+    assert!(windows.triggered_by(&Event::Push { name: "refs/tags/v1.4.0".into(), sha: "s".into() }));
+    assert_eq!(windows.jobs[0].runs_on, Executor::Nexus);
+    assert_eq!(windows.jobs[0].nexus.node.as_deref(), Some("forge"));
+    assert_eq!(windows.jobs[0].steps[0].shell.as_deref(), Some("bash"));
+    assert!(!format!("{:?}", windows.jobs[0]).contains("secrets."), "nothing secret goes to Nexus");
+    assert_eq!(hosting.jobs[0].environment.as_deref(), Some("production"));
+    assert!(rules.concurrency.as_ref().is_some_and(|c| !c.cancel_in_progress));
+}

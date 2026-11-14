@@ -1,0 +1,58 @@
+# Nexus's .github/workflows/desktop-windows.yml, on Neutrino.
+#
+# Builds the Windows installer natively, on forge through Nexus. Changes from
+# the GitHub version:
+#   * runs-on: windows-latest  ->  runs-on: nexus, placed on forge
+#   * the VITE_FIREBASE_* values are variables: Nexus mirrors jobs to
+#     Firestore, so Neutrino sends it no secrets (and these aren't secret)
+#   * the installer is kept as a run artifact (download it from the run, or
+#     `ntr run download`) instead of a GitHub Release
+#   * forge needs bun on its PATH (https://bun.sh) and Git for Windows' bash
+#
+# Neutrino's server needs a Nexus token: neutrinod --nexus-token-file …
+
+name: Build Windows desktop app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+concurrency:
+  group: desktop-windows-${{ neutrino.branch }}
+  cancel-in-progress: false
+
+jobs:
+  build_windows:
+    runs-on: nexus
+    nexus: { node: forge }
+    resources: { cpus: 8, memory: 8G }
+    timeout-minutes: 30
+    env:
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+      # Keeps electron-builder from trying to publish on its own.
+      GH_TOKEN: ''
+    artifacts:
+      - release/Nexus-Setup-*.exe
+      - release/Nexus-Setup-*.exe.blockmap
+    steps:
+      - name: Verify the Firebase config is set
+        shell: bash
+        run: |
+          if [ -z "$VITE_FIREBASE_API_KEY" ]; then
+            echo "VITE_FIREBASE_API_KEY isn't set; refusing to build an installer that can't reach Firebase."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        shell: cmd
+        run: bun install --frozen-lockfile
+
+      - name: Build renderer + package installer
+        shell: cmd
+        run: bun run desktop:win

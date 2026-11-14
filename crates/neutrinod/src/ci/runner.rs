@@ -327,6 +327,7 @@ impl Local {
             .arg(shell_script(&root, dir, script))
             .current_dir(&workspace)
             .env("CI", "true")
+            .env("PATH", host_path())
             .envs(env.iter().map(|(k, v)| (k, v)))
             .env("NEUTRINO_WORKSPACE", &root)
             .stdin(std::process::Stdio::null())
@@ -383,6 +384,22 @@ impl Local {
     pub fn workspace(&self, container: &str) -> Option<PathBuf> {
         self.boxes.lock().unwrap().get(container).map(|(w, _)| w.clone())
     }
+}
+
+/// A launch agent's PATH is short; steps expect the usual tool folders.
+fn host_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut dirs: Vec<String> = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"].iter().map(|s| s.to_string()).collect();
+    for d in [".cargo/bin", ".bun/bin", ".local/bin", ".deno/bin"] {
+        dirs.push(format!("{home}/{d}"));
+    }
+    let current = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into());
+    for d in current.split(':') {
+        if !dirs.iter().any(|x| x == d) {
+            dirs.push(d.to_string());
+        }
+    }
+    dirs.join(":")
 }
 
 unsafe extern "C" {

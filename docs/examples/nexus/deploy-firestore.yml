@@ -1,0 +1,64 @@
+# Nexus's .github/workflows/deploy-firestore.yml, on Neutrino.
+#
+# Deploys Firestore, RTDB and Storage rules and indexes when they change on
+# main. Changes from the GitHub version:
+#   * runs-on: ubuntu-latest + setup-node  ->  a node:20 container on Graviton
+#   * the service account is a secret of the `production` environment, written
+#     to a file inside the job's VM (gone when the job ends) instead of
+#     $RUNNER_TEMP + $GITHUB_ENV
+#   * `production` can require approval, so a rules deploy waits for a yes
+#
+# Set up once (on atlas):
+#   ntr -r nexus env set production --approval --branch main
+#   ntr -r nexus secret set FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER --env production < sa.json
+
+name: Deploy Firestore + Storage + RTDB rules + indexes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - firebase/firestore.rules
+      - firebase/firestore.indexes.json
+      - firebase/storage.rules
+      - firebase/database.rules.json
+  workflow_dispatch: {}
+
+# A partial rules deploy is hard to recover from: never cancel one in flight.
+concurrency:
+  group: deploy-firestore
+  cancel-in-progress: false
+
+jobs:
+  deploy_firestore:
+    image: node:20
+    resources: { cpus: 2, memory: 2G }
+    timeout-minutes: 8
+    environment: production
+    env:
+      GOOGLE_APPLICATION_CREDENTIALS: /tmp/firebase-sa.json
+    steps:
+      - name: Install firebase-tools
+        run: npm install -g firebase-tools@latest
+
+      - name: Authenticate via service account
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER isn't set for the production environment."
+            exit 1
+          fi
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
+
+      # One deploy per product: a combined --only aborts on the first failure,
+      # and storage fails until the Blaze upgrade.
+      - name: Deploy Firestore rules + indexes
+        run: firebase deploy --only firestore --project nexus-cluster --non-interactive
+
+      - name: Deploy RTDB rules
+        run: firebase deploy --only database --project nexus-cluster --non-interactive
+
+      - name: Deploy Storage rules (expected to fail until Blaze upgrade)
+        continue-on-error: true
+        run: firebase deploy --only storage --project nexus-cluster --non-interactive

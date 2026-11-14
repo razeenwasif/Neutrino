@@ -422,7 +422,8 @@ impl Daemon {
                 let mut started = 0;
                 for u in updates.iter().filter(|u| !u.new.bytes().all(|b| b == b'0')) {
                     if u.name.starts_with("refs/heads/") || u.name.starts_with("refs/tags/") {
-                        started += self.trigger(&id, &neutrino_ci::Event::Push { name: u.name.clone(), sha: u.new.clone() }).len();
+                        let changed = if u.name.starts_with("refs/heads/") { self.changed_files(&id, &u.old, &u.new) } else { None };
+                        started += self.trigger(&id, &neutrino_ci::Event::Push { name: u.name.clone(), sha: u.new.clone() }, changed.as_deref()).len();
                     }
                 }
                 if started > 0 {

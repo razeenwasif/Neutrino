@@ -380,6 +380,13 @@ impl Store {
 }
 
 impl Store {
+    /// Name what a job runs in (a container, or `nexus:<id>`).
+    pub fn set_container(&self, job: i64, container: &str) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute("UPDATE jobs SET container = ?2 WHERE id = ?1", params![job, container])?;
+        Ok(())
+    }
+
     /// Park a job until someone approves its environment.
     pub fn set_waiting(&self, job: i64) -> Result<()> {
         let db = self.db.lock().unwrap();

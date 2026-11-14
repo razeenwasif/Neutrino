@@ -983,6 +983,8 @@ fn main() -> Result<()> {
                 writeln!(out, "Budget     {} CPUs, {} MiB", i.budget_cpus, i.budget_memory_mib)?;
                 writeln!(out, "In use     {} CPUs, {} MiB by {} job{}", i.used_cpus, i.used_memory_mib, i.running, if i.running == 1 { "" } else { "s" })?;
                 writeln!(out, "Queued     {}", i.queued)?;
+                writeln!(out, "Host       {}", if i.host { "allowed (runs-on: host runs unisolated here)" } else { "off (--host-executor)" })?;
+                writeln!(out, "Nexus      {}", i.nexus.as_deref().unwrap_or("off (--nexus-token-file)"))?;
             }
             r => return Err(unexpected(r)),
         },

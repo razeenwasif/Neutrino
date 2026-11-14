@@ -722,6 +722,12 @@ pub struct CiInfo {
     pub used_memory_mib: u64,
     pub running: u32,
     pub queued: u32,
+    /// `runs-on: host` is allowed.
+    #[serde(default)]
+    pub host: bool,
+    /// The Nexus coordinator `runs-on: nexus` jobs go to, if any.
+    #[serde(default)]
+    pub nexus: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
