@@ -34,7 +34,7 @@ extension AppModel {
     }
 
     func refreshRepoHead() async {
-        guard let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }) else { return }
+        guard source == .local, let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }) else { return }
         // Replace the one entry so the header shows the new branch.
         await loadReposKeepingSelection(updated)
     }
@@ -50,7 +50,7 @@ extension AppModel {
     }
 
     func loadStatus() async {
-        guard let repoID, repo?.bare == false else {
+        guard let repoID, source == .local, repo?.bare == false else {
             status = nil
             return
         }

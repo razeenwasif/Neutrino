@@ -57,6 +57,16 @@ public protocol NeutrinoService: Sendable {
     func deleteBranch(repo: String, name: String, force: Bool) async throws
     /// Changes to any registered repo, until the stream is dropped.
     func events() -> AsyncStream<RepoEvent>
+
+    // Remotes (workstation)
+    func remotes(repo: String) async throws -> [RemoteInfo]
+    func addRemote(repo: String, name: String, url: String) async throws
+    /// What git printed.
+    func fetch(repo: String, remote: String?) async throws -> String
+    func push(repo: String, remote: String?, branch: String?, setUpstream: Bool) async throws -> String
+
+    // Hosting (server)
+    func createHosted(name: String, description: String?) async throws -> Repo
 }
 
 // MARK: - Socket service
@@ -151,6 +161,28 @@ public final class SocketService: NeutrinoService {
     public func checkout(repo: String, branch: String) async throws { try await perform(.checkout(repo: repo, branch: branch)) }
     public func renameBranch(repo: String, from: String, to: String) async throws { try await perform(.renameBranch(repo: repo, from: from, to: to)) }
     public func deleteBranch(repo: String, name: String, force: Bool) async throws { try await perform(.deleteBranch(repo: repo, name: name, force: force)) }
+
+    public func remotes(repo: String) async throws -> [RemoteInfo] {
+        guard case let .remotes(r) = try await call(.remotes(repo: repo)) else { throw ServiceError.unexpectedResponse }
+        return r
+    }
+
+    public func addRemote(repo: String, name: String, url: String) async throws { try await perform(.addRemote(repo: repo, name: name, url: url)) }
+
+    private func output(_ r: Request) async throws -> String {
+        guard case let .done(output) = try await call(r, timeout: 600) else { throw ServiceError.unexpectedResponse }
+        return output
+    }
+
+    public func fetch(repo: String, remote: String?) async throws -> String { try await output(.fetch(repo: repo, remote: remote)) }
+    public func push(repo: String, remote: String?, branch: String?, setUpstream: Bool) async throws -> String {
+        try await output(.push(repo: repo, remote: remote, branch: branch, setUpstream: setUpstream))
+    }
+
+    public func createHosted(name: String, description: String?) async throws -> Repo {
+        guard case let .repo(r) = try await call(.createHosted(name: name, description: description)) else { throw ServiceError.unexpectedResponse }
+        return r
+    }
 
     /// A connection held open on `subscribe`; ends when the stream is dropped or the daemon goes away.
     public func events() -> AsyncStream<RepoEvent> {

@@ -1,0 +1,156 @@
+import NeutrinoKit
+import SwiftUI
+
+/// The paired server (atlas): its hosted repos, pairing, and moving work there.
+extension AppModel {
+    var isServerOnline: Bool { if case .online = serverState { true } else { false } }
+
+    func connectServer() async {
+        guard let link = serverLink else {
+            serverService = nil
+            serverState = .unpaired
+            hostedRepos = []
+            return
+        }
+        let server = ServerService(link: link)
+        serverService = server
+        if serverState == .unpaired { serverState = .connecting }
+        lastServerCheck = Date()
+        do {
+            let info = try await server.engineInfo()
+            hostedRepos = try await server.repos()
+            let wasOnline = isServerOnline
+            serverState = .online(info)
+            if !wasOnline { listenToServer() }
+        } catch {
+            serverState = .offline(error.localizedDescription)
+            serverEventsTask?.cancel()
+            serverEventsTask = nil
+        }
+    }
+
+    /// Called from the connection loop: retry an offline server now and then.
+    func checkServer() async {
+        guard serverLink != nil else { return }
+        let due = isServerOnline ? 60.0 : 15.0
+        if Date().timeIntervalSince(lastServerCheck) >= due { await connectServer() }
+    }
+
+    private func listenToServer() {
+        serverEventsTask?.cancel()
+        guard let server = serverService else { return }
+        let stream = server.events()
+        serverEventsTask = Task { [weak self] in
+            for await event in stream {
+                guard let self else { return }
+                if let list = try? await server.repos() { self.hostedRepos = list }
+                if self.source == .server, event.repo == self.repoID {
+                    await self.loadBranches()
+                    if self.section == .history { await self.reloadHistory() }
+                }
+            }
+            // The stream ended: the server went away.
+            guard let self else { return }
+            self.serverState = .offline("the connection to \(self.serverLink?.name ?? "the server") closed")
+        }
+    }
+
+    func selectHosted(_ id: String) async {
+        guard source != .server || repoID != id else { return }
+        source = .server
+        repoID = id
+        rev = nil
+        selectedSHA = nil
+        selectedBranch = nil
+        change = nil
+        status = nil
+        if section == .changes { section = .history }
+        await reload()
+    }
+
+    func paired(_ link: ServerLink) async {
+        serverLink = link
+        serverState = .connecting
+        await connectServer()
+    }
+
+    func forgetServer() {
+        ServerStore.forget()
+        serverEventsTask?.cancel()
+        serverEventsTask = nil
+        serverLink = nil
+        serverService = nil
+        serverState = .unpaired
+        hostedRepos = []
+        if source == .server {
+            source = .local
+            repoID = repos.first(where: { $0.error == nil })?.id
+            Task { await reload() }
+        }
+    }
+
+    /// Whether the selected local repo already has a remote at the server.
+    func serverRemote(in remotes: [RemoteInfo]) -> RemoteInfo? {
+        guard let link = serverLink else { return nil }
+        return remotes.first { $0.name == "atlas" } ?? remotes.first { r in hostedRepos.contains { link.pushURL(for: $0.path) == r.url } }
+    }
+
+    /// Create a hosted repo for the selected working copy, add it as the
+    /// `atlas` remote and push the current branch there. Returns git's output.
+    func publish(name: String, description: String) async throws -> String {
+        guard source == .local, let repoID, let server = serverService, let link = serverLink else {
+            throw ServiceError.daemon("Pick one of this Mac's repositories first.")
+        }
+        let existing = try await service.remotes(repo: repoID)
+        if existing.contains(where: { $0.name == "atlas" }) {
+            throw ServiceError.daemon("This repository already has a remote called atlas.")
+        }
+        syncing = "Publishing"
+        defer { syncing = nil }
+        let hosted = try await server.createHosted(name: name, description: description.isEmpty ? nil : description)
+        try await service.addRemote(repo: repoID, name: "atlas", url: link.pushURL(for: hosted.path))
+        let output = try await service.push(repo: repoID, remote: "atlas", branch: nil, setUpstream: true)
+        hostedRepos = (try? await server.repos()) ?? hostedRepos
+        await loadStatus()
+        await loadBranches()
+        return output
+    }
+
+    func fetch() async {
+        guard source == .local, let repoID, syncing == nil else { return }
+        syncing = "Fetching"
+        defer { syncing = nil }
+        do {
+            _ = try await service.fetch(repo: repoID, remote: nil)
+        } catch {
+            notice = error.localizedDescription
+        }
+        await loadStatus()
+        await loadBranches()
+        if section == .history { await reloadHistory() }
+    }
+
+    func push() async {
+        guard source == .local, let repoID, syncing == nil else { return }
+        syncing = "Pushing"
+        defer { syncing = nil }
+        let firstPush = status?.upstream == nil
+        var remote: String?
+        if firstPush, let remotes = try? await service.remotes(repo: repoID) {
+            // A branch without an upstream goes to atlas if it's there, else origin.
+            remote = serverRemote(in: remotes)?.name ?? remotes.first(where: { $0.name == "origin" })?.name ?? remotes.first?.name
+            if remote == nil {
+                notice = serverLink == nil ? "This repository has no remote to push to." : "This repository has no remote yet. Publish it to \(serverLink!.name) first."
+                return
+            }
+        }
+        do {
+            _ = try await service.push(repo: repoID, remote: remote, branch: nil, setUpstream: firstPush)
+        } catch {
+            notice = error.localizedDescription
+        }
+        await loadStatus()
+        await loadBranches()
+        if section == .history { await reloadHistory() }
+    }
+}

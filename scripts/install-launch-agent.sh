@@ -1,10 +1,16 @@
 #!/bin/sh
 # Install neutrinod as a launch agent so it starts at login (and restarts if it
-# stops). `--uninstall` removes it. Logs go to ~/.neutrino/neutrinod.log.
+# stops). Logs go to ~/.neutrino/neutrinod.log.
+#
+#   scripts/install-launch-agent.sh             the workstation (this MacBook)
+#   scripts/install-launch-agent.sh --server    the server (atlas): hosts repos, pairs devices
+#   scripts/install-launch-agent.sh --uninstall
 set -eu
 label=dev.neutrino.neutrinod
 plist="$HOME/Library/LaunchAgents/$label.plist"
 state="${NEUTRINO_HOME:-$HOME/.neutrino}"
+role_arg=""
+[ "${1:-}" = "--server" ] && role_arg="<string>--server</string>"
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
@@ -26,7 +32,7 @@ cat > "$plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key><array><string>$state/bin/neutrinod</string></array>
+  <key>ProgramArguments</key><array><string>$state/bin/neutrinod</string>$role_arg</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardErrorPath</key><string>$state/neutrinod.log</string>
@@ -36,4 +42,9 @@ cat > "$plist" <<PLIST
 PLIST
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"
-echo "neutrinod runs at login. ntr is in $state/bin; add it to your PATH."
+if [ -n "$role_arg" ]; then
+  echo "neutrinod runs at login as the server. Pair the Mac app with: $state/bin/ntr pair"
+  echo "Pushes arrive over SSH, so Remote Login must be on (System Settings > General > Sharing)."
+else
+  echo "neutrinod runs at login. ntr is in $state/bin; add it to your PATH."
+fi

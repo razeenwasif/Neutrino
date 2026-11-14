@@ -5,13 +5,12 @@ branches, pull requests, diff review, CI/CD and secrets, on your own
 machines. A Rust engine reads git repositories in-process with gitoxide; a
 SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> Status: **milestone 2 done** (the working copy). The daemon reads the
-> working copies you register on this Mac and the app works in them: status,
-> staging and unstaging by file, hunk or line, discarding with a kept copy,
-> committing and amending, and creating, switching, renaming and deleting
-> branches, refreshed live as files change. Milestone 1 gave it history with
-> a commit graph, search, commit details and word-level diffs. Everything that
-> lives on atlas (hosted repos, pull requests, CI, secrets) comes next.
+> Status: **milestone 3 done** (the server). `neutrinod --server` runs on
+> atlas: it hosts bare repositories, takes pushes over SSH with hooks that
+> report back to it, and pairs devices over a pinned TLS endpoint. The Mac app
+> pairs with it, lists and browses its repositories, publishes a working copy
+> to it, and fetches and pushes. Milestones 1 and 2 gave the app history,
+> diffs, staging by line, commits and branches. Pull requests come next.
 
 ## Layout
 
@@ -21,8 +20,9 @@ crates/
   neutrino-diff    Histogram line diffs, hunks, word highlights (imara-diff)
   neutrino-git     The git engine: reads on gitoxide (refs, history and graph lanes, commits,
                    diffs, status); writes through the git binary (stage, commit, branches)
-  neutrinod        The daemon: repo registry, Unix socket, concurrent requests, cancel,
-                   file watching and change events
+  neutrino-remote  The server's TLS endpoint: certificate, pairing codes, device tokens, Bonjour
+  neutrinod        The daemon, as workstation or --server: repo registry, Unix socket and TLS,
+                   concurrent requests, cancel, file watching and change events, hosting, hooks
   ntr              CLI client
 apps/
   project.yml      XcodeGen spec → Neutrino.xcodeproj (generated, not committed)
@@ -30,8 +30,8 @@ apps/
   Mac/             macOS app: Changes, History, commit panel, diff view, Branches
 design/            App icon sources; make-icons.sh renders them into the asset catalog
 scripts/
-  dev-neutrinod.sh         Build and run the daemon in the foreground
-  install-launch-agent.sh  Run neutrinod at login (--uninstall to remove)
+  dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
+  install-launch-agent.sh  Run neutrinod at login (--server on atlas, --uninstall to remove)
 ```
 
 ## Running it
@@ -52,7 +52,40 @@ cargo run -q -p ntr -- commit -m "Fix the README"
 cargo run -q -p ntr -- branch new feature --switch
 cargo run -q -p ntr -- switch main
 cargo run -q -p ntr -- watch                    # print change events as they happen
+cargo run -q -p ntr -- remote list              # or: remote add NAME URL
+cargo run -q -p ntr -- fetch
+cargo run -q -p ntr -- push -u atlas
 ```
+
+## The server
+
+On atlas (any Mac that's always on):
+
+```bash
+scripts/install-launch-agent.sh --server   # neutrinod --server at login
+ntr pair                                   # a one-time code and the server's fingerprint
+ntr host myapp                             # or let the app create repos when publishing
+ntr devices                                # paired devices; `devices revoke ID` forgets one
+```
+
+The server keeps hosted repos in `~/.neutrino/repos/<name>.git` and listens
+for paired devices on TCP 7844 with TLS, advertised over Bonjour as
+`_neutrino._tcp`. Pushes and fetches don't go through it: they use git over
+SSH (`ssh://mini/Users/you/.neutrino/repos/myapp.git`), so Remote Login must
+be on and your SSH key in its `authorized_keys`. Each hosted repo's
+`pre-receive` and `post-receive` hooks call `neutrinod hook`, which tells the
+daemon what landed; the first branch pushed to an empty repo becomes its
+default, and the commit-graph is refreshed after each push. Branch rules come
+with pull requests, so for now every push lands, and a push still lands if the
+daemon is down.
+
+In the Mac app, choose Pair with atlas in the sidebar, pick the server (or type
+its address), check the fingerprint against `ntr pair`, then enter the code.
+The app pins that certificate and keeps its token in the Keychain; the server
+stores only token hashes. A paired device can read hosted repos, create them
+and follow pushes; it can't touch the server's working copies or paths, or
+manage pairing. Publish creates a hosted repo, adds it as the `atlas` remote
+and pushes the current branch; Fetch and Push in the header do the rest.
 
 Writes go through the `git` binary (Homebrew's, else Xcode's; `NEUTRINO_GIT`
 picks another), so hooks, signing and your identity apply, and git's own
@@ -130,6 +163,10 @@ checked.
 - Line staging uses the working tree's bytes as they are, without git's
   clean filters (LFS, CRLF conversion); files that rely on them should be
   staged whole.
+- Server: pushes go over SSH with your own keys; network git never prompts
+  (`BatchMode`), so a key that needs a passphrase must be in the SSH agent.
+- Server: the TLS endpoint takes one message (pair or authenticate) before
+  anything else; a client that sends more at once is disconnected.
 - Status reads the index but doesn't write back refreshed stat data, so after
   a large checkout the first status re-hashes files that git would have
   marked clean.

@@ -20,8 +20,9 @@ struct Entry {
 pub struct Registry {
     file: PathBuf,
     entries: Mutex<Vec<Entry>>,
-    /// Repos opened so far; gitoxide keeps their packs mapped.
-    open: Mutex<HashMap<String, ThreadSafeRepository>>,
+    /// Repos opened so far, with their config file's modification time when
+    /// opened; gitoxide keeps their packs mapped but reads config only once.
+    open: Mutex<HashMap<String, (ThreadSafeRepository, Option<std::time::SystemTime>)>>,
 }
 
 /// Lower-case letters, digits and dashes, from a folder name.
@@ -84,7 +85,8 @@ impl Registry {
         let added_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         entries.push(Entry { id: id.clone(), path: root, added_at });
         self.save(&entries)?;
-        self.open.lock().unwrap().insert(id.clone(), repo);
+        let stamp = config_stamp(&repo);
+        self.open.lock().unwrap().insert(id.clone(), (repo, stamp));
         Ok(neutrino_git::summary(&id, &local)?)
     }
 
@@ -100,10 +102,13 @@ impl Registry {
         Ok(())
     }
 
-    /// The open repository for `id`, opening it on first use.
+    /// The open repository for `id`, opening it on first use and again
+    /// whenever its config changed (a new remote, upstream or setting).
     pub fn get(&self, id: &str) -> Result<ThreadSafeRepository> {
-        if let Some(r) = self.open.lock().unwrap().get(id) {
-            return Ok(r.clone());
+        if let Some((r, stamp)) = self.open.lock().unwrap().get(id) {
+            if config_stamp(r) == *stamp {
+                return Ok(r.clone());
+            }
         }
         let path = self
             .entries
@@ -117,7 +122,8 @@ impl Registry {
             bail!("{} no longer exists", path.display());
         }
         let repo = neutrino_git::discover(&path)?;
-        self.open.lock().unwrap().insert(id.to_string(), repo.clone());
+        let stamp = config_stamp(&repo);
+        self.open.lock().unwrap().insert(id.to_string(), (repo.clone(), stamp));
         Ok(repo)
     }
 
@@ -142,6 +148,10 @@ impl Registry {
             })
             .collect()
     }
+}
+
+fn config_stamp(repo: &ThreadSafeRepository) -> Option<std::time::SystemTime> {
+    std::fs::metadata(repo.git_dir().join("config")).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(test)]

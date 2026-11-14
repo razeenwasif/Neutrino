@@ -97,6 +97,44 @@ enum Cmd {
     Branch(BranchCmd),
     /// Print change events as they happen, until Ctrl-C.
     Watch,
+    /// List remotes, or add one.
+    #[command(subcommand)]
+    Remote(RemoteCmd),
+    /// Fetch every remote (or one).
+    Fetch { remote: Option<String> },
+    /// Push the current branch (or BRANCH) to its remote.
+    Push {
+        remote: Option<String>,
+        branch: Option<String>,
+        /// Make it the branch's upstream.
+        #[arg(short = 'u', long)]
+        set_upstream: bool,
+    },
+    /// Server: create a hosted repository.
+    Host {
+        name: String,
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+    },
+    /// Server: a one-time code to pair the Mac app (or a phone) with this server.
+    Pair,
+    /// Server: paired devices; `devices revoke ID` forgets one.
+    Devices {
+        #[command(subcommand)]
+        action: Option<DeviceCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RemoteCmd {
+    /// Remotes of the repo you're in.
+    List,
+    Add { name: String, url: String },
+}
+
+#[derive(Subcommand)]
+enum DeviceCmd {
+    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -453,6 +491,62 @@ fn main() -> Result<()> {
             };
             done(out, c.call(request)?)?;
         }
+        Cmd::Remote(RemoteCmd::List) => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            let Response::Remotes(list) = c.call(Request::Remotes { repo })? else { bail!("unexpected answer") };
+            if list.is_empty() {
+                writeln!(out, "No remotes.")?;
+            }
+            for r in list {
+                writeln!(out, "{:<12} {}", style.paint("1", &r.name), r.url)?;
+            }
+        }
+        Cmd::Remote(RemoteCmd::Add { name, url }) => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            done(out, c.call(Request::AddRemote { repo, name, url })?)?;
+        }
+        Cmd::Fetch { remote } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            done(out, c.call(Request::Fetch { repo, remote })?)?;
+        }
+        Cmd::Push { remote, branch, set_upstream } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            done(out, c.call(Request::Push { repo, remote, branch, set_upstream })?)?;
+        }
+        Cmd::Host { name, description } => match c.call(Request::CreateHosted { name, description })? {
+            Response::Repo(r) => {
+                writeln!(out, "Created {} at {}", style.paint("1", &r.id), r.path)?;
+                writeln!(out, "Push to it with:  git remote add atlas ssh://<this-mac>{}", r.path)?;
+            }
+            r => return Err(unexpected(r)),
+        },
+        Cmd::Pair => match c.call(Request::PairBegin)? {
+            Response::Pairing(p) => {
+                writeln!(out, "Pairing code  {}", style.paint("1;35", &format!("{}-{}", &p.code[..4], &p.code[4..])))?;
+                writeln!(out, "Server        {} on port {}", p.host, p.port)?;
+                writeln!(out, "Addresses     {}", p.addresses.join(", "))?;
+                writeln!(out, "Fingerprint   {}", short_fp(&p.fingerprint))?;
+                writeln!(out, "\nIn the Mac app, choose Pair with atlas and enter the code. Check the fingerprint")?;
+                writeln!(out, "it shows matches the one above. The code works once, for {} minutes.", p.expires_in_secs / 60)?;
+            }
+            r => return Err(unexpected(r)),
+        },
+        Cmd::Devices { action: None } => match c.call(Request::ListDevices)? {
+            Response::Devices(list) => {
+                if list.is_empty() {
+                    writeln!(out, "No paired devices. Run `ntr pair` to pair one.")?;
+                }
+                for d in list {
+                    let seen = d.last_seen.map(|t| ago(t as i64)).unwrap_or_else(|| "never".into());
+                    writeln!(out, "{}  {:<24} paired {}, last seen {}", style.paint("33", &d.id), d.name, ago(d.paired_at as i64), seen)?;
+                }
+            }
+            r => return Err(unexpected(r)),
+        },
+        Cmd::Devices { action: Some(DeviceCmd::Revoke { id }) } => match c.call(Request::RevokeDevice { id })? {
+            Response::Revoked { id } => writeln!(out, "Revoked {id}. Its token no longer works.")?,
+            r => return Err(unexpected(r)),
+        },
         Cmd::Watch => {
             let id = c.next;
             c.next += 1;
@@ -472,6 +566,10 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn short_fp(fp: &str) -> String {
+    fp.as_bytes().chunks(4).take(4).map(|c| String::from_utf8_lossy(c).to_uppercase()).collect::<Vec<_>>().join(" ")
 }
 
 /// Paths relative to the repo root, from paths given relative to here.

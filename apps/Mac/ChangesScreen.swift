@@ -314,13 +314,13 @@ struct WorkDiffPanel: View {
                         .padding(.horizontal, 7)
                         .frame(height: 20)
                         .background(N.status(d.status == .untracked ? .added : d.status).opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-                    Text(d.path).font(N.mono(12.5, weight: .medium)).foregroundStyle(N.text).lineLimit(1).truncationMode(.head)
+                    Text(d.path).font(N.mono(12.5, weight: .medium)).foregroundStyle(N.text).lineLimit(1).truncationMode(.head).layoutPriority(-1)
                     StatCounts(additions: d.additions, deletions: d.deletions)
                     Text(c.area == .staged ? "staged" : "not staged").font(.system(size: 11.5)).foregroundStyle(N.faint)
                 }
                 Spacer(minLength: 8)
                 actions
-                Segmented(options: [(DiffLayout.unified, "Unified"), (.split, "Split")], selection: $model.layout)
+                Segmented(options: [(DiffLayout.unified, "Unified"), (.split, "Split")], selection: $model.layout).fixedSize()
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)

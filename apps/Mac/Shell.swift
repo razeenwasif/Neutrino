@@ -113,6 +113,27 @@ struct HeaderBar: View {
                 .background(N.danger.opacity(0.1), in: Capsule())
                 .frame(maxWidth: 420)
             }
+            if model.source == .local, model.isLive, model.repo?.bare == false {
+                Button {
+                    Task { await model.fetch() }
+                } label: {
+                    Text(model.syncing == "Fetching" ? "Fetching…" : "Fetch")
+                }
+                .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                .disabled(model.syncing != nil)
+                .help("Fetch every remote")
+                Button {
+                    Task { await model.push() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(model.syncing == "Pushing" ? "Pushing…" : "Push")
+                        if let a = model.status?.ahead, a > 0 { Text("↑\(a)").font(N.mono(11, weight: .semibold)) }
+                    }
+                }
+                .buttonStyle(PillButtonStyle(kind: (model.status?.ahead ?? 0) > 0 ? .primary : .secondary, height: 30))
+                .disabled(model.syncing != nil)
+                .help(model.status?.upstream.map { "Push to \($0)" } ?? "Push this branch and track it")
+            }
             Button {
                 Task { await model.reload() }
             } label: {
@@ -157,7 +178,8 @@ struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             SectionLabel("This Mac").padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 8)
-            NavRow(title: "Changes", icon: "doc.badge.plus", selected: model.section == .changes, count: model.status?.changeCount) {
+            NavRow(title: "Changes", icon: "doc.badge.plus", selected: model.section == .changes, enabled: model.source == .local,
+                   count: model.status?.changeCount, help: model.source == .server ? "A hosted repository has no working copy." : nil) {
                 model.section = .changes
             }
             NavRow(title: "History", icon: "clock.arrow.circlepath", selected: model.section == .history) { model.section = .history }
@@ -165,10 +187,7 @@ struct Sidebar: View {
                 model.section = .branches
             }
 
-            SectionLabel("On atlas").padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 8)
-            ForEach([("Pull requests", "arrow.triangle.pull"), ("Runs", "play.circle"), ("Secrets", "key"), ("Runners", "cpu")], id: \.0) { title, icon in
-                NavRow(title: title, icon: icon, enabled: false, help: "Arrives once Neutrino runs on atlas (milestone 3 onwards).")
-            }
+            ServerSection()
 
             SectionLabel("Repositories").padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 8)
             ScrollView {
@@ -285,6 +304,24 @@ struct RepoRow: View {
 struct MachineCard: View {
     @Environment(AppModel.self) private var model
 
+    private var serverText: String {
+        switch model.serverState {
+        case .unpaired: "not paired"
+        case .connecting: "connecting"
+        case .online: "server"
+        case .offline: "offline"
+        }
+    }
+
+    private var serverHelp: String {
+        switch model.serverState {
+        case .unpaired: "Pair from the sidebar to host repositories there."
+        case .connecting: "Connecting to the server"
+        case let .online(info): "neutrinod \(info.version), \(info.repos) hosted repositories"
+        case let .offline(why): why
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -294,12 +331,12 @@ struct MachineCard: View {
                 Text(model.isLive ? "workstation" : "demo").foregroundStyle(N.muted)
             }
             HStack(spacing: 8) {
-                Dot(color: N.atlas, glow: false).opacity(0.45)
-                Text("atlas").foregroundStyle(N.text)
+                Dot(color: N.atlas, glow: model.isServerOnline).opacity(model.isServerOnline ? 1 : 0.45)
+                Text(model.serverLink?.name ?? "atlas").foregroundStyle(N.text).lineLimit(1)
                 Spacer()
-                Text("not paired yet").foregroundStyle(N.faint)
+                Text(serverText).foregroundStyle(model.isServerOnline ? N.muted : N.faint)
             }
-            .help("Pairing with atlas arrives in milestone 3.")
+            .help(serverHelp)
         }
         .font(.system(size: 12))
         .padding(.horizontal, 12)

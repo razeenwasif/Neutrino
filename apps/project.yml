@@ -27,6 +27,11 @@ targets:
     sources: [Mac]
     dependencies:
       - package: NeutrinoKit
+    info:
+      path: Mac/Info.plist
+      properties:
+        NSLocalNetworkUsageDescription: Neutrino looks for your Neutrino server on the local network so you can pair with it.
+        NSBonjourServices: [_neutrino._tcp]
     settings:
       base:
         PRODUCT_NAME: Neutrino

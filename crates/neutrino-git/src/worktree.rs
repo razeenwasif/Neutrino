@@ -554,3 +554,90 @@ pub fn rename_branch(repo: &gix::Repository, from: &str, to: &str) -> Result<Str
 pub fn delete_branch(repo: &gix::Repository, name: &str, force: bool) -> Result<String> {
     git(workdir(repo)?, &["branch", if force { "-D" } else { "-d" }, "--", name], None)
 }
+
+// ---------------------------------------------------------------------------
+// Remotes
+// ---------------------------------------------------------------------------
+
+/// Network git never waits on a prompt: no password questions, no host-key
+/// questions, so a request can't hang behind a dialog nobody sees.
+fn git_net(root: &Path, args: &[&str]) -> Result<String> {
+    let mut child = Command::new(git_binary());
+    child
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh -o BatchMode=yes -o ConnectTimeout=10".into()))
+        .stdin(Stdio::null());
+    let out = child.output().ctx("running git")?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    let text = text.trim().to_string();
+    if out.status.success() { Ok(text) } else { Err(Error(if text.is_empty() { format!("git {} failed", args[0]) } else { text })) }
+}
+
+pub fn remotes(repo: &gix::Repository) -> Result<Vec<neutrino_proto::RemoteInfo>> {
+    let mut out = Vec::new();
+    for name in repo.remote_names() {
+        let Ok(remote) = repo.find_remote(name.as_bstr()) else { continue };
+        let url = remote.url(gix::remote::Direction::Fetch).map(|u| u.to_bstring().to_string()).unwrap_or_default();
+        out.push(neutrino_proto::RemoteInfo { name: name.to_string(), url });
+    }
+    Ok(out)
+}
+
+fn check_remote_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.starts_with('-') || !name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        return fail(format!("{name:?} isn't a usable remote name"));
+    }
+    Ok(())
+}
+
+pub fn add_remote(repo: &gix::Repository, name: &str, url: &str) -> Result<String> {
+    check_remote_name(name)?;
+    if url.trim().is_empty() || url.starts_with('-') {
+        return fail("give the remote a URL");
+    }
+    git(workdir(repo)?, &["remote", "add", "--", name, url], None)
+}
+
+pub fn fetch(repo: &gix::Repository, remote: Option<&str>) -> Result<String> {
+    let root = workdir(repo)?;
+    match remote {
+        Some(r) => {
+            check_remote_name(r)?;
+            git_net(root, &["fetch", "--prune", r])
+        }
+        None => git_net(root, &["fetch", "--all", "--prune"]),
+    }
+}
+
+/// Push a branch (default: the checked-out one) to `remote` (default: its
+/// upstream's remote, else `origin`).
+pub fn push(repo: &gix::Repository, remote: Option<&str>, branch: Option<&str>, set_upstream: bool) -> Result<String> {
+    let root = workdir(repo)?;
+    let branch = match branch {
+        Some(b) => b.to_string(),
+        None => match repo.head_name().ctx("reading HEAD")? {
+            Some(name) => name.shorten().to_string(),
+            None => return fail("HEAD isn't on a branch; switch to one to push it"),
+        },
+    };
+    let remote = match remote {
+        Some(r) => r.to_string(),
+        None => {
+            let configured = repo
+                .branch_remote_name(branch.as_str(), gix::remote::Direction::Push)
+                .map(|n| n.as_bstr().to_string());
+            configured.unwrap_or_else(|| "origin".into())
+        }
+    };
+    check_remote_name(&remote)?;
+    let mut args = vec!["push", "--porcelain"];
+    if set_upstream {
+        args.push("--set-upstream");
+    }
+    args.extend(["--", remote.as_str(), branch.as_str()]);
+    git_net(root, &args)
+}

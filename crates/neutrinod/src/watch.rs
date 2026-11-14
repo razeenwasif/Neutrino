@@ -48,6 +48,11 @@ impl Watchers {
         self.events.subscribe()
     }
 
+    /// Tell subscribers about something that isn't a file change (a push landed).
+    pub fn notify(&self, event: RepoEvent) {
+        let _ = self.events.send(event);
+    }
+
     /// Start watching a repo (again). Must be called inside the Tokio runtime.
     pub fn watch(&self, id: &str, root: PathBuf, git_dir: PathBuf) {
         let (tx, mut rx) = mpsc::unbounded_channel::<&'static str>();

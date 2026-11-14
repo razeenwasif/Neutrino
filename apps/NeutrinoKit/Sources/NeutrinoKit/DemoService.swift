@@ -297,4 +297,11 @@ extension DemoService {
     public func renameBranch(repo _: String, from _: String, to _: String) async throws { throw ServiceError.daemon(Self.lineMessage) }
     public func deleteBranch(repo _: String, name _: String, force _: Bool) async throws { throw ServiceError.daemon(Self.lineMessage) }
     public func events() -> AsyncStream<RepoEvent> { AsyncStream { _ in } }
+    public func remotes(repo _: String) async throws -> [RemoteInfo] { [RemoteInfo(name: "origin", url: "git@github.com:you/nexus.git")] }
+    public func addRemote(repo _: String, name _: String, url _: String) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func fetch(repo _: String, remote _: String?) async throws -> String { throw ServiceError.daemon("Start neutrinod to fetch and push.") }
+    public func push(repo _: String, remote _: String?, branch _: String?, setUpstream _: Bool) async throws -> String {
+        throw ServiceError.daemon("Start neutrinod to fetch and push.")
+    }
+    public func createHosted(name _: String, description _: String?) async throws -> Repo { throw ServiceError.daemon("Pair with a server to host repositories.") }
 }

@@ -157,3 +157,48 @@ func liveWorkingCopy() async throws {
     let after = try await s.status(repo: repo)
     #expect(after.staged.contains(where: { $0.path == file.path }))
 }
+
+@Test func serverWire() throws {
+    let push = try json(Wire.line(id: 1, .push(repo: "r", remote: "atlas", branch: nil, setUpstream: true)))
+    #expect(push == ["id": 1, "method": "push", "params": ["repo": "r", "remote": "atlas", "set_upstream": true]] as NSDictionary)
+    #expect(try json(Wire.line(id: 0, .auth(token: "t"))) == ["id": 0, "method": "auth", "params": ["token": "t"]] as NSDictionary)
+    let host = try json(Wire.line(id: 2, .createHosted(name: "app", description: nil)))
+    #expect(host == ["id": 2, "method": "create_hosted", "params": ["name": "app"]] as NSDictionary)
+    #expect(try Wire.decode(Data(#"{"id":0,"type":"paired","data":{"token":"tok","device_id":"d1","host":"atlas"}}"#.utf8)) == (0, .paired(token: "tok", deviceID: "d1", host: "atlas")))
+    #expect(try Wire.decode(Data(#"{"id":0,"type":"authenticated","data":{"host":"atlas","role":"server"}}"#.utf8)) == (0, .authenticated(host: "atlas", role: "server")))
+    #expect(try Wire.decode(Data(#"{"id":3,"type":"remotes","data":[{"name":"atlas","url":"ssh://mini/x.git"}]}"#.utf8)) == (3, .remotes([RemoteInfo(name: "atlas", url: "ssh://mini/x.git")])))
+}
+
+@Test func pushURLs() {
+    let link = ServerLink(deviceID: "d", name: "atlas", serviceName: nil, address: "10.0.0.2", port: 7844, fingerprint: String(repeating: "ab", count: 32), sshHost: "mini")
+    #expect(link.pushURL(for: "/Users/me/.neutrino/repos/app.git") == "ssh://mini/Users/me/.neutrino/repos/app.git")
+    var local = link
+    local.sshHost = " "
+    #expect(local.pushURL(for: "/srv/app.git") == "/srv/app.git")
+    #expect(link.shortFingerprint == "ABAB ABAB ABAB ABAB")
+}
+
+/// Pairs with a server on this Mac when NEUTRINO_LIVE_SERVER_PORT and
+/// NEUTRINO_LIVE_PAIR_CODE are set (a code from `ntr pair` on that server).
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NEUTRINO_LIVE_PAIR_CODE"] != nil))
+func liveServer() async throws {
+    let env = ProcessInfo.processInfo.environment
+    let target = ServerTarget(name: "test", address: "127.0.0.1", port: UInt16(env["NEUTRINO_LIVE_SERVER_PORT"]!)!)
+    let fp = try await Pairing.fingerprint(of: target)
+    #expect(fp.count == 64)
+    // A wrong pin is refused before anything is sent.
+    await #expect(throws: ServiceError.self) {
+        _ = try await Pairing.pair(target, fingerprint: String(repeating: "0", count: 64), code: env["NEUTRINO_LIVE_PAIR_CODE"]!, device: "test", sshHost: "")
+    }
+    let link = try await Pairing.pair(target, fingerprint: fp, code: env["NEUTRINO_LIVE_PAIR_CODE"]!, device: "NeutrinoKit test", sshHost: "")
+    defer { ServerStore.forget() }
+    let server = ServerService(link: link)
+    #expect(try await server.engineInfo().role == "server")
+    let repos = try await server.repos()
+    #expect(repos.allSatisfy { $0.bare })
+    await #expect(throws: ServiceError.self) { _ = try await server.status(repo: "x") }
+    if let repo = repos.first, repo.head?.sha != nil {
+        let page = try await server.log(LogQuery(repo: repo.id, limit: 5))
+        #expect(!page.commits.isEmpty)
+    }
+}

@@ -158,6 +158,28 @@ struct DiffBody: View {
     }
 }
 
+/// A changed line that can be picked reads as a toggle to VoiceOver and other
+/// assistive tools, with the same action a click has.
+private struct PickableLine: ViewModifier {
+    var line: DiffLine?
+    var picked: Bool
+    var onPick: ((DiffLine) -> Void)?
+
+    func body(content: Content) -> some View {
+        if let line, let onPick {
+            let side = line.kind == .added ? "Added line \(line.newLine ?? 0)" : "Removed line \(line.oldLine ?? 0)"
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(side): \(line.text)")
+                .accessibilityValue(picked ? "picked" : "not picked")
+                .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAction { onPick(line) }
+        } else {
+            content
+        }
+    }
+}
+
 /// Text selection, off where clicks pick lines instead.
 private struct SelectableText: ViewModifier {
     var on: Bool
@@ -217,6 +239,7 @@ private struct UnifiedLine: View {
         .contentShape(Rectangle())
         .onTapGesture { if pickable { onPick?(line) } }
         .help(pickable ? (picked ? "Picked. Click to drop it." : "Click to pick this line") : "")
+        .modifier(PickableLine(line: line, picked: picked, onPick: pickable ? onPick : nil))
     }
 }
 
@@ -242,5 +265,6 @@ private struct SideLine: View {
         .clipped()
         .contentShape(Rectangle())
         .onTapGesture { if let line, line.kind != .context { onPick?(line) } }
+        .modifier(PickableLine(line: line, picked: picked, onPick: line?.kind == .context ? nil : onPick))
     }
 }

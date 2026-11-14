@@ -104,7 +104,37 @@ final class AppModel {
     private var diffGeneration = 0
     private var watcher: Task<Void, Never>?
 
-    var repo: Repo? { repos.first { $0.id == repoID } }
+    var repo: Repo? {
+        source == .server ? hostedRepos.first { $0.id == repoID } : repos.first { $0.id == repoID }
+    }
+
+    // The server (methods in ServerModel.swift)
+    enum Source: String { case local, server }
+    enum ServerState: Equatable {
+        case unpaired
+        case connecting
+        case online(EngineInfo)
+        case offline(String)
+    }
+
+    /// Whether the selected repo is on this Mac or hosted on the server.
+    var source: Source = Source(rawValue: UserDefaults.standard.string(forKey: "source") ?? "") ?? .local {
+        didSet { UserDefaults.standard.set(source.rawValue, forKey: "source") }
+    }
+    var serverLink: ServerLink? = ServerStore.load()
+    var serverService: ServerService?
+    var serverState: ServerState = .unpaired
+    var hostedRepos: [Repo] = []
+    var serverEventsTask: Task<Void, Never>?
+    var lastServerCheck = Date.distantPast
+    /// Fetch, push or publish running.
+    var syncing: String?
+
+    /// Who answers for the selected repo: neutrinod here, or the server.
+    var activeService: any NeutrinoService {
+        if source == .server, let s = serverService { return s }
+        return service
+    }
     var isLive: Bool { if case .live = connection { true } else { false } }
 
     var historyTitle: String {
@@ -137,6 +167,7 @@ final class AppModel {
             connection = .demo(reason: error.localizedDescription)
         }
         listen()
+        await connectServer()
         await loadRepos()
     }
 
@@ -144,8 +175,10 @@ final class AppModel {
         switch connection {
         case .live:
             if (try? await service.ping()) == nil { await connect() }
+            await checkServer()
         case .demo, .connecting:
             if (try? await SocketService().ping()) != nil { await connect() }
+            await checkServer()
         }
     }
 
@@ -159,7 +192,9 @@ final class AppModel {
             notice = error.localizedDescription
         }
         let saved = UserDefaults.standard.string(forKey: "repo")
+        if source == .server, hostedRepos.isEmpty { source = .local }
         if repo == nil || repo?.error != nil {
+            source = .local
             repoID = repos.first(where: { $0.id == saved && $0.error == nil })?.id ?? repos.first(where: { $0.error == nil })?.id
             rev = nil
         }
@@ -167,7 +202,8 @@ final class AppModel {
     }
 
     func select(repo id: String) async {
-        guard id != repoID else { return }
+        guard id != repoID || source != .local else { return }
+        source = .local
         repoID = id
         rev = nil
         selectedSHA = nil
@@ -211,7 +247,7 @@ final class AppModel {
         async let b: Void = loadBranches()
         async let s: Void = loadStatus()
         _ = await (h, b, s)
-        if let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
+        if source == .local, let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
             repos[i] = updated
         }
     }
@@ -236,7 +272,7 @@ final class AppModel {
         loadingHistory = true
         let started = ContinuousClock.now
         do {
-            let page = try await service.log(q)
+            let page = try await activeService.log(q)
             guard generation == historyGeneration else { return }
             commits = page.commits
             lanes = page.lanes
@@ -265,7 +301,7 @@ final class AppModel {
         loadingHistory = true
         defer { loadingHistory = false }
         do {
-            let page = try await service.log(q)
+            let page = try await activeService.log(q)
             guard generation == historyGeneration else { return }
             commits += page.commits
             lanes = max(lanes, page.lanes)
@@ -298,7 +334,7 @@ final class AppModel {
         detailGeneration += 1
         let generation = detailGeneration
         do {
-            let d = try await service.commit(repo: repoID, sha: sha)
+            let d = try await activeService.commit(repo: repoID, sha: sha)
             guard generation == detailGeneration else { return }
             detail = d
             detailError = nil
@@ -324,7 +360,7 @@ final class AppModel {
         let generation = diffGeneration
         loadingDiff = true
         do {
-            let d = try await service.fileDiff(repo: repoID, sha: sha, path: path, context: 3)
+            let d = try await activeService.fileDiff(repo: repoID, sha: sha, path: path, context: 3)
             guard generation == diffGeneration else { return }
             diff = d
             diffError = nil
@@ -344,7 +380,7 @@ final class AppModel {
             return
         }
         do {
-            branches = try await service.branches(repo: repoID)
+            branches = try await activeService.branches(repo: repoID)
             branchesError = nil
             if selectedBranch == nil || !branches.contains(where: { $0.id == selectedBranch }) {
                 selectedBranch = branches.first?.id
@@ -366,6 +402,11 @@ final class AppModel {
     /// Swap in a fresh copy of one repo (its HEAD may have moved).
     func loadReposKeepingSelection(_ updated: Repo) async {
         if let i = repos.firstIndex(where: { $0.id == updated.id }) { repos[i] = updated }
+    }
+
+    /// The registered repos again, keeping the selection.
+    func refreshRepoList() async {
+        if let list = try? await service.repos() { repos = list }
     }
 
     func copy(_ text: String) {

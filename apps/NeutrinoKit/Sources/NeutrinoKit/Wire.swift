@@ -3,7 +3,7 @@ import Foundation
 // Mirrors crates/neutrino-proto. Keys are snake_case on the wire and
 // camelCase here (the coders convert); enum values keep their wire spelling.
 
-public let protocolVersion: UInt32 = 2
+public let protocolVersion: UInt32 = 3
 
 // MARK: - Repositories and refs
 
@@ -459,6 +459,17 @@ public struct LinePick: Codable, Hashable, Sendable {
     }
 }
 
+public struct RemoteInfo: Codable, Hashable, Identifiable, Sendable {
+    public var name: String
+    public var url: String
+    public var id: String { name }
+
+    public init(name: String, url: String) {
+        self.name = name
+        self.url = url
+    }
+}
+
 public struct RepoEvent: Codable, Hashable, Sendable {
     public var repo: String
     /// `worktree` or `refs`.
@@ -509,6 +520,13 @@ public enum Request: Sendable, Equatable {
     case renameBranch(repo: String, from: String, to: String)
     case deleteBranch(repo: String, name: String, force: Bool)
     case subscribe
+    case remotes(repo: String)
+    case addRemote(repo: String, name: String, url: String)
+    case fetch(repo: String, remote: String?)
+    case push(repo: String, remote: String?, branch: String?, setUpstream: Bool)
+    case createHosted(name: String, description: String?)
+    case pair(code: String, device: String)
+    case auth(token: String)
     case cancel(id: UInt64)
 }
 
@@ -526,6 +544,9 @@ public enum Response: Sendable, Equatable {
     case done(output: String)
     case committed(sha: String, output: String)
     case event(RepoEvent)
+    case remotes([RemoteInfo])
+    case paired(token: String, deviceID: String, host: String)
+    case authenticated(host: String, role: String)
     case cancelled
     case error(message: String)
 }
@@ -567,6 +588,12 @@ public enum Wire {
     private struct CheckoutParam: Encodable { var repo: String; var branch: String }
     private struct RenameParam: Encodable { var repo: String; var from: String; var to: String }
     private struct DeleteParam: Encodable { var repo: String; var name: String; var force: Bool }
+    private struct AddRemoteParam: Encodable { var repo: String; var name: String; var url: String }
+    private struct FetchParam: Encodable { var repo: String; var remote: String? }
+    private struct PushParam: Encodable { var repo: String; var remote: String?; var branch: String?; var setUpstream: Bool }
+    private struct HostParam: Encodable { var name: String; var description: String? }
+    private struct PairParam: Encodable { var code: String; var device: String }
+    private struct AuthParam: Encodable { var token: String }
     private struct DiffParam: Encodable {
         var repo: String
         var sha: String
@@ -605,6 +632,13 @@ public enum Wire {
         case let .renameBranch(repo, from, to): try line(id, "rename_branch", RenameParam(repo: repo, from: from, to: to))
         case let .deleteBranch(repo, name, force): try line(id, "delete_branch", DeleteParam(repo: repo, name: name, force: force))
         case .subscribe: try line(id, "subscribe", NoParams?.none)
+        case let .remotes(repo): try line(id, "remotes", RepoParam(repo: repo))
+        case let .addRemote(repo, name, url): try line(id, "add_remote", AddRemoteParam(repo: repo, name: name, url: url))
+        case let .fetch(repo, remote): try line(id, "fetch", FetchParam(repo: repo, remote: remote))
+        case let .push(repo, remote, branch, up): try line(id, "push", PushParam(repo: repo, remote: remote, branch: branch, setUpstream: up))
+        case let .createHosted(name, description): try line(id, "create_hosted", HostParam(name: name, description: description))
+        case let .pair(code, device): try line(id, "pair", PairParam(code: code, device: device))
+        case let .auth(token): try line(id, "auth", AuthParam(token: token))
         case let .cancel(target): try line(id, "cancel", IDParam(id: target))
         }
     }
@@ -623,6 +657,8 @@ public enum Wire {
     private struct Message: Decodable { var message: String }
     private struct Output: Decodable { var output: String }
     private struct Committed: Decodable { var sha: String; var output: String }
+    private struct Paired: Decodable { var token: String; var deviceId: String; var host: String }
+    private struct Authenticated: Decodable { var host: String; var role: String }
 
     /// Parse one response line into its id and response.
     public static func decode(_ line: Data) throws -> (UInt64, Response) {
@@ -643,6 +679,9 @@ public enum Wire {
         case "done": .done(output: try data(Output.self).output)
         case "committed": try { let c = try data(Committed.self); return .committed(sha: c.sha, output: c.output) }()
         case "event": .event(try data(RepoEvent.self))
+        case "remotes": .remotes(try data([RemoteInfo].self))
+        case "paired": try { let p = try data(Paired.self); return .paired(token: p.token, deviceID: p.deviceId, host: p.host) }()
+        case "authenticated": try { let a = try data(Authenticated.self); return .authenticated(host: a.host, role: a.role) }()
         case "cancelled": .cancelled
         case "error": .error(message: try data(Message.self).message)
         default: throw WireError.unknownType(header.type)

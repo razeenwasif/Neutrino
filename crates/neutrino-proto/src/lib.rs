@@ -17,7 +17,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a breaking change is made to the control API.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// TCP port of the server's paired TLS endpoint, and its Bonjour service type.
+pub const REMOTE_PORT: u16 = 7844;
+pub const BONJOUR_SERVICE: &str = "_neutrino._tcp";
 
 // ---------------------------------------------------------------------------
 // Repositories and refs
@@ -310,6 +314,52 @@ pub struct RepoEvent {
     pub kind: String,
 }
 
+// ---------------------------------------------------------------------------
+// Server, remotes and pairing
+// ---------------------------------------------------------------------------
+
+/// A remote of a working copy, as `git remote -v` lists it (fetch URL).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub url: String,
+}
+
+/// One ref a push wants to move, as a git hook reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefUpdate {
+    /// All zeros when the ref is created.
+    pub old: String,
+    /// All zeros when the ref is deleted.
+    pub new: String,
+    /// Full name, e.g. `refs/heads/main`.
+    pub name: String,
+}
+
+/// What `ntr pair` shows on the server: everything a device needs to pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingInfo {
+    /// One-time code, valid for `expires_in_secs`.
+    pub code: String,
+    pub expires_in_secs: u64,
+    /// The server's name as devices show it.
+    pub host: String,
+    pub port: u16,
+    /// SHA-256 of the endpoint's certificate, lowercase hex; devices pin it.
+    pub fingerprint: String,
+    /// The server's LAN addresses.
+    pub addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedDevice {
+    pub id: String,
+    pub name: String,
+    /// Unix seconds.
+    pub paired_at: u64,
+    pub last_seen: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineInfo {
     pub version: String,
@@ -397,6 +447,51 @@ pub enum Request {
     },
     /// Keep this request open and answer it with `event`s as repos change.
     Subscribe,
+
+    // --- Remotes (workstation) ---
+    Remotes { repo: String },
+    AddRemote { repo: String, name: String, url: String },
+    /// Fetch one remote, or all of them.
+    Fetch {
+        repo: String,
+        #[serde(default)]
+        remote: Option<String>,
+    },
+    /// Push the current branch (or `branch`) to `remote` (default: its upstream's, else `origin`).
+    Push {
+        repo: String,
+        #[serde(default)]
+        remote: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+        /// Make the remote branch the upstream (`git push -u`).
+        #[serde(default)]
+        set_upstream: bool,
+    },
+
+    // --- Hosting (server) ---
+    /// Create a hosted bare repository. Answers `repo`; its `path` is what to push to.
+    CreateHosted {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    /// From the pre-receive hook: may these updates land? Local only.
+    HookPreReceive { repo: String, updates: Vec<RefUpdate> },
+    /// From the post-receive hook: these updates landed. Local only.
+    HookPostReceive { repo: String, updates: Vec<RefUpdate> },
+
+    // --- Pairing (server) ---
+    /// A one-time pairing code. Local only.
+    PairBegin,
+    /// Devices paired with this server. Local only.
+    ListDevices,
+    /// Forget a device; its token stops working. Local only.
+    RevokeDevice { id: String },
+    /// Over TLS, as the first message: trade a pairing code for a token.
+    Pair { code: String, device: String },
+    /// Over TLS, as the first message: authenticate with a token from `pair`.
+    Auth { token: String },
     /// Drop the answer to an earlier request on this connection.
     Cancel { id: u64 },
 }
@@ -440,6 +535,12 @@ pub enum Response {
     Committed { sha: String, output: String },
     /// One of possibly many answers to `subscribe`.
     Event(RepoEvent),
+    Remotes(Vec<RemoteInfo>),
+    Pairing(PairingInfo),
+    Devices(Vec<PairedDevice>),
+    Revoked { id: String },
+    Paired { token: String, device_id: String, host: String },
+    Authenticated { host: String, role: String },
     /// The request was cancelled before it finished.
     Cancelled,
     Error { message: String },
@@ -551,7 +652,7 @@ mod tests {
     #[test]
     fn response_shape() {
         let line = encode_response(2, &Response::Pong { protocol: PROTOCOL_VERSION });
-        assert_eq!(wire(&line), json!({"id": 2, "type": "pong", "data": {"protocol": 2}}));
+        assert_eq!(wire(&line), json!({"id": 2, "type": "pong", "data": {"protocol": PROTOCOL_VERSION}}));
         let line = encode_response(5, &Response::Cancelled);
         assert_eq!(wire(&line), json!({"id": 5, "type": "cancelled"}));
         let head = Head::Branch { name: "main".into(), sha: Some("abc".into()) };
@@ -576,6 +677,18 @@ mod tests {
         let ev = Response::Event(RepoEvent { repo: "r".into(), kind: "worktree".into() });
         assert_eq!(wire(&encode_response(9, &ev)), json!({"id": 9, "type": "event", "data": {"repo": "r", "kind": "worktree"}}));
         assert_eq!(serde_json::to_value(ChangeStatus::Untracked).unwrap(), json!("untracked"));
+    }
+
+    #[test]
+    fn server_shapes() {
+        let push = Request::Push { repo: "r".into(), remote: None, branch: None, set_upstream: true };
+        assert_eq!(wire(&encode_request(1, &push)), json!({"id": 1, "method": "push", "params": {"repo": "r", "remote": null, "branch": null, "set_upstream": true}}));
+        let (_, fetch) = decode_request(r#"{"id":2,"method":"fetch","params":{"repo":"r"}}"#);
+        assert_eq!(fetch.unwrap(), Request::Fetch { repo: "r".into(), remote: None });
+        let (_, auth) = decode_request(r#"{"id":0,"method":"auth","params":{"token":"t"}}"#);
+        assert_eq!(auth.unwrap(), Request::Auth { token: "t".into() });
+        let ok = Response::Authenticated { host: "atlas".into(), role: "server".into() };
+        assert_eq!(wire(&encode_response(0, &ok)), json!({"id": 0, "type": "authenticated", "data": {"host": "atlas", "role": "server"}}));
     }
 
     #[test]
