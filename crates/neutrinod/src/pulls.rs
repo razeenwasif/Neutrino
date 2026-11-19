@@ -198,6 +198,7 @@ impl Daemon {
             _ => format!("Merge pull request #{number} from {}\n\n{}", pull.source, pull.title),
         });
         let who = committer(&repo, source_tip)?;
+        let target_before = forge::branch_tip(&repo, &pull.target).ok().map(|t| t.to_string());
         let sha = forge::merge(&repo, &pull.target, &pull.source, strategy, &message, &who)?;
         store.mark_merged(id, number, &sha.to_string())?;
         // Other open pull requests may still come from the source.
@@ -207,10 +208,17 @@ impl Daemon {
             }
         }
         drop(_guard);
-        // Merges don't go through the hooks, so say what moved.
+        // Merges don't go through the hooks, so do what a push would: say
+        // what moved, start the target branch's push workflows (a deploy on
+        // main, say), and copy the repository to its mirror.
         self.watchers.notify(RepoEvent { repo: id.into(), kind: "push".into() });
         self.pulls_changed(id);
-        Ok(Response::Merged { sha: sha.to_string() })
+        let sha = sha.to_string();
+        let changed = target_before.as_deref().and_then(|old| self.changed_files(id, old, &sha));
+        let push = neutrino_ci::Event::Push { name: format!("refs/heads/{}", pull.target), sha: sha.clone() };
+        self.trigger(id, &push, changed.as_deref());
+        self.mirrors.request(repo.git_dir());
+        Ok(Response::Merged { sha })
     }
 
     /// Post-receive: new versions for pull requests whose source moved, and

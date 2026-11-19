@@ -320,6 +320,37 @@ async fn import_then_every_push_reaches_the_mirror() {
     assert!(mirrored, "the mirror has the new commit, and the deleted branch is gone there too");
     assert!(Path::new(&path).join("neutrino-mirror.json").exists());
 
+    // A pull request merged on the server reaches the mirror too, and starts
+    // the target branch's push workflows, as a push would.
+    git(&wc, &["switch", "-q", "-c", "topic"]);
+    std::fs::create_dir_all(wc.join(".neutrino/workflows")).unwrap();
+    std::fs::write(wc.join(".neutrino/workflows/ci.yml"), "on: { push: { branches: [develop] } }\njobs: { t: { image: alpine, steps: [{ run: \"true\" }] } }\n").unwrap();
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "a workflow"]);
+    let dir3 = wc.clone();
+    let out = tokio::task::spawn_blocking(move || Command::new("git").args(["push", "-q", "atlas", "topic"]).current_dir(&dir3).output().unwrap()).await.unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let created = call(&sock, Request::CreatePull { repo: "app".into(), title: "Add CI".into(), body: String::new(), source: "topic".into(), target: "develop".into() }).await;
+    assert!(!matches!(created, Response::Error { .. }), "{created:?}");
+    let merged = match call(&sock, Request::MergePull { repo: "app".into(), number: 1, strategy: neutrino_proto::MergeStrategy::Merge, message: None, delete_source: false }).await {
+        Response::Merged { sha } => sha,
+        other => panic!("{other:?}"),
+    };
+    let mut reached = false;
+    for _ in 0..100 {
+        let got = Command::new("git").arg("--git-dir").arg(&github).args(["rev-parse", "develop"]).output().unwrap();
+        if String::from_utf8_lossy(&got.stdout).trim() == merged {
+            reached = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(reached, "the merge commit reached the mirror");
+    match call(&sock, Request::ListRuns { repo: "app".into(), pull: None, limit: None }).await {
+        Response::Runs(runs) => assert!(runs.iter().any(|r| r.sha == merged && r.event == "push"), "{runs:?}"),
+        other => panic!("{other:?}"),
+    }
+
     // Turning it off, and an explicit copy without one, say so.
     assert!(matches!(call(&sock, Request::SetMirror { repo: "app".into(), url: None }).await, Response::Mirrors(m) if m.is_empty()));
     assert!(matches!(call(&sock, Request::MirrorNow { repo: "app".into() }).await, Response::Error { message } if message.contains("no mirror")));
