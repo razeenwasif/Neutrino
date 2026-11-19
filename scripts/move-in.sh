@@ -67,8 +67,9 @@ if command -v gh >/dev/null 2>&1; then me=$(gh api user -q .login 2>/dev/null ||
 
 echo "Asking $host what it hosts…"
 hosted=$(remote_ntr repos) || { echo "Can't reach ntr on $host." >&2; exit 1; }
-# `ntr repos` prints: id  branch  path. A hosted repo's path ends in .git.
-hosted_path() { printf '%s\n' "$hosted" | awk -v n="$1" '$1 == n && $NF ~ /\.git$/ { print $NF; exit }'; }
+# `ntr repos` prints: id  branch  path. Ids are lower-cased, so match on the
+# path, which ends in <name>.git.
+hosted_path() { printf '%s\n' "$hosted" | awk -v n="$1.git" '{ p = $NF; sub(/.*\//, "", p); if (p == n) { print $NF; exit } }'; }
 
 failed=()
 moved=()
@@ -137,13 +138,23 @@ for dir in "${dirs[@]}"; do
         echo "  fetching from $host failed; origin is set, fetch again later"; failed+=("$top"); continue
     fi
     # What's here that the server doesn't have yet.
+    unpushed=()
+    local_only=()
     while read -r branch upstream; do
         if [ -z "$upstream" ]; then
-            echo "  $branch: not on $host yet (no upstream)"
+            local_only+=("$branch")
         elif ahead=$(git -C "$top" rev-list --count "$upstream..$branch" 2>/dev/null) && [ "$ahead" -gt 0 ]; then
-            echo "  $branch: $ahead commit(s) to push"
+            unpushed+=("$branch (+$ahead)")
         fi
     done < <(git -C "$top" for-each-ref --format='%(refname:short) %(upstream:short)' refs/heads)
+    list() {
+        local n=$# shown
+        shown=$(printf '%s, ' "${@:1:6}"); shown=${shown%, }
+        [ "$n" -gt 6 ] && shown+=" and $((n - 6)) more"
+        printf '%s' "$shown"
+    }
+    [ ${#unpushed[@]} -gt 0 ] && echo "  commits to push: $(list "${unpushed[@]}")"
+    [ ${#local_only[@]} -gt 0 ] && echo "  ${#local_only[@]} branch(es) only on this Mac: $(list "${local_only[@]}")"
     moved+=("$name")
 done
 
