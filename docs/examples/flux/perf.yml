@@ -75,11 +75,15 @@ jobs:
       - run: cargo test --workspace --locked
 
   # Compile + run the criterion IPC benches so they can't bit-rot. Latency is
-  # reported, not gated.
+  # reported, not gated. Built without the release profile's fat LTO and
+  # single codegen unit, which need more memory than a CI VM has.
   benches:
     image: node:20-slim
     resources: { cpus: 4, memory: 6G }
     timeout-minutes: 60
+    env:
+      CARGO_PROFILE_BENCH_LTO: "false"
+      CARGO_PROFILE_BENCH_CODEGEN_UNITS: 16
     cache:
       - key: rust-${{ hashFiles('Cargo.lock') }}
         path: [.cargo, .rustup, target]
@@ -98,7 +102,8 @@ jobs:
         run: cargo bench -p flux-core --bench ipc -- --warm-up-time 1 --measurement-time 3
 
   # Release binary size budget (≤ 28 MB). Heavier (full LTO build), so only
-  # on main or when started by hand.
+  # on main or when started by hand. Fat LTO with one codegen unit may need
+  # more memory than the 6G atlas gives CI by default (--ci-memory).
   binary-size:
     if: neutrino.branch == 'main'
     image: node:20-slim
