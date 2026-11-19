@@ -35,6 +35,9 @@ jobs:
         path: [.cargo, target]
         restore-keys: [linux-]
     steps:
+      # neutron-archive's tests make 7z files with bsdtar, as on GitHub's runners.
+      - name: Install bsdtar
+        run: apt-get update && apt-get install -y --no-install-recommends libarchive-tools
       - run: rustup component add clippy
       # The crates that don't depend on `windows`. neutron-app is absent: it
       # pulls eframe, and a headless runner has no use for a renderer.

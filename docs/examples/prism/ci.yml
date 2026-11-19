@@ -32,6 +32,9 @@ jobs:
         path: [.venv, .pip-cache]
         restore-keys: [venv-]
     steps:
+      # lightgbm loads OpenMP's runtime, which the slim image leaves out.
+      - name: Install system libraries
+        run: apt-get update && apt-get install -y --no-install-recommends libgomp1
       - name: Create the virtualenv (kept in the cache)
         run: test -x .venv/bin/python || python -m venv .venv
 

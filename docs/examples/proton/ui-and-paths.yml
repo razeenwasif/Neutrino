@@ -71,10 +71,11 @@ jobs:
         path: [.cargo, .rustup, target]
         restore-keys: [rust-]
     steps:
-      - name: Install a compiler and git
+      # cmake builds wasmtime's C API.
+      - name: Install a compiler, cmake and git
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential curl ca-certificates git pkg-config
+          apt-get install -y --no-install-recommends build-essential cmake curl ca-certificates git pkg-config
       - name: Install Rust (kept in the cache)
         run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
       - run: cargo test --locked -p proton-agent --lib --test transport --test gemini --test assemble
