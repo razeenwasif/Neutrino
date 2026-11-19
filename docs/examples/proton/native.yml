@@ -6,7 +6,9 @@
 #   * they run for version tags and when started by hand, not on every push:
 #     host jobs need the server started with --host-executor (off for now),
 #     and each Nexus job is a ticket waiting for your Accept in Nexus
-#   * the steps GitHub skipped on Windows are left out of the Windows jobs
+#   * the steps GitHub skipped on Windows are left out of the Windows jobs, and
+#     proton-study, proton-voice and proton-core's `study` test, which aren't
+#     on master yet, are left out of both
 #   * atlas needs Rust and Node 22 on its PATH; forge needs Rust, Node 22 and
 #     Git for Windows' bash
 
@@ -39,9 +41,6 @@ jobs:
       - run: cargo test --locked -p proton-literature
       - run: cargo test --locked -p proton-library --lib
       - run: cargo test --locked -p proton-mcp
-      - run: cargo test --locked -p proton-study
-      - run: cargo test --locked -p proton-core --test study
-      - run: cargo test --locked -p proton-voice
       - run: cargo test --locked -p proton-claude --lib --test engines --test fold
       - run: cargo test --locked -p proton-lab
       - run: git diff --exit-code -- ui/bindings
@@ -79,8 +78,6 @@ jobs:
         run: cargo test --locked -p proton-research
       - shell: bash
         run: cargo test --locked -p proton-literature
-      - shell: bash
-        run: cargo test --locked -p proton-voice
       - shell: bash
         run: cargo test --locked -p proton-lab
       - shell: bash
