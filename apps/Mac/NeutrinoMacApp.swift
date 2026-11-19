@@ -37,6 +37,7 @@ struct NeutrinoMacApp: App {
             CommandMenu("Repository") {
                 Button("Reload") { Task { await model.reload() } }.keyboardShortcut("r")
                 Divider()
+                Button("Code") { model.section = .code }.keyboardShortcut("0")
                 Button("Changes") { model.section = .changes }.keyboardShortcut("1")
                 Button("History") { model.section = .history }.keyboardShortcut("2")
                 Button("Branches") { model.section = .branches }.keyboardShortcut("3")

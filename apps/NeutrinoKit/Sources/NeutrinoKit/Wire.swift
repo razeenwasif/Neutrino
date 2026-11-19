@@ -3,7 +3,7 @@ import Foundation
 // Mirrors crates/neutrino-proto. Keys are snake_case on the wire and
 // camelCase here (the coders convert); enum values keep their wire spelling.
 
-public let protocolVersion: UInt32 = 7
+public let protocolVersion: UInt32 = 8
 
 // MARK: - Repositories and refs
 
@@ -507,6 +507,10 @@ public enum Request: Sendable, Equatable {
     case log(LogQuery)
     case commit(repo: String, sha: String)
     case fileDiff(repo: String, sha: String, path: String, context: UInt32?)
+    case tree(repo: String, rev: String?, path: String)
+    case treeCommits(repo: String, rev: String?, path: String)
+    case blob(repo: String, rev: String?, path: String)
+    case overview(repo: String, rev: String?)
     case status(repo: String)
     case workDiff(repo: String, path: String, area: Area, context: UInt32?)
     case stage(repo: String, paths: [String])
@@ -579,6 +583,10 @@ public enum Response: Sendable, Equatable {
     case log(LogPage)
     case commit(CommitDetail)
     case fileDiff(FileDiff)
+    case tree(TreeListing)
+    case treeCommits([EntryCommit])
+    case blob(BlobContent)
+    case overview(RepoOverview)
     case status(WorkingStatus)
     case done(output: String)
     case committed(sha: String, output: String)
@@ -638,6 +646,8 @@ public enum Wire {
     private struct PathParam: Encodable { var path: String }
     private struct IDParam: Encodable { var id: UInt64 }
     private struct CommitParam: Encodable { var repo: String; var sha: String }
+    private struct TreeParam: Encodable { var repo: String; var rev: String?; var path: String }
+    private struct OverviewParam: Encodable { var repo: String; var rev: String? }
     private struct WorkDiffParam: Encodable { var repo: String; var path: String; var area: Area; var context: UInt32? }
     private struct PathsParam: Encodable { var repo: String; var paths: [String] }
     private struct LinesParam: Encodable { var repo: String; var path: String; var area: Area?; var lines: [LinePick] }
@@ -704,6 +714,10 @@ public enum Wire {
         case let .log(q): try line(id, "log", q)
         case let .commit(repo, sha): try line(id, "commit", CommitParam(repo: repo, sha: sha))
         case let .fileDiff(repo, sha, path, context): try line(id, "file_diff", DiffParam(repo: repo, sha: sha, path: path, context: context))
+        case let .tree(repo, rev, path): try line(id, "tree", TreeParam(repo: repo, rev: rev, path: path))
+        case let .treeCommits(repo, rev, path): try line(id, "tree_commits", TreeParam(repo: repo, rev: rev, path: path))
+        case let .blob(repo, rev, path): try line(id, "blob", TreeParam(repo: repo, rev: rev, path: path))
+        case let .overview(repo, rev): try line(id, "overview", OverviewParam(repo: repo, rev: rev))
         case let .status(repo): try line(id, "status", RepoParam(repo: repo))
         case let .workDiff(repo, path, area, context): try line(id, "work_diff", WorkDiffParam(repo: repo, path: path, area: area, context: context))
         case let .stage(repo, paths): try line(id, "stage", PathsParam(repo: repo, paths: paths))
@@ -805,6 +819,10 @@ public enum Wire {
         case "log": .log(try data(LogPage.self))
         case "commit": .commit(try data(CommitDetail.self))
         case "file_diff": .fileDiff(try data(FileDiff.self))
+        case "tree": .tree(try data(TreeListing.self))
+        case "tree_commits": .treeCommits(try data([EntryCommit].self))
+        case "blob": .blob(try data(BlobContent.self))
+        case "overview": .overview(try data(RepoOverview.self))
         case "status": .status(try data(WorkingStatus.self))
         case "done": .done(output: try data(Output.self).output)
         case "committed": try { let c = try data(Committed.self); return .committed(sha: c.sha, output: c.output) }()

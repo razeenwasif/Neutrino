@@ -175,9 +175,7 @@ impl Remote {
             Some(_) => bail!("this device already has a signing key; pair it again to change it"),
             None => d.signing_key = Some(key_b64.trim().to_string()),
         }
-        let devices = state.devices.clone();
-        drop(state);
-        self.save(&devices);
+        self.save(&state.devices);
         Ok(())
     }
 
@@ -210,9 +208,7 @@ impl Remote {
         let mut state = self.state.lock().unwrap();
         let d = state.devices.iter_mut().find(|d| d.id == device).context("this device isn't paired any more")?;
         d.push = push;
-        let devices = state.devices.clone();
-        drop(state);
-        self.save(&devices);
+        self.save(&state.devices);
         Ok(())
     }
 
@@ -280,13 +276,13 @@ impl Remote {
             }
         }
         if found.is_some() {
-            let devices = state.devices.clone();
-            drop(state);
-            self.save(&devices);
+            self.save(&state.devices);
         }
         found
     }
 
+    /// Callers hold the state lock while saving, so saves can't interleave
+    /// (they share the temporary file) or land out of order.
     fn save(&self, devices: &[Device]) {
         let tmp = self.devices_path.with_extension("json.tmp");
         let ok = fs::write(&tmp, serde_json::to_vec_pretty(devices).expect("devices serialise")).and_then(|_| {

@@ -55,23 +55,33 @@ scripts/
 
 ```bash
 scripts/dev-neutrinod.sh                 # in one terminal
-cargo run -q -p ntr -- add ~/code/myrepo # register a working copy (any folder inside one)
+cargo run -q -p ntr -- repo add ~/code/myrepo   # register a working copy (any folder inside one)
 cargo run -q -p ntr -- repos
 cd ~/code/myrepo
-cargo run -q -p ntr -- log --all -n 30   # with an ASCII graph
-cargo run -q -p ntr -- show HEAD
-cargo run -q -p ntr -- diff HEAD src/main.rs
-cargo run -q -p ntr -- branches
-cargo run -q -p ntr -- status
-cargo run -q -p ntr -- diff README.md           # working tree; --staged for the index
-cargo run -q -p ntr -- stage README.md
-cargo run -q -p ntr -- commit -m "Fix the README"
-cargo run -q -p ntr -- branch new feature --switch
-cargo run -q -p ntr -- switch main
+cargo run -q -p ntr -- history --all -n 30      # read by neutrinod, with its graph
+cargo run -q -p ntr -- branches                 # with ahead and behind
+cargo run -q -p ntr -- unstage README.md        # or: discard, which keeps a copy
 cargo run -q -p ntr -- watch                    # print change events as they happen
-cargo run -q -p ntr -- remote list              # or: remote add NAME URL
-cargo run -q -p ntr -- fetch
-cargo run -q -p ntr -- push -u atlas
+```
+
+`ntr` is one command for everything. Whatever it doesn't know itself is git's,
+run in its place with the same arguments, so its pager, prompts, aliases and
+exit code are git's own: `ntr status`, `ntr commit -m …`, `ntr rebase -i
+main`, `ntr push`. Server commands (`pr`, `runs`, `run`, `secret`, `var`,
+`env`, `rules`, `mirror`, `inbox`, `ci` and the rest) run on the server: on a
+workstation, `ntr` sends them over SSH to the server its working copy's origin
+is on (`ssh://mini/…`), naming the hosted repository by its path there, so
+from any working copy `ntr pr list` lists that repository's pull requests.
+Outside one, it uses `git config --global neutrino.server` (or
+`$NEUTRINO_SERVER`). On the server itself they run locally, as before.
+
+```bash
+git config --global neutrino.server mini   # once, for commands outside a working copy
+ln -s ~/.neutrino/bin/ntr ~/.local/bin/ntr # or anywhere on your PATH
+cd ~/code/myrepo
+ntr status && ntr commit -am "Fix the README" && ntr push   # git
+ntr pr create my-branch -t "Fix the README"                 # the server
+ntr runs                                                    # the server
 ```
 
 ## The server
@@ -380,7 +390,8 @@ of the file as an object in the repo and notes it in
 prunes unreachable objects, after two weeks by default). Untracked files go to
 the Trash.
 
-`ntr` picks the registered repo you're standing in, or `--repo ID`.
+`ntr` picks the registered repo you're standing in, or `--repo ID` (or a
+repo's path, which is how a workstation names a hosted repo to the server).
 State (the list of repos) lives in `~/.neutrino`; `NEUTRINO_HOME` and
 `NEUTRINO_SOCKET` move it. Socket paths are limited to 104 bytes.
 

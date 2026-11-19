@@ -116,6 +116,10 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::Log(_)
             | Request::Commit { .. }
             | Request::FileDiff { .. }
+            | Request::Tree { .. }
+            | Request::TreeCommits { .. }
+            | Request::Blob { .. }
+            | Request::Overview { .. }
             | Request::CreateHosted { .. }
             | Request::ListPulls { .. }
             | Request::CreatePull { .. }
@@ -364,6 +368,12 @@ impl Daemon {
                 let context = context.unwrap_or(3).min(10_000);
                 Response::FileDiff(neutrino_git::file_diff(&repo(&id)?, &sha, &path, context, &self.diffs)?)
             }
+            Request::Tree { repo: id, rev, path } => Response::Tree(neutrino_git::browse::tree(&repo(&id)?, rev.as_deref(), &path)?),
+            Request::TreeCommits { repo: id, rev, path } => {
+                Response::TreeCommits(neutrino_git::browse::tree_commits(&repo(&id)?, rev.as_deref(), &path)?)
+            }
+            Request::Blob { repo: id, rev, path } => Response::Blob(neutrino_git::browse::blob(&repo(&id)?, rev.as_deref(), &path)?),
+            Request::Overview { repo: id, rev } => Response::Overview(neutrino_git::browse::overview(&repo(&id)?, rev.as_deref())?),
 
             // Working copy
             Request::Status { repo: id } => Response::Status(wt::status(&repo(&id)?)?),

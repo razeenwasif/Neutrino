@@ -274,3 +274,41 @@ let runLine = #"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number"
     }
     #expect(d.run.state == .waiting && !d.run.state.finished && d.jobs[0].environment == "prod")
 }
+
+@Test func browseWire() throws {
+    let tree = try json(Wire.line(id: 1, .tree(repo: "x", rev: nil, path: "src")))
+    #expect(tree == ["id": 1, "method": "tree", "params": ["repo": "x", "path": "src"]] as NSDictionary)
+    let commits = try json(Wire.line(id: 2, .treeCommits(repo: "x", rev: "main", path: "")))
+    #expect(commits == ["id": 2, "method": "tree_commits", "params": ["repo": "x", "rev": "main", "path": ""]] as NSDictionary)
+    let blob = try json(Wire.line(id: 3, .blob(repo: "x", rev: "v1", path: "README.md")))
+    #expect(blob == ["id": 3, "method": "blob", "params": ["repo": "x", "rev": "v1", "path": "README.md"]] as NSDictionary)
+    let overview = try json(Wire.line(id: 4, .overview(repo: "x", rev: nil)))
+    #expect(overview == ["id": 4, "method": "overview", "params": ["repo": "x"]] as NSDictionary)
+
+    let listing = #"{"id":1,"type":"tree","data":{"commit":"abc","path":"","entries":[{"name":"src","path":"src","kind":"dir","size":null},{"name":"run.sh","path":"run.sh","kind":"executable","size":42},{"name":"vendor","path":"vendor","kind":"submodule"}]}}"#
+    guard case let .tree(t) = try Wire.decode(Data(listing.utf8)).1 else { Issue.record("not a tree"); return }
+    #expect(t.entries.map(\.kind) == [.dir, .executable, .submodule])
+    #expect(t.entries[1].size == 42 && t.entries[0].size == nil)
+    #expect(t.entries[2].kind.isFolder)
+
+    let changed = #"{"id":2,"type":"tree_commits","data":[{"name":"src","sha":"def","subject":"Fix it","time":1700000000}]}"#
+    #expect(try Wire.decode(Data(changed.utf8)).1 == .treeCommits([EntryCommit(name: "src", sha: "def", subject: "Fix it", time: 1_700_000_000)]))
+
+    let file = #"{"id":3,"type":"blob","data":{"commit":"abc","path":"a.png","size":2048,"binary":true,"too_large":false,"text":null,"lines":0}}"#
+    guard case let .blob(b) = try Wire.decode(Data(file.utf8)).1 else { Issue.record("not a blob"); return }
+    #expect(b.binary && !b.tooLarge && b.text == nil && b.size == 2048)
+
+    let summary = #"{"id":4,"type":"overview","data":{"commit":"abc","commits":120,"commits_capped":false,"contributors":2,"files":40,"languages":[{"name":"Rust","bytes":9000},{"name":"Swift","bytes":3000}],"readme":"README.md","license":null}}"#
+    guard case let .overview(o) = try Wire.decode(Data(summary.utf8)).1 else { Issue.record("not an overview"); return }
+    #expect(o.commits == 120 && !o.commitsCapped && o.languages.first?.name == "Rust" && o.readme == "README.md" && o.license == nil)
+}
+
+@Test func demoBrowse() async throws {
+    let demo = DemoService()
+    let root = try await demo.tree(repo: "nexus", rev: nil, path: "")
+    #expect(root.entries.first?.kind == .dir)
+    let readme = try await demo.blob(repo: "nexus", rev: nil, path: "README.md")
+    #expect(readme.text?.hasPrefix("# nexus") == true && readme.lines > 5)
+    let overview = try await demo.overview(repo: "nexus", rev: nil)
+    #expect(overview.readme == "README.md")
+}

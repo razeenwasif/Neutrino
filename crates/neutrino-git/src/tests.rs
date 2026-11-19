@@ -660,3 +660,195 @@ mod forge {
         assert_eq!(forge::map_line(&repo, "main", "feature", "missing.txt", 1).unwrap(), None);
     }
 }
+
+mod browse {
+    use super::*;
+    use crate::browse::{self, MAX_BLOB_BYTES};
+    use neutrino_proto::{EntryKind, LanguageShare};
+
+    fn bare(f: &Fixture) -> gix::Repository {
+        let bare = f._dir.path().join("hosted.git");
+        f.git(&["clone", "-q", "--bare", f.path.to_str().unwrap(), bare.to_str().unwrap()]);
+        local(&discover(&bare).unwrap())
+    }
+
+    fn kinds(listing: &neutrino_proto::TreeListing) -> Vec<(&str, EntryKind)> {
+        listing.entries.iter().map(|e| (e.name.as_str(), e.kind)).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_tree_with_kinds_and_sorting() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        f.write("src/main.rs", b"fn main() {}\n");
+        f.write("src/lib/mod.rs", b"\n");
+        f.write("run.sh", b"#!/bin/sh\n");
+        std::fs::set_permissions(f.path.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("src/main.rs", f.path.join("link")).unwrap();
+        f.write("b.txt", b"b");
+        f.write("A.txt", b"aa");
+        f.write("Docs/x.md", b"x");
+        f.commit("first");
+        let sha = f.git(&["rev-parse", "HEAD"]);
+        let repo = bare(&f);
+
+        let root = browse::tree(&repo, None, "").unwrap();
+        assert_eq!(root.commit, sha);
+        assert_eq!(root.path, "");
+        assert_eq!(
+            kinds(&root),
+            [
+                ("Docs", EntryKind::Dir),
+                ("src", EntryKind::Dir),
+                ("A.txt", EntryKind::File),
+                ("b.txt", EntryKind::File),
+                ("link", EntryKind::Symlink),
+                ("run.sh", EntryKind::Executable),
+            ]
+        );
+        assert_eq!(root.entries[0].size, None);
+        assert_eq!(root.entries[2].size, Some(2));
+        assert_eq!(root.entries[4].size, Some("src/main.rs".len() as u64));
+
+        let src = browse::tree(&repo, Some("main"), "/src/").unwrap();
+        assert_eq!(src.path, "src");
+        assert_eq!(kinds(&src), [("lib", EntryKind::Dir), ("main.rs", EntryKind::File)]);
+        assert_eq!(src.entries[1].path, "src/main.rs");
+        assert_eq!(browse::tree(&repo, Some(&sha[..8]), "src/lib").unwrap().entries[0].path, "src/lib/mod.rs");
+
+        assert!(browse::tree(&repo, None, "nope").is_err());
+        assert!(browse::tree(&repo, None, "src/main.rs").is_err());
+        assert!(browse::tree(&repo, Some("no-such-branch"), "").is_err());
+
+        let link = browse::blob(&repo, None, "link").unwrap();
+        assert_eq!((link.text.as_deref(), link.lines, link.binary), (Some("src/main.rs"), 1, false));
+    }
+
+    #[test]
+    fn submodules_are_listed() {
+        let f = Fixture::new();
+        f.write("a.txt", b"a\n");
+        let a = f.commit("first");
+        f.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{a},sub")]);
+        f.git(&["commit", "-q", "-m", "add sub"]);
+        let repo = f.repo();
+        let root = browse::tree(&repo, None, "").unwrap();
+        assert_eq!(kinds(&root), [("sub", EntryKind::Submodule), ("a.txt", EntryKind::File)]);
+        assert_eq!(root.entries[0].size, None);
+        assert!(browse::blob(&repo, None, "sub").is_err());
+    }
+
+    #[test]
+    fn last_commit_per_entry() {
+        let f = Fixture::new();
+        f.write("src/a.rs", b"a\n");
+        f.write("src/b.rs", b"b\n");
+        f.write("top.txt", b"t\n");
+        let first = f.commit("first");
+        f.write("src/b.rs", b"b2\n");
+        let second = f.commit("change b\n\nbody");
+        f.write("top.txt", b"t2\n");
+        let third = f.commit("change top");
+        f.write("src/c.rs", b"c\n");
+        let fourth = f.commit("add c");
+        f.git(&["rm", "-q", "top.txt"]);
+        f.commit("drop top");
+        f.write("top.txt", b"t3\n");
+        let sixth = f.commit("bring top back");
+        let repo = bare(&f);
+
+        let root = browse::tree_commits(&repo, None, "").unwrap();
+        let got: Vec<_> = root.iter().map(|e| (e.name.as_str(), e.sha.as_str(), e.subject.as_str())).collect();
+        assert_eq!(got, [("src", fourth.as_str(), "add c"), ("top.txt", sixth.as_str(), "bring top back")]);
+        assert!(root[0].time > 1_700_000_000);
+
+        let src = browse::tree_commits(&repo, None, "src").unwrap();
+        let got: Vec<_> = src.iter().map(|e| (e.name.as_str(), e.sha.as_str())).collect();
+        assert_eq!(got, [("a.rs", first.as_str()), ("b.rs", second.as_str()), ("c.rs", fourth.as_str())]);
+        assert_eq!(src[1].subject, "change b");
+
+        let old = browse::tree_commits(&repo, Some(&third), "").unwrap();
+        let got: Vec<_> = old.iter().map(|e| (e.name.as_str(), e.sha.as_str())).collect();
+        assert_eq!(got, [("src", second.as_str()), ("top.txt", third.as_str())]);
+        assert!(browse::tree_commits(&repo, None, "src/a.rs").is_err());
+    }
+
+    #[test]
+    fn blobs() {
+        let f = Fixture::new();
+        f.write("two.txt", b"one\ntwo\n");
+        f.write("open.txt", b"one\ntwo");
+        f.write("empty.txt", b"");
+        f.write("bin.dat", b"a\0b");
+        f.write("big.txt", &vec![b'x'; MAX_BLOB_BYTES as usize + 1]);
+        f.write("bad.txt", b"caf\xe9\n");
+        f.write("dir/x.txt", b"x\n");
+        f.commit("files");
+        let repo = bare(&f);
+
+        let b = browse::blob(&repo, None, "two.txt").unwrap();
+        assert_eq!((b.text.as_deref(), b.lines, b.size, b.binary, b.too_large), (Some("one\ntwo\n"), 2, 8, false, false));
+        assert_eq!(browse::blob(&repo, None, "open.txt").unwrap().lines, 2);
+        let e = browse::blob(&repo, None, "empty.txt").unwrap();
+        assert_eq!((e.text.as_deref(), e.lines), (Some(""), 0));
+        let bin = browse::blob(&repo, None, "bin.dat").unwrap();
+        assert_eq!((bin.binary, bin.text, bin.lines, bin.size), (true, None, 0, 3));
+        let big = browse::blob(&repo, None, "big.txt").unwrap();
+        assert_eq!((big.too_large, big.text, big.size), (true, None, MAX_BLOB_BYTES + 1));
+        assert_eq!(browse::blob(&repo, None, "bad.txt").unwrap().text.as_deref(), Some("caf\u{fffd}\n"));
+        assert_eq!(browse::blob(&repo, None, "dir/x.txt").unwrap().path, "dir/x.txt");
+        assert!(browse::blob(&repo, None, "dir").is_err());
+        assert!(browse::blob(&repo, None, "missing").is_err());
+        assert!(browse::blob(&repo, None, "").is_err());
+    }
+
+    #[test]
+    fn overview() {
+        let f = Fixture::new();
+        f.write("src/main.rs", &[b'r'; 300]);
+        f.write("app/View.swift", &[b's'; 200]);
+        f.write("app/script.py", &[b'p'; 100]);
+        f.write("README.txt", b"plain");
+        f.write("readme.md", b"# hi");
+        f.write("LICENSE-MIT", b"mit");
+        f.write("Cargo.toml", &[b't'; 5000]);
+        f.write("notes.md", &[b'm'; 5000]);
+        f.write("vendor/lib.rs", &[b'v'; 5000]);
+        f.write("web/app.min.js", &[b'j'; 5000]);
+        f.write("web/app.js", &[b'j'; 10]);
+        f.write("Dockerfile", &[b'd'; 20]);
+        f.commit("first");
+        f.git(&["commit", "-q", "--allow-empty", "--author", "Bob <bob@example.com>", "-m", "bob"]);
+        f.git(&["commit", "-q", "--allow-empty", "--author", "Ada <ADA@example.com>", "-m", "ada again"]);
+        let head = f.git(&["rev-parse", "HEAD"]);
+        let repo = bare(&f);
+
+        let o = browse::overview(&repo, None).unwrap();
+        assert_eq!(o.commit, head);
+        assert_eq!((o.commits, o.commits_capped, o.contributors), (3, false, 2));
+        assert_eq!(o.files, 12);
+        let share = |name: &str, bytes: u64| LanguageShare { name: name.into(), bytes };
+        assert_eq!(o.languages, [share("Rust", 300), share("Swift", 200), share("Python", 100), share("Dockerfile", 20), share("JavaScript", 10)]);
+        assert_eq!(o.readme.as_deref(), Some("readme.md"));
+        assert_eq!(o.license.as_deref(), Some("LICENSE-MIT"));
+
+        let first = browse::overview(&repo, Some("HEAD~2")).unwrap();
+        assert_eq!((first.commits, first.contributors), (1, 1));
+    }
+
+    #[test]
+    fn overview_folds_small_languages_into_other() {
+        let f = Fixture::new();
+        for (i, ext) in ["rs", "swift", "py", "go", "c", "java", "rb", "php", "lua", "zig"].iter().enumerate() {
+            f.write(&format!("f.{ext}"), &vec![b'x'; 100 - i]);
+        }
+        f.commit("many");
+        let o = browse::overview(&f.repo(), None).unwrap();
+        assert_eq!(o.languages.len(), 8);
+        assert_eq!(o.languages[0].name, "Rust");
+        assert_eq!(o.languages[7].name, "Other");
+        assert_eq!(o.languages[7].bytes, 93 + 92 + 91);
+        assert_eq!((o.readme, o.license), (None, None));
+    }
+}

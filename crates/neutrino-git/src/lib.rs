@@ -4,6 +4,7 @@
 //! [`gix::Repository`]; the daemon keeps one [`gix::ThreadSafeRepository`] per
 //! registered repo and hands each request its own thread-local copy.
 
+pub mod browse;
 pub mod forge;
 pub mod graph;
 pub mod worktree;

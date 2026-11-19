@@ -4,7 +4,7 @@ import Observation
 import SwiftUI
 
 enum Section: String, CaseIterable {
-    case changes, history, branches, pulls, runs, secrets
+    case code, changes, history, branches, pulls, runs, secrets
 }
 
 /// Which secrets and variables the Secrets screen shows.
@@ -160,6 +160,9 @@ final class AppModel {
     /// Open pull requests of the selected repo, for the panel.
     var glancePulls: [PullRequest] = []
     var glancePullsNote: String?
+
+    /// The Code page's state (CodeModel.swift).
+    let code = CodeModel()
 
     /// A short message for the last thing that went wrong, shown in the header.
     var notice: String?

@@ -14,6 +14,7 @@ struct RootView: View {
                         NoRepositories().island()
                     } else {
                         switch model.section {
+                        case .code: CodeScreen()
                         case .changes: ChangesScreen()
                         case .history: HistoryScreen()
                         case .branches: BranchesScreen()
@@ -181,6 +182,7 @@ struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             SectionLabel("This Mac").padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 8)
+            NavRow(title: "Code", icon: "chevron.left.forwardslash.chevron.right", selected: model.section == .code) { model.section = .code }
             NavRow(title: "Changes", icon: "doc.badge.plus", selected: model.section == .changes, enabled: model.source == .local,
                    count: model.status?.changeCount, help: model.source == .server ? "A hosted repository has no working copy." : nil) {
                 model.section = .changes

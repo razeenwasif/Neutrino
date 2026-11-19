@@ -390,6 +390,7 @@ private struct SectionJumps: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            jump(.code, "Code", "chevron.left.forwardslash.chevron.right")
             jump(.changes, "Changes", "square.and.pencil").disabled(model.source == .server)
             jump(.history, "History", "clock")
             jump(.branches, "Branches", "arrow.triangle.branch")

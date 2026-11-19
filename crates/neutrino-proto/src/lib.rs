@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a breaking change is made to the control API.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// TCP port of the server's paired TLS endpoint, and its Bonjour service type.
 pub const REMOTE_PORT: u16 = 7844;
@@ -254,6 +254,89 @@ pub struct FileDiff {
     pub additions: u32,
     pub deletions: u32,
     pub hunks: Vec<Hunk>,
+}
+
+// ---------------------------------------------------------------------------
+// Browsing files
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    Dir,
+    File,
+    Executable,
+    Symlink,
+    Submodule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeEntry {
+    pub name: String,
+    /// Repo-relative path of the entry.
+    pub path: String,
+    pub kind: EntryKind,
+    /// Blob size in bytes; None for dirs and submodules.
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeListing {
+    /// The commit the listing was read from (full sha).
+    pub commit: String,
+    pub path: String,
+    /// Dirs and submodules first, then everything else; each group sorted by name, case-insensitively.
+    pub entries: Vec<TreeEntry>,
+}
+
+/// The newest commit to change one entry of a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryCommit {
+    /// Entry name within the listed directory.
+    pub name: String,
+    pub sha: String,
+    pub subject: String,
+    /// Commit time, unix seconds.
+    pub time: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobContent {
+    pub commit: String,
+    pub path: String,
+    pub size: u64,
+    pub binary: bool,
+    /// Over the limit (1 MiB); text is None.
+    pub too_large: bool,
+    /// UTF-8 (lossy) text when not binary and not too large.
+    pub text: Option<String>,
+    /// Line count of `text` (0 when None). A trailing newline doesn't add a line.
+    pub lines: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LanguageShare {
+    pub name: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoOverview {
+    pub commit: String,
+    /// Commits reachable from `commit`, counted up to 100_000.
+    pub commits: u32,
+    pub commits_capped: bool,
+    /// Distinct author emails among the counted commits.
+    pub contributors: u32,
+    /// Blobs in the whole tree (counted up to 200_000 entries walked).
+    pub files: u32,
+    /// Bytes per language by file extension or name, largest first. At most 8
+    /// entries, the rest summed into "Other". Files in no known language are left out.
+    pub languages: Vec<LanguageShare>,
+    /// The root README's path, if there is one.
+    pub readme: Option<String>,
+    /// The root licence file's path, if there is one.
+    pub license: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -865,6 +948,35 @@ pub enum Request {
         #[serde(default)]
         context: Option<u32>,
     },
+    /// One directory of a commit's tree. `rev` defaults to HEAD, `path` to the root.
+    Tree {
+        repo: String,
+        #[serde(default)]
+        rev: Option<String>,
+        #[serde(default)]
+        path: String,
+    },
+    /// The newest commit to change each entry of one directory.
+    TreeCommits {
+        repo: String,
+        #[serde(default)]
+        rev: Option<String>,
+        #[serde(default)]
+        path: String,
+    },
+    /// One file's contents at a commit.
+    Blob {
+        repo: String,
+        #[serde(default)]
+        rev: Option<String>,
+        path: String,
+    },
+    /// Counts, languages, README and licence for a commit.
+    Overview {
+        repo: String,
+        #[serde(default)]
+        rev: Option<String>,
+    },
     /// Staged, unstaged, untracked and conflicted files.
     Status { repo: String },
     /// One file's working-copy diff.
@@ -1150,6 +1262,10 @@ pub enum Response {
     Log(LogPage),
     Commit(Box<CommitDetail>),
     FileDiff(FileDiff),
+    Tree(TreeListing),
+    TreeCommits(Vec<EntryCommit>),
+    Blob(BlobContent),
+    Overview(RepoOverview),
     Status(WorkingStatus),
     /// A write finished; `output` is what git printed, if anything.
     Done { output: String },
@@ -1340,6 +1456,62 @@ mod tests {
         let (_, off) = decode_request(r#"{"id":4,"method":"set_mirror","params":{"repo":"flux"}}"#);
         assert_eq!(off.unwrap(), Request::SetMirror { repo: "flux".into(), url: None });
         assert_eq!(wire(&encode_request(5, &Request::ListBackups)), json!({"id": 5, "method": "list_backups"}));
+    }
+
+    #[test]
+    fn browse_shapes() {
+        let tree = Request::Tree { repo: "x".into(), rev: None, path: "src".into() };
+        assert_eq!(wire(&encode_request(1, &tree)), json!({"id": 1, "method": "tree", "params": {"repo": "x", "rev": null, "path": "src"}}));
+        let (_, req) = decode_request(r#"{"id":2,"method":"tree_commits","params":{"repo":"x"}}"#);
+        assert_eq!(req.unwrap(), Request::TreeCommits { repo: "x".into(), rev: None, path: String::new() });
+        let (_, req) = decode_request(r#"{"id":3,"method":"blob","params":{"repo":"x","rev":"main","path":"a.rs"}}"#);
+        assert_eq!(req.unwrap(), Request::Blob { repo: "x".into(), rev: Some("main".into()), path: "a.rs".into() });
+        let (_, req) = decode_request(r#"{"id":4,"method":"overview","params":{"repo":"x"}}"#);
+        assert_eq!(req.unwrap(), Request::Overview { repo: "x".into(), rev: None });
+
+        let listing = Response::Tree(TreeListing {
+            commit: "abc".into(),
+            path: "src".into(),
+            entries: vec![
+                TreeEntry { name: "lib".into(), path: "src/lib".into(), kind: EntryKind::Dir, size: None },
+                TreeEntry { name: "run.sh".into(), path: "src/run.sh".into(), kind: EntryKind::Executable, size: Some(12) },
+            ],
+        });
+        assert_eq!(
+            wire(&encode_response(1, &listing)),
+            json!({"id": 1, "type": "tree", "data": {"commit": "abc", "path": "src", "entries": [
+                {"name": "lib", "path": "src/lib", "kind": "dir", "size": null},
+                {"name": "run.sh", "path": "src/run.sh", "kind": "executable", "size": 12}
+            ]}})
+        );
+        let overview = Response::Overview(RepoOverview {
+            commit: "abc".into(),
+            commits: 3,
+            commits_capped: false,
+            contributors: 2,
+            files: 10,
+            languages: vec![LanguageShare { name: "Rust".into(), bytes: 300 }],
+            readme: Some("README.md".into()),
+            license: None,
+        });
+        assert_eq!(
+            wire(&encode_response(5, &overview)),
+            json!({"id": 5, "type": "overview", "data": {"commit": "abc", "commits": 3, "commits_capped": false, "contributors": 2, "files": 10,
+                "languages": [{"name": "Rust", "bytes": 300}], "readme": "README.md", "license": null}})
+        );
+        let blob = Response::Blob(BlobContent { commit: "abc".into(), path: "a".into(), size: 2, binary: false, too_large: false, text: Some("a\n".into()), lines: 1 });
+        assert_eq!(
+            wire(&encode_response(6, &blob)),
+            json!({"id": 6, "type": "blob", "data": {"commit": "abc", "path": "a", "size": 2, "binary": false, "too_large": false, "text": "a\n", "lines": 1}})
+        );
+        let commits = Response::TreeCommits(vec![EntryCommit { name: "lib".into(), sha: "abc".into(), subject: "s".into(), time: 9 }]);
+        assert_eq!(
+            wire(&encode_response(7, &commits)),
+            json!({"id": 7, "type": "tree_commits", "data": [{"name": "lib", "sha": "abc", "subject": "s", "time": 9}]})
+        );
+        for r in [listing, overview, blob, commits] {
+            assert_eq!(decode_response(&encode_response(1, &r)).unwrap().1, r);
+        }
     }
 
     #[test]

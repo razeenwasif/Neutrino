@@ -1,6 +1,9 @@
 //! ntr: Neutrino from the terminal. Talks to neutrinod over its Unix socket.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -8,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use neutrino_proto::{
-    Area, BranchRule, ChangeStatus, Head, LineKind, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, RunDetail, RunState, Side, VaultScope, WorkingStatus,
+    BranchRule, ChangeStatus, Head, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, RunDetail, RunState, Side, VaultScope,
     decode_response, encode_request,
 };
 
@@ -33,14 +36,13 @@ enum Cmd {
     Info,
     /// Registered repos.
     Repos,
-    /// Register the repo containing PATH (default: here).
-    Add { path: Option<PathBuf> },
-    /// Forget a repo. Nothing on disk is touched.
-    Rm { repo: String },
+    /// Register a working copy, or forget one.
+    #[command(subcommand)]
+    Repo(RepoCmd),
     /// Local and remote branches.
     Branches,
-    /// History, newest first.
-    Log {
+    /// History, newest first, with its graph (read by neutrinod, fast on big repos).
+    History {
         /// Branch, tag or sha to start from. Default HEAD.
         rev: Option<String>,
         #[arg(short = 'n', long, default_value_t = 20)]
@@ -54,26 +56,6 @@ enum Cmd {
         #[arg(long, short = 'q')]
         query: Option<String>,
     },
-    /// A commit and the files it changed.
-    Show { sha: String },
-    /// A file's changes: `diff PATH` for the working tree, `diff SHA PATH` for a commit.
-    Diff {
-        #[arg(num_args = 1..=2, required = true)]
-        args: Vec<String>,
-        /// With one PATH: what's staged, instead of what isn't.
-        #[arg(long)]
-        staged: bool,
-        /// Lines of context.
-        #[arg(short = 'U', long, default_value_t = 3)]
-        context: u32,
-    },
-    /// Staged, unstaged, untracked and conflicted files.
-    Status,
-    /// Stage whole files.
-    Stage {
-        #[arg(required = true)]
-        paths: Vec<String>,
-    },
     /// Take whole files out of the index.
     Unstage {
         #[arg(required = true)]
@@ -84,33 +66,8 @@ enum Cmd {
         #[arg(required = true)]
         paths: Vec<String>,
     },
-    /// Commit what's staged.
-    Commit {
-        #[arg(short = 'm', long)]
-        message: Option<String>,
-        #[arg(long)]
-        amend: bool,
-    },
-    /// Switch to a branch; a remote one becomes a tracking branch.
-    Switch { branch: String },
-    /// Create, rename or delete a branch.
-    #[command(subcommand)]
-    Branch(BranchCmd),
     /// Print change events as they happen, until Ctrl-C.
     Watch,
-    /// List remotes, or add one.
-    #[command(subcommand)]
-    Remote(RemoteCmd),
-    /// Fetch every remote (or one).
-    Fetch { remote: Option<String> },
-    /// Push the current branch (or BRANCH) to its remote.
-    Push {
-        remote: Option<String>,
-        branch: Option<String>,
-        /// Make it the branch's upstream.
-        #[arg(short = 'u', long)]
-        set_upstream: bool,
-    },
     /// Server: create a hosted repository.
     Host {
         name: String,
@@ -198,6 +155,17 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<PushCmd>,
     },
+    /// Any other command is git's: `ntr status`, `ntr commit -m …`, `ntr rebase -i main`.
+    #[command(external_subcommand)]
+    Git(Vec<OsString>),
+}
+
+#[derive(Subcommand)]
+enum RepoCmd {
+    /// Register the working copy containing PATH (default: here) with neutrinod.
+    Add { path: Option<PathBuf> },
+    /// Forget a registered repo. Nothing on disk is touched.
+    Rm { repo: String },
 }
 
 #[derive(Subcommand)]
@@ -414,36 +382,10 @@ enum RulesCmd {
 }
 
 #[derive(Subcommand)]
-enum RemoteCmd {
-    /// Remotes of the repo you're in.
-    List,
-    Add { name: String, url: String },
-}
-
-#[derive(Subcommand)]
 enum DeviceCmd {
     Revoke { id: String },
 }
 
-#[derive(Subcommand)]
-enum BranchCmd {
-    New {
-        name: String,
-        /// Where it starts. Default HEAD.
-        #[arg(long)]
-        start: Option<String>,
-        /// Switch to it too.
-        #[arg(long, short = 's')]
-        switch: bool,
-    },
-    Rename { from: String, to: String },
-    Delete {
-        name: String,
-        /// Delete it even if it isn't merged.
-        #[arg(long)]
-        force: bool,
-    },
-}
 
 fn socket_path(arg: Option<PathBuf>) -> PathBuf {
     arg.or_else(|| std::env::var_os("NEUTRINO_SOCKET").map(PathBuf::from)).unwrap_or_else(|| {
@@ -502,9 +444,148 @@ fn repos(c: &mut Conn) -> Result<Vec<Repo>> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// One command for everything: git's commands, and the server's from anywhere
+// ---------------------------------------------------------------------------
+
+/// `ntr <anything else>` is `git <anything else>`, in place of this process,
+/// so its pager, colours, prompts and exit code are git's own.
+fn run_git(args: &[OsString]) -> Result<()> {
+    let args = if args.first().is_some_and(|a| a == "git") { &args[1..] } else { args };
+    let err = Command::new("git").args(args).exec();
+    Err(anyhow!("running git: {err}"))
+}
+
+/// Commands only a server answers.
+fn server_only(c: &Cmd) -> bool {
+    matches!(
+        c,
+        Cmd::Host { .. }
+            | Cmd::Import { .. }
+            | Cmd::Mirror { .. }
+            | Cmd::Pair
+            | Cmd::Devices { .. }
+            | Cmd::Pr(_)
+            | Cmd::Rules { .. }
+            | Cmd::Runs { .. }
+            | Cmd::Run(_)
+            | Cmd::Workflows { .. }
+            | Cmd::Ci
+            | Cmd::Vault { .. }
+            | Cmd::Secret(_)
+            | Cmd::Var(_)
+            | Cmd::Env(_)
+            | Cmd::Backup
+            | Cmd::Inbox
+            | Cmd::Notify { .. }
+    )
+}
+
+/// Whether the neutrinod on this Mac is the server.
+fn local_is_server(socket: Option<PathBuf>) -> bool {
+    let Ok(mut c) = Conn::open(&socket_path(socket)) else { return false };
+    matches!(c.call(Request::EngineInfo), Ok(Response::Engine(e)) if e.role == "server")
+}
+
+/// Where a server URL points: `ssh://[user@]host[:port]/path` or
+/// `[user@]host:/path`. Returns (host, port, path).
+fn server_url(url: &str) -> Option<(String, Option<String>, String)> {
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        let (authority, path) = rest.split_once('/')?;
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h.to_string(), Some(p.to_string())),
+            _ => (authority.to_string(), None),
+        };
+        return Some((host, port, format!("/{path}")));
+    }
+    if url.contains("://") {
+        return None; // https://, git://, file://: not a server over SSH
+    }
+    let (host, path) = url.split_once(':')?;
+    (!host.is_empty() && !host.contains('/') && path.starts_with('/')).then(|| (host.to_string(), None, path.to_string()))
+}
+
+fn git_out(args: &[&str]) -> Option<String> {
+    let out = Command::new("git").args(args).stderr(std::process::Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// `'…'` for the server's shell.
+fn sh_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@,+".contains(c)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+/// Run this command with the server's ntr, over SSH. The server is the one
+/// the working copy's origin is on (and the repo is that hosted repo), else
+/// `$NEUTRINO_SERVER`, else `git config neutrino.server`.
+fn forward(repo: Option<&str>) -> Result<()> {
+    let origin = if repo.is_none() { git_out(&["remote", "get-url", "origin"]).and_then(|u| server_url(&u)) } else { None };
+    let (host, port, path) = match origin {
+        Some((h, p, path)) => (h, p, Some(path)),
+        None => {
+            let named = std::env::var("NEUTRINO_SERVER").ok().filter(|s| !s.is_empty()).or_else(|| git_out(&["config", "--get", "neutrino.server"]));
+            let named = named.ok_or_else(|| {
+                anyhow!("that's a server command, and this Mac's neutrinod isn't the server. Run it inside a working copy whose origin is on the server, or name the server once: git config --global neutrino.server mini")
+            })?;
+            (named, None, None)
+        }
+    };
+
+    // The same arguments, minus --socket (it's this Mac's), with the repo named by its path on the server.
+    let mut args: Vec<String> = Vec::new();
+    let mut skip_next = false;
+    for a in std::env::args().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a == "--socket" {
+            skip_next = true;
+            continue;
+        }
+        if a.starts_with("--socket=") {
+            continue;
+        }
+        args.push(a);
+    }
+    if let Some(p) = &path {
+        args.splice(0..0, ["-r".to_string(), p.clone()]);
+    }
+    let ntr = std::env::var("NEUTRINO_SERVER_NTR").unwrap_or_else(|_| ".neutrino/bin/ntr".into());
+    let remote: Vec<String> = std::iter::once(ntr).chain(args.iter().map(|a| sh_quote(a))).collect();
+
+    let mut ssh = Command::new("ssh");
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        ssh.arg("-t"); // prompts (a secret typed without echo) and colours
+    } else {
+        ssh.arg("-T");
+    }
+    ssh.arg("-o").arg("LogLevel=ERROR");
+    if let Some(p) = port {
+        ssh.arg("-p").arg(p);
+    }
+    let status = ssh.arg(&host).arg(remote.join(" ")).status().context("running ssh")?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 /// `--repo`, `$NEUTRINO_REPO`, or the registered repo containing the current folder.
 fn pick_repo(c: &mut Conn, arg: Option<String>) -> Result<String> {
     if let Some(r) = arg.or_else(|| std::env::var("NEUTRINO_REPO").ok()) {
+        // A path names the repo registered there (how a workstation names a
+        // hosted repo when it forwards a command: by its origin's path).
+        if r.starts_with('/') {
+            let want = Path::new(&r);
+            return repos(c)?
+                .into_iter()
+                .find(|x| Path::new(&x.path) == want)
+                .map(|x| x.id)
+                .ok_or_else(|| anyhow!("no repository is registered at {r}"));
+        }
         return Ok(r);
     }
     let here = std::env::current_dir()?.canonicalize()?;
@@ -513,7 +594,7 @@ fn pick_repo(c: &mut Conn, arg: Option<String>) -> Result<String> {
         .filter(|r| here.starts_with(&r.path))
         .max_by_key(|r| r.path.len())
         .map(|r| r.id)
-        .ok_or_else(|| anyhow!("this folder isn't in a registered repo: run `ntr add`, or pass --repo"))
+        .ok_or_else(|| anyhow!("this folder isn't in a registered repo: run `ntr repo add`, or pass --repo"))
 }
 
 struct Style {
@@ -585,12 +666,21 @@ fn status_letter(s: ChangeStatus) -> &'static str {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Anything ntr doesn't know is git's.
+    if let Cmd::Git(args) = &cli.command {
+        return run_git(args);
+    }
+    // Server commands from a workstation run on the server, over SSH.
+    if server_only(&cli.command) && !local_is_server(cli.socket.clone()) {
+        return forward(cli.repo.as_deref());
+    }
     let st = Style { on: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() };
     let style = Style { on: st.on };
     let mut c = Conn::open(&socket_path(cli.socket))?;
     let out = &mut std::io::stdout().lock();
 
     match cli.command {
+        Cmd::Git(_) => unreachable!("handled before connecting"),
         Cmd::Ping => match c.call(Request::Ping)? {
             Response::Pong { protocol } => writeln!(out, "neutrinod is up (protocol {protocol})")?,
             r => return Err(unexpected(r)),
@@ -602,7 +692,7 @@ fn main() -> Result<()> {
         Cmd::Repos => {
             let list = repos(&mut c)?;
             if list.is_empty() {
-                writeln!(out, "No repos yet. Run `ntr add` inside one.")?;
+                writeln!(out, "No repos yet. Run `ntr repo add` inside one.")?;
             }
             for r in list {
                 let head = match (&r.head, &r.error) {
@@ -614,7 +704,7 @@ fn main() -> Result<()> {
                 writeln!(out, "{:<20} {:<24} {}", st.paint("1", &r.id), head, r.path)?;
             }
         }
-        Cmd::Add { path } => {
+        Cmd::Repo(RepoCmd::Add { path }) => {
             let path = path.unwrap_or_else(|| PathBuf::from("."));
             let abs = std::fs::canonicalize(&path).with_context(|| format!("{} doesn't exist", path.display()))?;
             match c.call(Request::AddRepo { path: abs.display().to_string() })? {
@@ -622,7 +712,7 @@ fn main() -> Result<()> {
                 r => return Err(unexpected(r)),
             }
         }
-        Cmd::Rm { repo } => match c.call(Request::RemoveRepo { repo })? {
+        Cmd::Repo(RepoCmd::Rm { repo }) => match c.call(Request::RemoveRepo { repo })? {
             Response::Removed { repo } => writeln!(out, "Forgot {repo}. Its files are untouched.")?,
             r => return Err(unexpected(r)),
         },
@@ -640,7 +730,7 @@ fn main() -> Result<()> {
                 writeln!(out, "{mark} {name:<30} {} {}{} {}", &b.sha[..7], b.subject, track, st.paint("2", &ago(b.time)))?;
             }
         }
-        Cmd::Log { rev, limit, skip, all, query } => {
+        Cmd::History { rev, limit, skip, all, query } => {
             let repo = pick_repo(&mut c, cli.repo)?;
             let started = std::time::Instant::now();
             let q = LogQuery { repo, rev, all, skip, limit: Some(limit), query };
@@ -664,87 +754,6 @@ fn main() -> Result<()> {
                 eprintln!("{} commits in {:.1} ms", page.commits.len(), took.as_secs_f64() * 1000.0);
             }
         }
-        Cmd::Show { sha } => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            let Response::Commit(d) = c.call(Request::Commit { repo, sha })? else { bail!("unexpected answer") };
-            writeln!(out, "{} {}", st.paint("33", &format!("commit {}", d.sha)), refs(&LogEntry {
-                sha: d.sha.clone(), parents: vec![], subject: String::new(), author: d.author.clone(), time: 0, refs: d.refs.clone(), graph: None,
-            }, &st))?;
-            if d.parents.len() > 1 {
-                writeln!(out, "Merge:  {}  (files compared with the first parent)", d.parents.iter().map(|p| &p[..7]).collect::<Vec<_>>().join(" "))?;
-            }
-            writeln!(out, "Author: {} <{}>, {}", d.author.name, d.author.email, ago(d.author.time))?;
-            writeln!(out, "\n    {}", d.subject)?;
-            if !d.body.is_empty() {
-                writeln!(out)?;
-                for l in d.body.lines() {
-                    writeln!(out, "    {l}")?;
-                }
-            }
-            writeln!(out)?;
-            let (mut add, mut del) = (0, 0);
-            for f in &d.files {
-                add += f.additions;
-                del += f.deletions;
-                let path = match &f.old_path {
-                    Some(old) => format!("{old} → {}", f.path),
-                    None => f.path.clone(),
-                };
-                let counts = if f.binary {
-                    "binary".to_string()
-                } else {
-                    format!("{} {}", st.paint("32", &format!("+{}", f.additions)), st.paint("31", &format!("−{}", f.deletions)))
-                };
-                writeln!(out, " {} {path}  {counts}", status_letter(f.status))?;
-            }
-            writeln!(out, "\n {} files, +{add} −{del}{}", d.files.len(), if d.truncated { " (list truncated)" } else { "" })?;
-        }
-        Cmd::Diff { args, staged, context } => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            let request = match args.as_slice() {
-                [path] => Request::WorkDiff { repo, path: path.clone(), area: if staged { Area::Staged } else { Area::Unstaged }, context: Some(context) },
-                [sha, path] => Request::FileDiff { repo, sha: sha.clone(), path: path.clone(), context: Some(context) },
-                _ => bail!("give a path, or a commit and a path"),
-            };
-            let Response::FileDiff(d) = c.call(request)? else { bail!("unexpected answer") };
-            let old = d.old_path.as_deref().unwrap_or(&d.path);
-            writeln!(out, "{}", st.paint("1", &format!("--- a/{old}\n+++ b/{}", d.path)))?;
-            if d.binary {
-                writeln!(out, "Binary files differ")?;
-            } else if d.too_large {
-                writeln!(out, "Too large to diff")?;
-            }
-            for h in &d.hunks {
-                writeln!(out, "{}", st.paint("36", &format!("@@ -{},{} +{},{} @@", h.old_start, h.old_lines, h.new_start, h.new_lines)))?;
-                for l in &h.lines {
-                    let (sign, code) = match l.kind {
-                        LineKind::Context => (' ', ""),
-                        LineKind::Added => ('+', "32"),
-                        LineKind::Removed => ('-', "31"),
-                    };
-                    let text = if st.on && !l.segments.is_empty() {
-                        l.segments.iter().map(|s| if s.changed { st.paint(&format!("{code};7"), &s.text) } else { st.paint(code, &s.text) }).collect()
-                    } else if code.is_empty() {
-                        l.text.clone()
-                    } else {
-                        st.paint(code, &l.text)
-                    };
-                    writeln!(out, "{}{text}", if code.is_empty() { sign.to_string() } else { st.paint(code, &sign.to_string()) })?;
-                    if l.no_newline {
-                        writeln!(out, "\\ No newline at end of file")?;
-                    }
-                }
-            }
-        }
-        Cmd::Status => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            let Response::Status(st) = c.call(Request::Status { repo })? else { bail!("unexpected answer") };
-            print_status(out, &st, &style)?;
-        }
-        Cmd::Stage { paths } => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            done(out, c.call(Request::Stage { repo, paths: rel_paths(&paths)? })?)?
-        }
         Cmd::Unstage { paths } => {
             let repo = pick_repo(&mut c, cli.repo)?;
             done(out, c.call(Request::Unstage { repo, paths: rel_paths(&paths)? })?)?
@@ -753,53 +762,6 @@ fn main() -> Result<()> {
             let repo = pick_repo(&mut c, cli.repo)?;
             done(out, c.call(Request::Discard { repo, paths: rel_paths(&paths)? })?)?;
             writeln!(out, "Discarded. Copies are listed in ~/.neutrino/discarded.log.")?;
-        }
-        Cmd::Commit { message, amend } => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            match c.call(Request::CommitChanges { repo, message: message.unwrap_or_default(), amend })? {
-                Response::Committed { sha, output } => {
-                    if !output.is_empty() {
-                        writeln!(out, "{output}")?;
-                    }
-                    writeln!(out, "Committed {}", style.paint("33", &sha[..7]))?;
-                }
-                r => return Err(unexpected(r)),
-            }
-        }
-        Cmd::Switch { branch } => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            done(out, c.call(Request::Checkout { repo, branch })?)?
-        }
-        Cmd::Branch(b) => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            let request = match b {
-                BranchCmd::New { name, start, switch } => Request::CreateBranch { repo, name, start, checkout: switch },
-                BranchCmd::Rename { from, to } => Request::RenameBranch { repo, from, to },
-                BranchCmd::Delete { name, force } => Request::DeleteBranch { repo, name, force },
-            };
-            done(out, c.call(request)?)?;
-        }
-        Cmd::Remote(RemoteCmd::List) => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            let Response::Remotes(list) = c.call(Request::Remotes { repo })? else { bail!("unexpected answer") };
-            if list.is_empty() {
-                writeln!(out, "No remotes.")?;
-            }
-            for r in list {
-                writeln!(out, "{:<12} {}", style.paint("1", &r.name), r.url)?;
-            }
-        }
-        Cmd::Remote(RemoteCmd::Add { name, url }) => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            done(out, c.call(Request::AddRemote { repo, name, url })?)?;
-        }
-        Cmd::Fetch { remote } => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            done(out, c.call(Request::Fetch { repo, remote })?)?;
-        }
-        Cmd::Push { remote, branch, set_upstream } => {
-            let repo = pick_repo(&mut c, cli.repo)?;
-            done(out, c.call(Request::Push { repo, remote, branch, set_upstream })?)?;
         }
         Cmd::Host { name, description } => match c.call(Request::CreateHosted { name, description })? {
             Response::Repo(r) => {
@@ -1566,41 +1528,27 @@ fn done(out: &mut impl Write, r: Response) -> Result<()> {
     }
 }
 
-fn print_status(out: &mut impl Write, st: &WorkingStatus, style: &Style) -> Result<()> {
-    match &st.head {
-        Some(Head::Branch { name, .. }) => write!(out, "On {}", style.paint("36", name))?,
-        Some(Head::Detached { sha }) => write!(out, "Detached at {}", &sha[..7.min(sha.len())])?,
-        None => write!(out, "No HEAD")?,
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_urls() {
+        assert_eq!(server_url("ssh://mini/Users/me/.neutrino/repos/Prism.git"), Some(("mini".into(), None, "/Users/me/.neutrino/repos/Prism.git".into())));
+        assert_eq!(server_url("ssh://me@atlas:2222/srv/x.git"), Some(("me@atlas".into(), Some("2222".into()), "/srv/x.git".into())));
+        assert_eq!(server_url("mini:/Users/me/x.git"), Some(("mini".into(), None, "/Users/me/x.git".into())));
+        // GitHub and relative scp paths aren't a Neutrino server.
+        assert_eq!(server_url("git@github.com:me/x.git"), None);
+        assert_eq!(server_url("https://github.com/me/x.git"), None);
     }
-    match (&st.upstream, st.ahead, st.behind) {
-        (Some(u), Some(a), Some(b)) => writeln!(out, ", ↑{a} ↓{b} against {u}")?,
-        (Some(u), _, _) => writeln!(out, ", tracking {u} (gone)")?,
-        _ => writeln!(out)?,
+
+    #[test]
+    fn quoting() {
+        assert_eq!(sh_quote("pr"), "pr");
+        assert_eq!(sh_quote("/Users/me/.neutrino/repos/a.git"), "/Users/me/.neutrino/repos/a.git");
+        assert_eq!(sh_quote("Fix it's thing"), r"'Fix it'\''s thing'");
+        assert_eq!(sh_quote(""), "''");
+        assert_eq!(sh_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
     }
-    if let Some(op) = &st.operation {
-        writeln!(out, "{}", style.paint("33", &format!("A {op} is in progress.")))?;
-    }
-    let section = |out: &mut dyn Write, title: &str, code: &str, list: &[neutrino_proto::StatusFile]| -> std::io::Result<()> {
-        if list.is_empty() {
-            return Ok(());
-        }
-        writeln!(out, "\n{title}")?;
-        for f in list {
-            let path = match &f.old_path {
-                Some(old) => format!("{old} → {}", f.path),
-                None => f.path.clone(),
-            };
-            let counts = if f.binary { "binary".to_string() } else { format!("+{} −{}", f.additions, f.deletions) };
-            writeln!(out, "  {} {}  {}", style.paint(code, status_letter(f.status)), style.paint(code, &path), style.paint("2", &counts))?;
-        }
-        Ok(())
-    };
-    section(out, "Conflicted", "31", &st.conflicted)?;
-    section(out, "Staged", "32", &st.staged)?;
-    section(out, "Not staged", "33", &st.unstaged)?;
-    section(out, "Untracked", "2", &st.untracked)?;
-    if st.conflicted.is_empty() && st.staged.is_empty() && st.unstaged.is_empty() && st.untracked.is_empty() {
-        writeln!(out, "Nothing to commit.")?;
-    }
-    Ok(())
 }
