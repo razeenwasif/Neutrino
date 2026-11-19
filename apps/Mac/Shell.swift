@@ -204,33 +204,35 @@ struct Sidebar: View {
                 model.section = .secrets
             }
 
-            ServerSection()
-
-            SectionLabel("Repositories").padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 8)
+            // The server's repos and this Mac's share one scroll area, so a long
+            // list scrolls instead of pushing the window's header off the top.
             ScrollView {
-                VStack(spacing: 2) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ServerSection()
+
+                    SectionLabel("Repositories").padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 8)
                     ForEach(model.repos) { repo in
                         RepoRow(repo: repo)
                     }
+                    Button {
+                        Task { await model.addRepository() }
+                    } label: {
+                        Label("Add repository…", systemImage: "plus")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(model.isLive ? N.muted : N.faint)
+                            .padding(.horizontal, 10)
+                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.isLive)
+                    .help(model.isLive ? "Register a working copy" : "Start neutrinod to add your own repositories")
                 }
             }
-            .scrollIndicators(.never)
-            Button {
-                Task { await model.addRepository() }
-            } label: {
-                Label("Add repository…", systemImage: "plus")
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(model.isLive ? N.muted : N.faint)
-                    .padding(.horizontal, 10)
-                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!model.isLive)
-            .help(model.isLive ? "Register a working copy" : "Start neutrinod to add your own repositories")
+            .scrollIndicators(.automatic)
+            .frame(maxHeight: .infinity)
 
-            Spacer(minLength: 12)
-            MachineCard()
+            MachineCard().padding(.top, 12)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 12)

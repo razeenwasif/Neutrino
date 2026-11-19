@@ -266,6 +266,13 @@ final class AppModel {
             repoID = repos.first(where: { $0.id == saved && $0.error == nil })?.id ?? repos.first(where: { $0.error == nil })?.id
             rev = nil
         }
+        // No working copy here (a Mac that only reads the server): show a hosted repo
+        // rather than an empty window.
+        if repoID == nil, let hosted = hostedRepos.first(where: { $0.id == saved }) ?? hostedRepos.first(where: { $0.head?.sha != nil }) ?? hostedRepos.first {
+            source = .server
+            repoID = hosted.id
+            if section == .changes { section = .history }
+        }
         await reload()
     }
 

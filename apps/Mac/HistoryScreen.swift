@@ -48,7 +48,9 @@ struct CommitList: View {
             .padding(.top, 12)
             .padding(.bottom, 10)
 
-            if let error = model.historyError {
+            if model.repo == nil {
+                EmptyState(title: "No repository selected", message: "Pick one from the sidebar.")
+            } else if let error = model.historyError {
                 EmptyState(title: "Can't read the history", message: error)
             } else if model.commits.isEmpty, !model.loadingHistory {
                 EmptyState(title: model.query.isEmpty ? "No commits yet" : "Nothing matches", message: model.query.isEmpty ? "This branch has no commits." : "No commit's message, author or hash contains \"\(model.query)\".")
