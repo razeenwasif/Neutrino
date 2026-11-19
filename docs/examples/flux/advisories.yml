@@ -1,0 +1,28 @@
+# flux's .github/workflows/advisories.yml, on Neutrino.
+#
+# Fails when a locked dependency has an advisory nobody has reviewed, on every
+# push to main, every pull request, and every night (a new advisory arrives
+# without any push). Changes from the GitHub version:
+#   * runs-on: ubuntu-latest + setup-node  ->  a node:22 container on Graviton
+#   * checkout is built in, and has no credentials to persist
+#   * the schedule is the same instant: cron lines are UTC on both
+
+name: advisories
+
+on:
+  push: { branches: [main] }
+  pull_request: {}
+  schedule:
+    - cron: "17 18 * * *" # 05:17 in Sydney
+  workflow_dispatch: {}
+
+jobs:
+  advisories:
+    image: node:22
+    resources: { cpus: 1, memory: 1G }
+    timeout-minutes: 10
+    steps:
+      # No `npm ci`: the script has no dependencies, so nothing from the
+      # lockfile it is judging runs here.
+      - run: node --test scripts/advisories.test.mjs
+      - run: node scripts/advisories.mjs

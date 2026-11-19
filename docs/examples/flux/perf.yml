@@ -1,0 +1,121 @@
+# flux's .github/workflows/perf.yml (the Linux jobs), on Neutrino.
+#
+# Enforces the ADR 0001 performance budgets and runs the correctness gate.
+# Changes from the GitHub version:
+#   * ubuntu-latest  ->  containers on Graviton, which are arm64 Linux, not
+#     x86_64. The bundle budgets don't care; the release binary's size does
+#     differ a little, so binary-size may need its own budget for arm64.
+#   * setup-node, rust-toolchain and rust-cache  ->  a node:20 image, rustup
+#     into the workspace, and Neutrino caches for the toolchain, cargo's
+#     registry, target/ and npm's cache
+#   * the WebKitGTK packages are installed in each job (no sudo: jobs run as
+#     root). A Graviton image with them baked in (grav build) would save a few
+#     minutes a run.
+#   * the macOS and Windows jobs are in native.yml
+# Each Linux job asks for the whole default CI budget (4 CPUs, 6G), so they
+# run one after another on atlas.
+
+name: perf-budgets
+
+on:
+  push: { branches: [main] }
+  pull_request: {}
+  workflow_dispatch: {}
+
+env:
+  npm_config_cache: /workspace/.npm
+  CARGO_HOME: /workspace/.cargo
+  RUSTUP_HOME: /workspace/.rustup
+  PATH: /workspace/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+jobs:
+  # Entry JS, desktop preload, default desktop boot and entry stylesheet gzip
+  # budgets, from scripts/perf-budget.mjs. Blocks merge.
+  chrome-budget:
+    image: node:20
+    resources: { cpus: 2, memory: 3G }
+    timeout-minutes: 20
+    cache:
+      - key: npm-${{ hashFiles('package-lock.json') }}
+        path: .npm
+        restore-keys: [npm-]
+    steps:
+      - run: npm ci
+      - run: npm run perf
+
+  # Correctness gate (#16): Rust workspace tests, TypeScript checks, and frontend tests.
+  correctness:
+    image: node:20
+    resources: { cpus: 4, memory: 6G }
+    timeout-minutes: 60
+    cache:
+      - key: rust-${{ hashFiles('Cargo.lock') }}
+        path: [.cargo, .rustup, target]
+        restore-keys: [rust-]
+      - key: npm-${{ hashFiles('package-lock.json') }}
+        path: .npm
+        restore-keys: [npm-]
+    steps:
+      - name: Install Tauri/WebKitGTK build deps
+        run: |
+          apt-get update
+          apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Install Rust (kept in the cache)
+        run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+      - run: npm ci
+      - run: npm run typecheck --workspace apps/shell
+      - run: npm run test --workspace apps/shell
+      - run: cargo test --workspace --locked
+
+  # Compile + run the criterion IPC benches so they can't bit-rot. Latency is
+  # reported, not gated.
+  benches:
+    image: node:20
+    resources: { cpus: 4, memory: 6G }
+    timeout-minutes: 60
+    cache:
+      - key: rust-${{ hashFiles('Cargo.lock') }}
+        path: [.cargo, .rustup, target]
+        restore-keys: [rust-]
+    steps:
+      - name: Install Tauri/WebKitGTK build deps
+        run: |
+          apt-get update
+          apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Install Rust (kept in the cache)
+        run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+      - name: Check TS bindings are in sync (BACKLOG #12)
+        run: cargo test -p flux-core --lib bindings
+      - name: Run perf benches
+        run: cargo bench -p flux-core --bench ipc -- --warm-up-time 1 --measurement-time 3
+
+  # Release binary size budget (≤ 28 MB). Heavier (full LTO build), so only
+  # on main or when started by hand.
+  binary-size:
+    if: neutrino.branch == 'main'
+    image: node:20
+    resources: { cpus: 4, memory: 6G }
+    timeout-minutes: 90
+    cache:
+      - key: rust-release-${{ hashFiles('Cargo.lock') }}
+        path: [.cargo, .rustup, target]
+        restore-keys: [rust-release-]
+      - key: npm-${{ hashFiles('package-lock.json') }}
+        path: .npm
+        restore-keys: [npm-]
+    steps:
+      - name: Install Tauri/WebKitGTK build deps
+        run: |
+          apt-get update
+          apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Install Rust (kept in the cache)
+        run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+      - run: npm ci
+      - run: npm run shell:build
+      - name: Build release binary
+        run: cargo build --release -p flux-core --features custom-protocol
+      - name: Check binary size budget (ADR 0001)
+        run: node scripts/perf-budget.mjs --binary target/release/flux

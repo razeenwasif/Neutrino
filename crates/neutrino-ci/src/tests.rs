@@ -236,3 +236,48 @@ fn nexus_workflows() {
     assert_eq!(hosting.jobs[0].environment.as_deref(), Some("production"));
     assert!(rules.concurrency.as_ref().is_some_and(|c| !c.cancel_in_progress));
 }
+
+/// The workflows of the repositories moved from GitHub (docs/examples): each
+/// parses without warnings, plans, and fires when the original did, with the
+/// macOS and Windows jobs kept out of everyday runs.
+#[test]
+fn moved_repo_workflows() {
+    let files: [(&str, &str); 8] = [
+        ("flux/advisories.yml", include_str!("../../../docs/examples/flux/advisories.yml")),
+        ("flux/perf.yml", include_str!("../../../docs/examples/flux/perf.yml")),
+        ("flux/native.yml", include_str!("../../../docs/examples/flux/native.yml")),
+        ("prism/ci.yml", include_str!("../../../docs/examples/prism/ci.yml")),
+        ("neutron/ci.yml", include_str!("../../../docs/examples/neutron/ci.yml")),
+        ("neutron/native.yml", include_str!("../../../docs/examples/neutron/native.yml")),
+        ("proton/ui-and-paths.yml", include_str!("../../../docs/examples/proton/ui-and-paths.yml")),
+        ("proton/native.yml", include_str!("../../../docs/examples/proton/native.yml")),
+    ];
+    let push = |b: &str| Event::Push { name: format!("refs/heads/{b}"), sha: "s".into() };
+    let pr = |target: &str| Event::PullRequest { number: 1, source: "f".into(), target: target.into(), sha: "s".into() };
+    let tag = Event::Push { name: "refs/tags/v1.0.0".into(), sha: "s".into() };
+    for (name, src) in files {
+        let wf = Workflow::parse(name, src).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(wf.warnings.is_empty(), "{name}: {:?}", wf.warnings);
+        let main = if name.starts_with("neutron/") { "master" } else { "main" };
+        for event in [push(main), pr(main), tag.clone()] {
+            if !wf.triggered_by(&event) {
+                continue;
+            }
+            let cx = expr::Context::default().with("neutrino", event.context(name));
+            let jobs = plan(&wf, &cx).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!jobs.is_empty(), "{name}");
+        }
+        let native = name.ends_with("native.yml");
+        assert_eq!(wf.triggered_by(&push(main)), !native, "{name}: native jobs stay out of everyday pushes");
+        assert!(!native || wf.triggered_by(&tag), "{name}: native jobs run for a version tag");
+        for job in &wf.jobs {
+            let off_graviton = job.runs_on != Executor::Graviton;
+            assert_eq!(off_graviton, native, "{name}: {} runs where it should", job.id);
+            assert!(!format!("{job:?}").contains("secrets."), "{name}: no secrets in these");
+        }
+    }
+    let advisories = Workflow::parse("a.yml", include_str!("../../../docs/examples/flux/advisories.yml")).unwrap();
+    assert_eq!(advisories.on.schedule, vec!["17 18 * * *".to_string()]);
+    let prism = Workflow::parse("p.yml", include_str!("../../../docs/examples/prism/ci.yml")).unwrap();
+    assert!(!prism.triggered_by(&pr("develop")), "Prism checks pull requests into main only");
+}

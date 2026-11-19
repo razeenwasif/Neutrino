@@ -1,0 +1,46 @@
+# flux's .github/workflows/perf.yml native-correctness job, on Neutrino.
+#
+# Compiles and tests the OS-specific native paths on macOS and Windows.
+# Changes from the GitHub version:
+#   * the matrix becomes two jobs: macOS runs on atlas itself (runs-on: host),
+#     Windows on forge through Nexus (runs-on: nexus)
+#   * it runs for version tags and when started by hand, not on every push:
+#     host jobs need the server started with --host-executor (off for now),
+#     and each Nexus job is a ticket waiting for your Accept in Nexus
+#   * atlas needs Rust and Node 20 on its PATH; forge needs Rust, Node 20 and
+#     Git for Windows' bash
+#   * rust-cache is gone: host and Nexus jobs start from a fresh checkout
+
+name: native-correctness
+
+on:
+  push: { tags: ['v*'] }
+  workflow_dispatch: {}
+
+jobs:
+  macos:
+    runs-on: host
+    timeout-minutes: 60
+    steps:
+      - run: npm ci
+      - run: npm run shell:build
+      - run: cargo test -p flux-core --lib --locked
+      - run: cargo check -p flux-core --bin flux --features custom-protocol --locked
+      # Shields on macOS: WebKit must accept the content-blocker JSON, or every
+      # page goes unfiltered.
+      - run: cargo test -p flux-core --test webkit_rules --locked
+
+  windows:
+    runs-on: nexus
+    nexus: { node: forge }
+    resources: { cpus: 8, memory: 8G }
+    timeout-minutes: 60
+    steps:
+      - shell: bash
+        run: npm ci
+      - shell: bash
+        run: npm run shell:build
+      - shell: bash
+        run: cargo test -p flux-core --lib --locked
+      - shell: bash
+        run: cargo check -p flux-core --bin flux --features custom-protocol --locked

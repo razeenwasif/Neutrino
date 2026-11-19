@@ -130,8 +130,12 @@ else owns is imported without the mirror), origin is pointed at the server, the
 GitHub URL stays as the `github` remote, and it lists the branches with commits
 still to push. `--dry-run` says what it would do; `--disable-actions` turns
 GitHub Actions off for what it imports, so the copies pushed there don't start
-workflows (and use minutes). Workflows move by hand: write a
-`.neutrino/workflows/` file for each, as in [docs/examples](docs/examples).
+workflows (and use minutes). Workflows move by hand: copy a translation into
+the repository's `.neutrino/workflows/`. [docs/examples](docs/examples) has
+them for flux, nexus, Prism, Neutron and Proton, with a note at the top of each
+file on what changed. Each repository's macOS and Windows jobs are in a
+`native.yml` that runs for version tags and when started by hand, since host
+jobs need `--host-executor` and every Nexus job is a ticket to accept.
 
 ### Pull requests and branch rules
 

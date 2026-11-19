@@ -1,0 +1,62 @@
+# Prism's .github/workflows/ci.yml, on Neutrino.
+#
+# Backend tests and the frontend's typecheck, lint and tests, on pushes to
+# main and pull requests into it. Changes from the GitHub version:
+#   * setup-python 3.11  ->  a python:3.11 container on Graviton (arm64 Linux;
+#     PyTorch's CPU index has arm64 wheels, so the same install works)
+#   * setup-bun  ->  the oven/bun:1 image
+#   * pip's cache is a Neutrino cache keyed on the requirement files
+#   * `defaults.run.working-directory` becomes each step's working-directory
+
+name: Backend CI
+
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    image: python:3.11
+    resources: { cpus: 4, memory: 6G }
+    timeout-minutes: 45
+    env:
+      PIP_CACHE_DIR: /workspace/.pip-cache
+    cache:
+      - key: pip-${{ hashFiles('requirements.txt', 'requirements/requirements.txt', 'requirements/requirements.lock.txt') }}
+        path: .pip-cache
+        restore-keys: [pip-]
+    steps:
+      # No GPU here, so the CPU torch wheel instead of the CUDA build the lock
+      # pins; tests that need CUDA are marked `rapids` and skip.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+
+      # Fail fast and loudly if the dependency set can't satisfy the app's
+      # module-scope imports.
+      - name: Verify backend imports
+        run: python -c "import autoML.api; print('autoML.api imports OK')"
+
+      - name: Run tests
+        run: pytest
+
+  frontend:
+    image: oven/bun:1
+    resources: { cpus: 2, memory: 3G }
+    timeout-minutes: 20
+    steps:
+      - name: Install dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        working-directory: frontend
+        run: bun run typecheck
+      # Blocking: every rule but `no-explicit-any` is clean.
+      - name: Lint
+        working-directory: frontend
+        run: bun run lint
+      - name: Run tests
+        working-directory: frontend
+        run: bun run test
