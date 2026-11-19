@@ -57,6 +57,110 @@ pub fn create(dir: &Path, name: &str, description: Option<&str>) -> Result<PathB
     Ok(path)
 }
 
+/// Git that talks to another machine: never waits on a prompt (no password
+/// or host-key questions nobody would see), and gives up after `limit`.
+pub(crate) fn git_net(git_dir: &Path, args: &[&str], limit: Duration) -> Result<String> {
+    let mut child = Command::new(neutrino_git::worktree::git_binary())
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh -o BatchMode=yes -o ConnectTimeout=15".into()))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("running git")?;
+    // Read both pipes on threads so a chatty git can't fill one and stall.
+    let (mut out, mut err) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
+    let out_t = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut out, &mut b);
+        b
+    });
+    let err_t = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut err, &mut b);
+        b
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break Some(s);
+        }
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut text = String::from_utf8_lossy(&out_t.join().unwrap_or_default()).into_owned();
+    text.push_str(&String::from_utf8_lossy(&err_t.join().unwrap_or_default()));
+    let text = text.trim().to_string();
+    match status {
+        Some(s) if s.success() => Ok(text),
+        Some(_) => bail!("{}", if text.is_empty() { format!("git {} failed", args[0]) } else { text }),
+        None => bail!("git {} gave no answer within {} minutes, so it was stopped", args[0], limit.as_secs() / 60),
+    }
+}
+
+/// Every branch and tag, and nothing else (no pull request refs, no notes).
+pub(crate) const BRANCHES_AND_TAGS: [&str; 2] = ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"];
+
+fn check_url(url: &str) -> Result<()> {
+    if url.trim().is_empty() || url.starts_with('-') || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!("{url:?} isn't a usable git URL");
+    }
+    Ok(())
+}
+
+/// The branch `url`'s HEAD names, if it says.
+fn remote_head(git_dir: &Path, url: &str) -> Option<String> {
+    let out = git_net(git_dir, &["ls-remote", "--symref", url, "HEAD"], Duration::from_secs(120)).ok()?;
+    out.lines().find_map(|l| l.strip_prefix("ref: ")?.split_whitespace().next()?.strip_prefix("refs/heads/").map(str::to_string))
+}
+
+/// A new hosted repository holding every branch and tag of `url`, with the
+/// same default branch. Nothing is left behind if it fails.
+pub fn import(dir: &Path, name: &str, url: &str, description: Option<&str>) -> Result<PathBuf> {
+    check_url(url)?;
+    let path = create(dir, name, description)?;
+    let fetched = (|| -> Result<()> {
+        let mut args = vec!["fetch", "--no-write-fetch-head", "--prune", "--", url];
+        args.extend(BRANCHES_AND_TAGS);
+        git_net(&path, &args, Duration::from_secs(30 * 60)).with_context(|| format!("fetching {url}"))?;
+        let branches = Command::new(neutrino_git::worktree::git_binary())
+            .arg("--git-dir")
+            .arg(&path)
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+            .output()?;
+        let branches: Vec<String> = String::from_utf8_lossy(&branches.stdout).lines().map(str::to_string).collect();
+        if branches.is_empty() {
+            bail!("{url} has no branches to import");
+        }
+        let head = remote_head(&path, url)
+            .filter(|h| branches.contains(h))
+            .or_else(|| ["main", "master", "trunk"].iter().map(|b| b.to_string()).find(|b| branches.contains(b)))
+            .unwrap_or_else(|| branches[0].clone());
+        let ok = Command::new(neutrino_git::worktree::git_binary())
+            .arg("--git-dir")
+            .arg(&path)
+            .args(["symbolic-ref", "HEAD", &format!("refs/heads/{head}")])
+            .status()?
+            .success();
+        if !ok {
+            bail!("couldn't make {head} the default branch");
+        }
+        Ok(())
+    })();
+    if let Err(e) = fetched {
+        let _ = std::fs::remove_dir_all(&path);
+        return Err(e);
+    }
+    Ok(path)
+}
+
 /// `'...'` for /bin/sh, safe for any path.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
@@ -210,6 +314,41 @@ mod tests {
         let u = read_updates(&b"000 abc refs/heads/main\n\nabc 000 refs/tags/v1\n"[..]);
         assert_eq!(u.len(), 2);
         assert_eq!(u[1].name, "refs/tags/v1");
+    }
+
+    #[test]
+    fn import_copies_branches_tags_and_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let g = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "A")
+                .env("GIT_AUTHOR_EMAIL", "a@x")
+                .env("GIT_COMMITTER_NAME", "A")
+                .env("GIT_COMMITTER_EMAIL", "a@x")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::fs::create_dir(&src).unwrap();
+        g(&src, &["init", "-q", "-b", "trunk"]);
+        g(&src, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        g(&src, &["branch", "side"]);
+        g(&src, &["tag", "v1"]);
+        let hosted = tmp.path().join("repos");
+        let p = import(&hosted, "copy", &src.display().to_string(), None).unwrap();
+        let refs = Command::new("git").arg("--git-dir").arg(&p).args(["for-each-ref", "--format=%(refname)"]).output().unwrap();
+        let refs = String::from_utf8_lossy(&refs.stdout);
+        assert!(refs.contains("refs/heads/trunk") && refs.contains("refs/heads/side") && refs.contains("refs/tags/v1"), "{refs}");
+        assert_eq!(std::fs::read_to_string(p.join("HEAD")).unwrap().trim(), "ref: refs/heads/trunk");
+
+        // A bad source leaves nothing behind, so the name can be tried again.
+        assert!(import(&hosted, "gone", &tmp.path().join("nowhere").display().to_string(), None).is_err());
+        assert!(!hosted.join("gone.git").exists());
+        assert!(import(&hosted, "dash", "--upload-pack=evil", None).is_err());
     }
 
     #[test]

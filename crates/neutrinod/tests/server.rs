@@ -115,7 +115,7 @@ async fn publish_push_and_pair() {
     let (server, stop_server) = start(
         root.join("server"),
         server_sock.clone(),
-        neutrinod::Options { role: neutrinod::Role::Server, remote_port: Some(0), advertise: false, ci: local_ci(), vault: neutrino_vault_test_key() },
+        neutrinod::Options { role: neutrinod::Role::Server, remote_port: Some(0), advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None },
     )
     .await;
     let (_work, stop_work) = start(root.join("work-state"), work_sock.clone(), neutrinod::Options::default()).await;
@@ -218,7 +218,7 @@ async fn a_restarted_server_adopts_its_repos() {
     let root = dir.path().canonicalize().unwrap();
     let state = root.join("server");
     neutrinod::hosting::create(&state.join("repos"), "kept", None).unwrap();
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key() };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
     let (_s, stop) = start(state.clone(), root.join("s.sock"), options).await;
     match call(&root.join("s.sock"), Request::ListRepos).await {
         Response::Repos(r) => assert!(r.iter().any(|r| r.id == "kept" && r.bare)),
@@ -236,7 +236,7 @@ async fn the_first_pushed_branch_becomes_the_default() {
     unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key() };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
     let (_s, stop) = start(root.join("server"), root.join("s.sock"), options).await;
     let Response::Repo(hosted) = call(&root.join("s.sock"), Request::CreateHosted { name: "old".into(), description: None }).await else { panic!() };
 
@@ -253,6 +253,81 @@ async fn the_first_pushed_branch_becomes_the_default() {
     assert!(said.contains("master is now this repository's default branch"), "{said}");
     match call(&root.join("s.sock"), Request::Log(LogQuery { repo: "old".into(), ..Default::default() })).await {
         Response::Log(p) => assert_eq!(p.commits[0].subject, "on master"),
+        other => panic!("{other:?}"),
+    }
+    stop.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn import_then_every_push_reaches_the_mirror() {
+    unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let sock = root.join("s.sock");
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
+    let (_s, stop) = start(root.join("server"), sock.clone(), options).await;
+
+    // "GitHub": a bare repo with two branches and a tag, its default `develop`.
+    let wc = root.join("wc");
+    std::fs::create_dir(&wc).unwrap();
+    git(&wc, &["init", "-q", "-b", "develop"]);
+    git(&wc, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&wc, &["branch", "feature"]);
+    git(&wc, &["tag", "v1"]);
+    let github = root.join("github.git");
+    git(&root, &["clone", "-q", "--bare", wc.to_str().unwrap(), github.to_str().unwrap()]);
+
+    // A workstation can't import; the server can.
+    let url = github.display().to_string();
+    let hosted = match call(&sock, Request::ImportHosted { name: "app".into(), url: url.clone(), description: None, mirror: true }).await {
+        Response::Repo(r) => r,
+        other => panic!("{other:?}"),
+    };
+    assert!(hosted.bare && Path::new(&hosted.path).join("hooks/post-receive").exists());
+    match call(&sock, Request::Branches { repo: "app".into() }).await {
+        Response::Branches(b) => {
+            let names: Vec<&str> = b.iter().map(|b| b.name.as_str()).collect();
+            assert!(names.contains(&"develop") && names.contains(&"feature"), "{names:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(std::fs::read_to_string(Path::new(&hosted.path).join("HEAD")).unwrap().trim(), "ref: refs/heads/develop");
+    match call(&sock, Request::Mirrors).await {
+        Response::Mirrors(m) => assert_eq!((m.len(), m[0].state.as_str(), m[0].url.as_str()), (1, "ok", url.as_str())),
+        other => panic!("{other:?}"),
+    }
+    // The same name again is refused.
+    assert!(matches!(call(&sock, Request::ImportHosted { name: "app".into(), url: url.clone(), description: None, mirror: false }).await, Response::Error { .. }));
+
+    // A clone pointed at the hosted repo pushes; the mirror gets it shortly after.
+    git(&wc, &["remote", "add", "atlas", &hosted.path]);
+    git(&wc, &["commit", "-q", "--allow-empty", "-m", "second"]);
+    let (dir2, path) = (wc.clone(), hosted.path.clone());
+    let out = tokio::task::spawn_blocking(move || Command::new("git").args(["push", "atlas", "develop", ":feature"]).current_dir(&dir2).output().unwrap()).await.unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && said.contains("neutrino: copying to"), "{said}");
+    let want = git(&wc, &["rev-parse", "HEAD"]);
+    let mut mirrored = false;
+    for _ in 0..100 {
+        let got = Command::new("git").arg("--git-dir").arg(&github).args(["rev-parse", "develop"]).output().unwrap();
+        let gone = !Command::new("git").arg("--git-dir").arg(&github).args(["rev-parse", "--verify", "-q", "refs/heads/feature"]).status().unwrap().success();
+        if String::from_utf8_lossy(&got.stdout).trim() == want && gone {
+            mirrored = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(mirrored, "the mirror has the new commit, and the deleted branch is gone there too");
+    assert!(Path::new(&path).join("neutrino-mirror.json").exists());
+
+    // Turning it off, and an explicit copy without one, say so.
+    assert!(matches!(call(&sock, Request::SetMirror { repo: "app".into(), url: None }).await, Response::Mirrors(m) if m.is_empty()));
+    assert!(matches!(call(&sock, Request::MirrorNow { repo: "app".into() }).await, Response::Error { message } if message.contains("no mirror")));
+
+    // The server lists its snapshots.
+    assert!(matches!(call(&sock, Request::Backup).await, Response::Done { .. }));
+    match call(&sock, Request::ListBackups).await {
+        Response::Backups(b) => assert!(b.files.len() == 1 && b.files[0].name.starts_with("neutrino-") && b.source.is_none(), "{b:?}"),
         other => panic!("{other:?}"),
     }
     stop.send(()).unwrap();

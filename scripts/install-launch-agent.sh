@@ -5,12 +5,24 @@
 #   scripts/install-launch-agent.sh             the workstation (this MacBook)
 #   scripts/install-launch-agent.sh --server    the server (atlas): hosts repos, pairs devices
 #   scripts/install-launch-agent.sh --uninstall
+#
+# Flags for neutrinod go after `--`, e.g. on the MacBook, to keep copies of the
+# server's nightly database snapshots:
+#   scripts/install-launch-agent.sh -- --copy-backups-from mini
 set -eu
 label=dev.neutrino.neutrinod
 plist="$HOME/Library/LaunchAgents/$label.plist"
 state="${NEUTRINO_HOME:-$HOME/.neutrino}"
 role_arg=""
-[ "${1:-}" = "--server" ] && role_arg="<string>--server</string>"
+if [ "${1:-}" = "--server" ]; then role_arg="<string>--server</string>"; shift; fi
+extra=""
+if [ "${1:-}" = "--" ]; then
+  shift
+  for a in "$@"; do
+    esc=$(printf '%s' "$a" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+    extra="$extra<string>$esc</string>"
+  done
+fi
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
@@ -32,7 +44,7 @@ cat > "$plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key><array><string>$state/bin/neutrinod</string>$role_arg</array>
+  <key>ProgramArguments</key><array><string>$state/bin/neutrinod</string>$role_arg$extra</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardErrorPath</key><string>$state/neutrinod.log</string>

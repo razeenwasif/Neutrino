@@ -81,7 +81,7 @@ impl Daemon {
         Ok(())
     }
 
-    fn backup_dir(&self) -> PathBuf {
+    pub(crate) fn backup_dir(&self) -> PathBuf {
         self.ci.as_ref().and_then(|c| c.options.backup_dir.clone()).unwrap_or_else(|| self.state_dir.join("backups"))
     }
 

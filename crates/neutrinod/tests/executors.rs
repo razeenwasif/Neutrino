@@ -306,6 +306,7 @@ async fn host_and_nexus() {
                 ..Default::default()
             },
             vault: neutrino_vault::KeyStore::File(root.join(format!("{name}.key"))),
+            copy_backups_from: None,
         };
         let daemon = neutrinod::Daemon::with(&root.join(name), options).unwrap();
         let s = sock.clone();

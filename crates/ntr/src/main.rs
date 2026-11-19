@@ -117,6 +117,31 @@ enum Cmd {
         #[arg(long, short = 'd')]
         description: Option<String>,
     },
+    /// Server: a hosted repository from another one's branches and tags (its
+    /// GitHub repository, say), copied back there after every push.
+    Import {
+        name: String,
+        /// Where to copy from: git@github.com:you/name.git, say.
+        #[arg(long)]
+        from: String,
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+        /// Copy it once, without mirroring pushes back to it.
+        #[arg(long)]
+        no_mirror: bool,
+    },
+    /// Server: where hosted repositories are copied after every push; with no
+    /// action, how each copy went.
+    Mirror {
+        #[command(subcommand)]
+        action: Option<MirrorCmd>,
+    },
+    /// The database snapshots: the server's, or on a workstation the copies of them.
+    Backups {
+        /// Just the files' paths, one per line.
+        #[arg(long)]
+        paths: bool,
+    },
     /// Server: a one-time code to pair the Mac app (or a phone) with this server.
     Pair,
     /// Server: paired devices; `devices revoke ID` forgets one.
@@ -173,6 +198,16 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<PushCmd>,
     },
+}
+
+#[derive(Subcommand)]
+enum MirrorCmd {
+    /// Copy the repository (-r) to URL after every push, starting now.
+    Set { url: String },
+    /// Stop copying it.
+    Off,
+    /// Copy it now, and wait.
+    Now,
 }
 
 #[derive(Subcommand)]
@@ -770,6 +805,86 @@ fn main() -> Result<()> {
             Response::Repo(r) => {
                 writeln!(out, "Created {} at {}", style.paint("1", &r.id), r.path)?;
                 writeln!(out, "Push to it with:  git remote add atlas ssh://<this-mac>{}", r.path)?;
+            }
+            r => return Err(unexpected(r)),
+        },
+        Cmd::Import { name, from, description, no_mirror } => {
+            // A big repository takes a while to copy.
+            c.stream.get_mut().set_read_timeout(None)?;
+            match c.call(Request::ImportHosted { name, url: from.clone(), description, mirror: !no_mirror })? {
+                Response::Repo(r) => {
+                    writeln!(out, "Imported {} from {from}", style.paint("1", &r.id))?;
+                    writeln!(out, "Hosted at      {}", r.path)?;
+                    if !no_mirror {
+                        writeln!(out, "Mirrored to    {from} after every push")?;
+                    }
+                    writeln!(out, "Point clones at it:  git remote set-url origin ssh://<this-mac>{}", r.path)?;
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Mirror { action } => {
+            let response = match action {
+                None => c.call(Request::Mirrors)?,
+                Some(a) => {
+                    let repo = pick_repo(&mut c, cli.repo)?;
+                    match a {
+                        MirrorCmd::Set { url } => c.call(Request::SetMirror { repo, url: Some(url) })?,
+                        MirrorCmd::Off => c.call(Request::SetMirror { repo, url: None })?,
+                        MirrorCmd::Now => {
+                            c.stream.get_mut().set_read_timeout(None)?;
+                            c.call(Request::MirrorNow { repo })?
+                        }
+                    }
+                }
+            };
+            match response {
+                Response::Mirrors(list) => {
+                    if list.is_empty() {
+                        writeln!(out, "No hosted repository has a mirror. Add one with: ntr -r REPO mirror set URL")?;
+                    }
+                    for m in list {
+                        let state = match m.state.as_str() {
+                            "ok" => style.paint("32", "ok     "),
+                            "failing" => style.paint("31", "failing"),
+                            _ => style.paint("33", "pending"),
+                        };
+                        let when = m.last_ok.map(|t| format!("copied {}", ago(t))).unwrap_or_else(|| "never copied".into());
+                        writeln!(out, "{state}  {:<24} {:<44} {when}", m.repo, m.url)?;
+                        if let (Some(e), true) = (&m.last_error, m.state == "failing") {
+                            for line in e.lines().take(3) {
+                                writeln!(out, "         {}", style.paint("2", line))?;
+                            }
+                        }
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Backups { paths } => match c.call(Request::ListBackups)? {
+            Response::Backups(b) => {
+                if paths {
+                    for f in &b.files {
+                        writeln!(out, "{}", f.path)?;
+                    }
+                } else {
+                    match &b.source {
+                        Some(host) => {
+                            let last = b.last_copy.map(ago).unwrap_or_else(|| "not yet".into());
+                            writeln!(out, "Copies of {host}'s snapshots in {}; last copied {last}", b.dir)?;
+                            if let Some(e) = &b.last_error {
+                                writeln!(out, "{} {e}", style.paint("31", "Last try failed:"))?;
+                            }
+                        }
+                        None => writeln!(out, "Snapshots in {}", b.dir)?,
+                    }
+                    if b.files.is_empty() {
+                        writeln!(out, "None yet.")?;
+                    }
+                    for f in &b.files {
+                        writeln!(out, "{:<32} {:>8.1} MB  {}", f.name, f.size as f64 / 1_048_576.0, ago(f.modified))?;
+                    }
+                }
             }
             r => return Err(unexpected(r)),
         },

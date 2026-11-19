@@ -59,7 +59,7 @@ async fn detail(socket: &Path, request: Request) -> PullDetail {
 }
 
 async fn start(state: PathBuf, socket: PathBuf) -> (Arc<neutrinod::Daemon>, tokio::sync::oneshot::Sender<()>) {
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key() };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
     let daemon = neutrinod::Daemon::with(&state, options).unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let d = Arc::clone(&daemon);

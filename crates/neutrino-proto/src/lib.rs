@@ -771,6 +771,43 @@ pub struct LogChunk {
     pub done: bool,
 }
 
+/// Where a hosted repository's branches and tags are copied after every push.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MirrorStatus {
+    pub repo: String,
+    pub url: String,
+    /// `ok`, `pending` (a copy is due or under way) or `failing`.
+    pub state: String,
+    /// Unix seconds of the last copy that worked.
+    pub last_ok: Option<i64>,
+    pub last_attempt: Option<i64>,
+    /// What git said when the last copy failed.
+    pub last_error: Option<String>,
+}
+
+/// One database snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupFile {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    /// Unix seconds.
+    pub modified: i64,
+}
+
+/// The server's snapshots, or on a workstation the copies it keeps of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupList {
+    pub dir: String,
+    /// Newest first.
+    pub files: Vec<BackupFile>,
+    /// Workstation: the SSH host copies come from, when copying is on.
+    pub source: Option<String>,
+    /// Workstation: when copying last worked, and what went wrong since.
+    pub last_copy: Option<i64>,
+    pub last_error: Option<String>,
+}
+
 /// What the scheduler is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiInfo {
@@ -907,6 +944,27 @@ pub enum Request {
         #[serde(default)]
         description: Option<String>,
     },
+    /// Create a hosted repository from another one's branches and tags (a
+    /// GitHub repository, say), and with `mirror` copy them back there after
+    /// every push. Answers `repo`. Local only.
+    ImportHosted {
+        name: String,
+        url: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default)]
+        mirror: bool,
+    },
+    /// Every hosted repository's mirror. Local only.
+    Mirrors,
+    /// Mirror a hosted repository to `url`, or stop with none. Answers `mirrors`. Local only.
+    SetMirror {
+        repo: String,
+        #[serde(default)]
+        url: Option<String>,
+    },
+    /// Copy a hosted repository to its mirror now, and wait. Answers `mirrors`. Local only.
+    MirrorNow { repo: String },
     /// From the pre-receive hook: may these updates land? Local only.
     HookPreReceive {
         repo: String,
@@ -1014,6 +1072,8 @@ pub enum Request {
     ArtifactData { repo: String, run: i64, path: String, #[serde(default)] offset: u64 },
     /// Snapshot the database now. Local only.
     Backup,
+    /// The database snapshots: the server's own, or a workstation's copies of them. Local only.
+    ListBackups,
 
     // --- The phone (server) ---
     /// Over TLS, once after pairing: the device's Secure Enclave public key
@@ -1121,6 +1181,8 @@ pub enum Response {
     Environments(Vec<Environment>),
     Artifacts(Vec<Artifact>),
     ArtifactChunk(ArtifactChunk),
+    Mirrors(Vec<MirrorStatus>),
+    Backups(BackupList),
     Inbox(Box<Inbox>),
     Notification(NotificationText),
     Push(PushInfo),
@@ -1273,6 +1335,11 @@ mod tests {
         assert_eq!(auth.unwrap(), Request::Auth { token: "t".into() });
         let ok = Response::Authenticated { host: "atlas".into(), role: "server".into() };
         assert_eq!(wire(&encode_response(0, &ok)), json!({"id": 0, "type": "authenticated", "data": {"host": "atlas", "role": "server"}}));
+        let (_, import) = decode_request(r#"{"id":3,"method":"import_hosted","params":{"name":"flux","url":"git@github.com:a/flux.git"}}"#);
+        assert_eq!(import.unwrap(), Request::ImportHosted { name: "flux".into(), url: "git@github.com:a/flux.git".into(), description: None, mirror: false });
+        let (_, off) = decode_request(r#"{"id":4,"method":"set_mirror","params":{"repo":"flux"}}"#);
+        assert_eq!(off.unwrap(), Request::SetMirror { repo: "flux".into(), url: None });
+        assert_eq!(wire(&encode_request(5, &Request::ListBackups)), json!({"id": 5, "method": "list_backups"}));
     }
 
     #[test]

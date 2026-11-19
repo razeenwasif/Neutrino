@@ -169,6 +169,7 @@ async fn the_rest_of_ci() {
             ..Default::default()
         },
         vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
+        copy_backups_from: None,
     };
     let daemon = neutrinod::Daemon::with(&root.join("server"), options).unwrap();
     let d = Arc::clone(&daemon);
@@ -347,6 +348,7 @@ async fn graviton_services() {
         advertise: false,
         ci: neutrinod::ci::CiOptions { cpus: 3, memory_mib: 2048, ..Default::default() },
         vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
+        copy_backups_from: None,
     };
     let daemon = neutrinod::Daemon::with(&root.join("server"), options).unwrap();
     let d = Arc::clone(&daemon);

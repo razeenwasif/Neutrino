@@ -389,10 +389,12 @@ Also true today: guests are arm64 only, so x86-only images will not run.
 - **atlas is small and shared.** See the scheduler section. Until the root
   filesystem is disk-backed and Nexus knows about CI's memory, expect one
   heavy job at a time.
-- **Backups.** Git history is on atlas and in every working copy, so it
-  survives either machine. Pull requests, comments, run history and secrets
-  exist only on atlas: a nightly copy of the database goes to the MacBook or
-  an external disk, in version 1.
+- **Backups.** Git history is on atlas, in every working copy and, for
+  repositories imported from GitHub, in their GitHub mirror, which gets every
+  push. Pull requests, comments, run history and secrets are in atlas's
+  database: it's snapshotted nightly, and the MacBook's neutrinod copies the
+  snapshots over SSH (`--copy-backups-from mini`), so a dead atlas costs at
+  most a day of them.
 - **Scope.** This is a forge, a git client, and a CI system across two
   machines. The milestones below are ordered so each one is usable alone.
 - **Outside services.** Jobs sent through the Nexus executor are visible in
@@ -419,3 +421,8 @@ Also true today: guests are arm64 only, so x86-only images will not run.
    build) onto Neutrino.
 8. **iPhone app**: pairing, Inbox, pull requests, runs, signed approvals,
    then push notifications through APNs with content-free payloads.
+9. **Moving in**: import GitHub repositories onto the server and mirror every
+   push back to GitHub, so a full copy of each lives off atlas; copy the
+   nightly database snapshots to the MacBook; a script that moves working
+   copies over. Workflows move by hand, one `.neutrino/workflows/` file at a
+   time.

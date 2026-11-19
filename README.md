@@ -5,7 +5,11 @@ branches, pull requests, diff review, CI/CD and secrets, on your own
 machines. A Rust engine reads git repositories in-process with gitoxide; a
 SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-> Status: **milestone 8 done** (the iPhone app). The phone shows what needs
+> Status: **milestone 9 done** (moving in from GitHub): `ntr import` brings a
+> GitHub repository's branches and tags onto the server, which copies every
+> push back to GitHub so a full copy lives off atlas; the MacBook keeps copies
+> of the server's nightly database snapshots; `scripts/move-in.sh` moves
+> working copies over. Milestone 8 gave the iPhone app. The phone shows what needs
 > you (deploys waiting for approval, pull requests ready to merge, runs) and
 > approves, turns down, merges and cancels, each signed with a key in its
 > Secure Enclave after Face ID. Push notifications go through APNs carrying no
@@ -44,6 +48,7 @@ scripts/
   install-launch-agent.sh  Run neutrinod at login (--server on atlas, --uninstall to remove)
   deploy-server.sh         Build, sign and copy neutrinod and ntr to the server, then restart it
   server-flags.sh          Set the flags the server's neutrinod starts with (executors, budget, backups)
+  move-in.sh               Move working copies' repositories from GitHub to the server
 ```
 
 ## Running it
@@ -96,6 +101,37 @@ stores only token hashes. A paired device can read hosted repos, create them
 and follow pushes; it can't touch the server's working copies or paths, or
 manage pairing. Publish creates a hosted repo, adds it as the `atlas` remote
 and pushes the current branch; Fetch and Push in the header do the rest.
+
+### Moving in from GitHub
+
+```bash
+ntr import flux --from git@github.com:you/flux.git      # on the server
+ntr mirror                                              # each mirror: ok, pending or failing
+ntr -r flux mirror now                                  # copy now and wait (or: set URL, off)
+scripts/move-in.sh ~/code/flux ~/code/nexus             # on the MacBook: all of the below
+```
+
+`ntr import` creates a hosted repository from another one's branches and tags
+(not GitHub's pull request refs) with the same default branch; nothing is left
+behind if the copy fails. Unless told `--no-mirror`, it then copies the
+repository back to where it came from after every push: every branch and tag,
+force-pushed, with branches and tags deleted here deleted there too, so GitHub
+holds a full copy that's at most a push behind. The copy runs in the
+background after the push has landed; pushes meanwhile fold into one more. One
+that fails is tried again every ten minutes, and the first failure goes to the
+phone. The mirror's URL is in the hosted repository's own git config
+(`neutrino.mirror`) and the last copy's outcome beside it, in
+`neutrino-mirror.json`. The server pushes with its own SSH key, so that key
+must be able to push to the GitHub repository.
+
+`scripts/move-in.sh DIR…` does a whole working copy from the MacBook: the
+server imports its GitHub repository under the same name (a repository someone
+else owns is imported without the mirror), origin is pointed at the server, the
+GitHub URL stays as the `github` remote, and it lists the branches with commits
+still to push. `--dry-run` says what it would do; `--disable-actions` turns
+GitHub Actions off for what it imports, so the copies pushed there don't start
+workflows (and use minutes). Workflows move by hand: write a
+`.neutrino/workflows/` file for each, as in [docs/examples](docs/examples).
 
 ### Pull requests and branch rules
 
@@ -277,9 +313,19 @@ signs `neutrinod` with your Apple Development certificate before copying it,
 so the Keychain keeps trusting it across deploys.
 
 The database is snapshotted every night after 03:30 UTC to `--backup-dir`
-(default `~/.neutrino/backups`; point it at an external disk or a synced
-folder to keep copies off the server), keeping the last 14. Secrets in a
-snapshot stay sealed; the recovery code opens them.
+(default `~/.neutrino/backups`), keeping the last 14. Secrets in a snapshot
+stay sealed; the recovery code opens them. To keep copies off the server, start
+the MacBook's neutrinod with `--copy-backups-from mini`: when it starts and
+every hour it asks the server over SSH for its snapshots (`ntr backups
+--paths`), copies the ones it's missing to `~/.neutrino/server-backups/`,
+checks each is an SQLite file, and keeps the newest 14. A laptop that was away
+catches up when it's back. `ntr backups` lists them, on either machine, and on
+the MacBook says when copying last worked.
+
+```bash
+scripts/install-launch-agent.sh -- --copy-backups-from mini   # on the MacBook
+ntr backups                                                   # the copies, and the last copy
+```
 
 ### The iPhone app
 
@@ -427,3 +473,7 @@ checked.
   marked clean.
 - Partial clones: file contents that were never fetched can't be diffed, and
   the app says so; Neutrino doesn't fetch them.
+- Mirrors copy branches and tags only (no Git LFS objects, no GitHub issues,
+  releases or wikis). A push made straight to the mirror is overwritten by
+  the next copy from the server. Mirror state isn't shown in the apps yet;
+  `ntr mirror` and the phone's failure notice are where to look.

@@ -162,6 +162,7 @@ async fn the_phone_signs_its_approvals() {
         advertise: false,
         ci: local_ci(),
         vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
+        copy_backups_from: None,
     };
     let (server, _stop) = start(root.join("server"), sock.clone(), options).await;
     let port = loop {

@@ -536,6 +536,8 @@ impl Daemon {
                 if last_reap.elapsed() >= Duration::from_secs(60) {
                     this.reap().await;
                     last_reap = Instant::now();
+                    let t = Arc::clone(&this);
+                    let _ = tokio::task::spawn_blocking(move || t.mirror_upkeep()).await;
                 }
             }
         });

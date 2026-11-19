@@ -60,6 +60,10 @@ struct Args {
     /// Server: keep the vault's master key in this file instead of the Keychain.
     #[arg(long)]
     vault_key_file: Option<PathBuf>,
+    /// Workstation: copy the server's nightly database snapshots from this SSH
+    /// host (the server) into ~/.neutrino/server-backups, hourly.
+    #[arg(long)]
+    copy_backups_from: Option<String>,
     /// Server: run CI steps as plain processes on this Mac, with no isolation. For testing.
     #[arg(long, hide = true)]
     ci_unisolated: bool,
@@ -123,6 +127,7 @@ async fn run(args: Args, socket: PathBuf) -> Result<()> {
                 None => None,
             },
         },
+        copy_backups_from: args.copy_backups_from.clone().filter(|_| !args.server),
         vault: match &args.vault_key_file {
             Some(path) => neutrino_vault::KeyStore::File(path.clone()),
             None => neutrino_vault::KeyStore::Keychain,

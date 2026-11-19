@@ -8,8 +8,10 @@
 //!   `<state>/repos/`, takes pushes over SSH (git's own transport, with hooks
 //!   that report back here), and answers paired devices over TLS.
 
+mod backups;
 pub mod ci;
 pub mod hosting;
+mod mirror;
 mod phone;
 pub use neutrino_remote;
 mod pulls;
@@ -73,11 +75,13 @@ pub struct Options {
     pub ci: ci::CiOptions,
     /// Server only: where the vault's master key is kept.
     pub vault: neutrino_vault::KeyStore,
+    /// Workstation only: an SSH host (the server) to copy database snapshots from.
+    pub copy_backups_from: Option<String>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { role: Role::Workstation, remote_port: None, advertise: false, ci: ci::CiOptions::default(), vault: neutrino_vault::KeyStore::Keychain }
+        Options { role: Role::Workstation, remote_port: None, advertise: false, ci: ci::CiOptions::default(), vault: neutrino_vault::KeyStore::Keychain, copy_backups_from: None }
     }
 }
 
@@ -157,6 +161,12 @@ fn allowed_remotely(r: &Request) -> bool {
     )
 }
 
+/// The first line of an error, short enough for a notification.
+fn first_line(text: &str) -> String {
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if line.chars().count() > 160 { format!("{}…", line.chars().take(160).collect::<String>()) } else { line.to_string() }
+}
+
 pub struct Daemon {
     options: Options,
     state_dir: PathBuf,
@@ -178,6 +188,8 @@ pub struct Daemon {
     nonces: Mutex<HashMap<String, i64>>,
     /// Apple's push service, once it has a key.
     apns: phone::Apns,
+    /// Copies of hosted repos to their mirrors, in flight.
+    mirrors: Arc<mirror::Mirrors>,
     /// The socket hooks call back on; set by `serve`.
     socket: Mutex<Option<PathBuf>>,
     /// The TLS port actually bound (the option may be 0 for "any").
@@ -211,6 +223,7 @@ impl Daemon {
         Ok(Arc::new(Daemon {
             nonces: Mutex::new(HashMap::new()),
             apns: phone::Apns::default(),
+            mirrors: Arc::default(),
             store,
             ci,
             vault,
@@ -394,6 +407,47 @@ impl Daemon {
                 self.watch(&repo.id);
                 Response::Repo(repo)
             }
+            Request::ImportHosted { name, url, description, mirror } => {
+                self.server_only()?;
+                // No write lock: a big import takes minutes, and only its own name is at stake.
+                let path = hosting::import(&self.hosted_dir(), &name, &url, description.as_deref())?;
+                let repo = match self.registry.add(&path.display().to_string()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(&path);
+                        return Err(e);
+                    }
+                };
+                self.refresh_hooks(&path, &repo.id);
+                if mirror {
+                    mirror::set_url(&path, Some(&url))?;
+                    mirror::mark_in_step(&path);
+                }
+                self.watch(&repo.id);
+                write_commit_graph(path);
+                Response::Repo(repo)
+            }
+            Request::Mirrors => Response::Mirrors(self.mirror_list()?),
+            Request::SetMirror { repo: id, url } => {
+                let dir = self.hosted_git_dir(&id)?;
+                mirror::set_url(&dir, url.as_deref())?;
+                if url.is_some() {
+                    self.mirrors.request(&dir);
+                }
+                Response::Mirrors(self.mirror_list()?)
+            }
+            Request::MirrorNow { repo: id } => {
+                let dir = self.hosted_git_dir(&id)?;
+                self.mirrors.copy_now(&dir)?;
+                Response::Mirrors(self.mirror_list()?)
+            }
+            Request::ListBackups => Response::Backups(match self.options.role {
+                Role::Server => {
+                    let dir = self.backup_dir();
+                    neutrino_proto::BackupList { dir: dir.display().to_string(), files: backups::list(&dir), source: None, last_copy: None, last_error: None }
+                }
+                Role::Workstation => backups::workstation_list(&self.state_dir, self.options.copy_backups_from.as_deref()),
+            }),
             Request::HookPreReceive { repo: id, updates, push_options } => {
                 self.registry.get(&id)?;
                 Response::Done { output: self.check_push(&id, &updates, &push_options)? }
@@ -425,15 +479,13 @@ impl Daemon {
                 self.watchers.notify(RepoEvent { repo: id.clone(), kind: "push".into() });
                 // Keep history fast to read: refresh the commit-graph in the background.
                 let git_dir = neutrino_git::local(&r).git_dir().to_path_buf();
-                std::thread::spawn(move || {
-                    let _ = std::process::Command::new(neutrino_git::worktree::git_binary())
-                        .arg("--git-dir")
-                        .arg(&git_dir)
-                        .args(["commit-graph", "write", "--reachable", "--split"])
-                        .output();
-                });
+                write_commit_graph(git_dir.clone());
                 let n = updates.len();
                 let mut output = format!("neutrino: {n} ref{} updated", if n == 1 { "" } else { "s" });
+                if let Some(url) = mirror::url(&git_dir) {
+                    self.mirrors.request(&git_dir);
+                    output.push_str(&format!("\nneutrino: copying to {url}"));
+                }
                 for line in self.pulls_after_push(&id, &updates) {
                     output.push('\n');
                     output.push_str(&line);
@@ -579,10 +631,78 @@ impl Daemon {
         })
     }
 
+    /// A hosted repository's git dir.
+    fn hosted_git_dir(&self, id: &str) -> Result<PathBuf> {
+        self.server_only()?;
+        let repo = self.registry.list().into_iter().find(|r| r.id == id).with_context(|| format!("no repository called {id}"))?;
+        if !repo.bare {
+            bail!("{id} is a working copy, not a hosted repository");
+        }
+        Ok(PathBuf::from(repo.path))
+    }
+
+    fn mirror_list(&self) -> Result<Vec<neutrino_proto::MirrorStatus>> {
+        self.server_only()?;
+        Ok(self.registry.list().into_iter().filter(|r| r.bare && r.error.is_none()).filter_map(|r| mirror::status(&r.id, Path::new(&r.path))).collect())
+    }
+
+    /// Server, every minute: copy what's owed to mirrors (failed copies every
+    /// ten minutes), and tell the phone the first time one starts failing.
+    pub(crate) fn mirror_upkeep(self: &Arc<Self>) {
+        for r in self.registry.list().into_iter().filter(|r| r.bare && r.error.is_none()) {
+            let dir = PathBuf::from(&r.path);
+            let Some(url) = mirror::url(&dir) else { continue };
+            if self.mirrors.running(&dir) {
+                continue;
+            }
+            let mut s = mirror::load(&dir);
+            if let (Some(err), false) = (&s.last_error, s.notified) {
+                self.notify("failure", format!("Copying {} to its mirror failed", r.id), format!("{} · {}", first_line(err), url), &r.id, None, None);
+                s.notified = true;
+                mirror::save(&dir, &s);
+            }
+            let due = s.pending && (s.last_error.is_none() || s.last_attempt.is_none_or(|t| neutrino_store::now() - t >= mirror::RETRY_AFTER));
+            if due {
+                self.mirrors.request(&dir);
+            }
+        }
+    }
+
     fn write(&self, f: impl FnOnce() -> Result<String>) -> Result<Response> {
         let _guard = self.writes.lock().unwrap();
         Ok(Response::Done { output: f()? })
     }
+}
+
+/// Keep history fast to read: refresh a repo's commit-graph in the background.
+fn write_commit_graph(git_dir: PathBuf) {
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new(neutrino_git::worktree::git_binary())
+            .arg("--git-dir")
+            .arg(&git_dir)
+            .args(["commit-graph", "write", "--reachable", "--split"])
+            .output();
+    });
+}
+
+/// Workstation: copy the server's database snapshots here when it starts and
+/// every hour, so they don't live only on the server's disk.
+fn start_backup_copy(daemon: &Arc<Daemon>) {
+    let (Role::Workstation, Some(host)) = (daemon.options.role, daemon.options.copy_backups_from.clone()) else { return };
+    let dir = backups::copies_dir(&daemon.state_dir);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        loop {
+            let (h, d) = (host.clone(), dir.clone());
+            match tokio::task::spawn_blocking(move || backups::copy_from(&backups::Ssh { host: h }, &d)).await {
+                Ok(Ok(0)) => {}
+                Ok(Ok(n)) => eprintln!("copied {n} database snapshot{} from {host}", if n == 1 { "" } else { "s" }),
+                Ok(Err(e)) => eprintln!("copying database snapshots from {host}: {e:#}"),
+                Err(e) => eprintln!("copying database snapshots from {host}: {e}"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    });
 }
 
 /// Serve one client: requests are answered as they finish, tagged with their id.
@@ -751,6 +871,7 @@ pub async fn serve(daemon: Arc<Daemon>, socket: &Path, shutdown: impl std::futur
     daemon.adopt_hosted();
     daemon.watch_all();
     daemon.start_ci();
+    start_backup_copy(&daemon);
     let remote_task = match daemon.remote.clone() {
         Some(remote) => {
             let tcp = remote.bind().await?;
