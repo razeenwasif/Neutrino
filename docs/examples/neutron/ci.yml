@@ -1,8 +1,9 @@
 # Neutron's .github/workflows/ci.yml (the Linux jobs), on Neutrino.
 #
 # What has to be true of every commit. Changes from the GitHub version:
-#   * ubuntu-latest + rust-toolchain  ->  rust:1 and rust:1.85 containers on
-#     Graviton (arm64 Linux), with clippy added by rustup
+#   * ubuntu-latest + rust-toolchain  ->  rust:1-slim and rust:1.85-slim
+#     containers on Graviton (arm64 Linux), with clippy added by rustup; slim
+#     images and no debug info, since a container's files live in its VM's RAM
 #   * rust-cache  ->  a Neutrino cache for cargo's registry and target/
 #   * the macOS and Windows jobs are in native.yml
 # The Linux job is still the only one that runs neutron-plugin's
@@ -18,13 +19,15 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_HOME: /workspace/.cargo
   PATH: /workspace/.cargo/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 jobs:
   linux:
     name: Linux (and the plugin tests, which only run here)
-    image: rust:1
+    image: rust:1-slim
     resources: { cpus: 4, memory: 6G }
     timeout-minutes: 45
     cache:
@@ -56,7 +59,7 @@ jobs:
   # The version in Cargo.toml is a promise: check it still builds on 1.85.
   msrv:
     name: Builds on the stated minimum Rust
-    image: rust:1.85
+    image: rust:1.85-slim
     resources: { cpus: 4, memory: 4G }
     timeout-minutes: 30
     cache:

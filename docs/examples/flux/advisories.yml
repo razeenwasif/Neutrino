@@ -3,7 +3,7 @@
 # Fails when a locked dependency has an advisory nobody has reviewed, on every
 # push to main, every pull request, and every night (a new advisory arrives
 # without any push). Changes from the GitHub version:
-#   * runs-on: ubuntu-latest + setup-node  ->  a node:22 container on Graviton
+#   * runs-on: ubuntu-latest + setup-node  ->  a node:22-slim container on Graviton
 #   * checkout is built in, and has no credentials to persist
 #   * the schedule is the same instant: cron lines are UTC on both
 
@@ -18,7 +18,7 @@ on:
 
 jobs:
   advisories:
-    image: node:22
+    image: node:22-slim
     resources: { cpus: 1, memory: 1G }
     timeout-minutes: 10
     steps:

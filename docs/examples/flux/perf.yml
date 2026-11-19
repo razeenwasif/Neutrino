@@ -11,6 +11,9 @@
 #   * the WebKitGTK packages are installed in each job (no sudo: jobs run as
 #     root). A Graviton image with them baked in (grav build) would save a few
 #     minutes a run.
+#   * memory: a Graviton container's files live in its VM's RAM, so the jobs
+#     use slim images, two compiles at a time and no debug info, which keeps
+#     rustc clear of the VM's limit while building flux-core
 #   * the macOS and Windows jobs are in native.yml
 # Each Linux job asks for the whole default CI budget (4 CPUs, 6G), so they
 # run one after another on atlas.
@@ -27,12 +30,15 @@ env:
   CARGO_HOME: /workspace/.cargo
   RUSTUP_HOME: /workspace/.rustup
   PATH: /workspace/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  CARGO_BUILD_JOBS: 2
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   # Entry JS, desktop preload, default desktop boot and entry stylesheet gzip
   # budgets, from scripts/perf-budget.mjs. Blocks merge.
   chrome-budget:
-    image: node:20
+    image: node:20-slim
     resources: { cpus: 2, memory: 3G }
     timeout-minutes: 20
     cache:
@@ -45,7 +51,7 @@ jobs:
 
   # Correctness gate (#16): Rust workspace tests, TypeScript checks, and frontend tests.
   correctness:
-    image: node:20
+    image: node:20-slim
     resources: { cpus: 4, memory: 6G }
     timeout-minutes: 60
     cache:
@@ -59,7 +65,7 @@ jobs:
       - name: Install Tauri/WebKitGTK build deps
         run: |
           apt-get update
-          apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+          apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file ca-certificates git pkg-config \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Install Rust (kept in the cache)
         run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
@@ -71,7 +77,7 @@ jobs:
   # Compile + run the criterion IPC benches so they can't bit-rot. Latency is
   # reported, not gated.
   benches:
-    image: node:20
+    image: node:20-slim
     resources: { cpus: 4, memory: 6G }
     timeout-minutes: 60
     cache:
@@ -82,7 +88,7 @@ jobs:
       - name: Install Tauri/WebKitGTK build deps
         run: |
           apt-get update
-          apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+          apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file ca-certificates git pkg-config \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Install Rust (kept in the cache)
         run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
@@ -95,7 +101,7 @@ jobs:
   # on main or when started by hand.
   binary-size:
     if: neutrino.branch == 'main'
-    image: node:20
+    image: node:20-slim
     resources: { cpus: 4, memory: 6G }
     timeout-minutes: 90
     cache:
@@ -109,7 +115,7 @@ jobs:
       - name: Install Tauri/WebKitGTK build deps
         run: |
           apt-get update
-          apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+          apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file ca-certificates git pkg-config \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Install Rust (kept in the cache)
         run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path

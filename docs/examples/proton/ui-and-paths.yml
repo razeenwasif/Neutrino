@@ -2,8 +2,10 @@
 #
 # UI contracts and portable paths, on every push and pull request. Changes
 # from the GitHub version:
-#   * ubuntu-latest  ->  containers on Graviton (arm64 Linux): node:22 for the
-#     UI, node:22 with rustup for the Rust suites
+#   * ubuntu-latest  ->  containers on Graviton (arm64 Linux): node:22-slim for
+#     the UI, and for the Rust suites node:22-slim with a compiler, git and
+#     rustup added. Slim images and no debug info, since a container's files
+#     live in its VM's RAM.
 #   * setup-node's npm cache and the toolchain are Neutrino caches
 #   * `if: runner.os != 'Windows'` steps simply run: this is Linux
 #   * upload-artifact on failure  ->  the Playwright report and results are
@@ -22,7 +24,7 @@ env:
 
 jobs:
   ui-contract:
-    image: node:22
+    image: node:22-slim
     resources: { cpus: 2, memory: 2G }
     timeout-minutes: 15
     cache:
@@ -36,7 +38,7 @@ jobs:
       - run: node --check ui/app.js && node --check ui/bridge.js
 
   ui-browser:
-    image: node:22
+    image: node:22-slim
     resources: { cpus: 2, memory: 4G }
     timeout-minutes: 15
     artifacts: [playwright-report, test-results]
@@ -50,11 +52,17 @@ jobs:
       - run: npm run test:browser
 
   paths:
-    image: node:22
+    image: node:22-slim
     resources: { cpus: 2, memory: 4G }
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      # The workspace belongs to the Mac's user, the job runs as root.
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
       CARGO_HOME: /workspace/.cargo
       RUSTUP_HOME: /workspace/.rustup
       PATH: /workspace/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -63,6 +71,10 @@ jobs:
         path: [.cargo, .rustup, target]
         restore-keys: [rust-]
     steps:
+      - name: Install a compiler and git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential curl ca-certificates git pkg-config
       - name: Install Rust (kept in the cache)
         run: command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
       - run: cargo test --locked -p proton-agent --lib --test transport --test gemini --test assemble

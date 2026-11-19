@@ -2,10 +2,13 @@
 #
 # Backend tests and the frontend's typecheck, lint and tests, on pushes to
 # main and pull requests into it. Changes from the GitHub version:
-#   * setup-python 3.11  ->  a python:3.11 container on Graviton (arm64 Linux;
-#     PyTorch's CPU index has arm64 wheels, so the same install works)
-#   * setup-bun  ->  the oven/bun:1 image
-#   * pip's cache is a Neutrino cache keyed on the requirement files
+#   * setup-python 3.11  ->  a python:3.11-slim container on Graviton (arm64
+#     Linux; PyTorch's CPU index has arm64 wheels, so the same install works)
+#   * the packages go in a virtualenv in the workspace, on the Mac's disk: a
+#     Graviton container's own files live in its VM's RAM, and torch alone is
+#     most of a gigabyte. The virtualenv and pip's cache are Neutrino caches
+#     keyed on the requirement files.
+#   * setup-bun  ->  the oven/bun:1-slim image
 #   * `defaults.run.working-directory` becomes each step's working-directory
 
 name: Backend CI
@@ -17,16 +20,21 @@ on:
 
 jobs:
   test:
-    image: python:3.11
+    image: python:3.11-slim
     resources: { cpus: 4, memory: 6G }
     timeout-minutes: 45
     env:
       PIP_CACHE_DIR: /workspace/.pip-cache
+      VIRTUAL_ENV: /workspace/.venv
+      PATH: /workspace/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     cache:
-      - key: pip-${{ hashFiles('requirements.txt', 'requirements/requirements.txt', 'requirements/requirements.lock.txt') }}
-        path: .pip-cache
-        restore-keys: [pip-]
+      - key: venv-${{ hashFiles('requirements.txt', 'requirements/requirements.txt', 'requirements/requirements.lock.txt') }}
+        path: [.venv, .pip-cache]
+        restore-keys: [venv-]
     steps:
+      - name: Create the virtualenv (kept in the cache)
+        run: test -x .venv/bin/python || python -m venv .venv
+
       # No GPU here, so the CPU torch wheel instead of the CUDA build the lock
       # pins; tests that need CUDA are marked `rapids` and skip.
       - name: Install dependencies
@@ -43,7 +51,7 @@ jobs:
         run: pytest
 
   frontend:
-    image: oven/bun:1
+    image: oven/bun:1-slim
     resources: { cpus: 2, memory: 3G }
     timeout-minutes: 20
     steps:
