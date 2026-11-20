@@ -125,11 +125,27 @@ scripts/move-in.sh ~/code/flux ~/code/nexus             # on the MacBook: all of
 (not GitHub's pull request refs) with the same default branch; nothing is left
 behind if the copy fails. Unless told `--no-mirror`, it then copies the
 repository back to where it came from after every push: every branch and tag,
-force-pushed, with branches and tags deleted here deleted there too, so GitHub
-holds a full copy that's at most a push behind. The copy runs in the
-background after the push has landed; pushes meanwhile fold into one more. One
-that fails is tried again every ten minutes, and the first failure goes to the
-phone. The mirror's URL is in the hosted repository's own git config
+with branches and tags deleted here deleted there too, so GitHub holds a full
+copy that's at most a push behind. The copy runs in the background after the
+push has landed; pushes meanwhile fold into one more. One that fails is tried
+again every ten minutes, and the first failure goes to the phone.
+
+A copy never overwrites what only GitHub has. It first fetches GitHub's
+branches and tags into `refs/mirror/` on the server, then moves each one there
+only when GitHub's tip is already in the server's history, or GitHub hasn't
+moved since the last copy (so a rebase pushed to the server still goes
+through). If GitHub has commits the server doesn't (a collaborator's push, a
+pull request merged on github.com), that branch is left alone, the mirror
+shows as failing with which branch and what to run, and the rest are copied:
+
+```bash
+git fetch origin refs/mirror/heads/main && git merge FETCH_HEAD && git push
+```
+
+A branch deleted on the server is deleted on GitHub only if the last copy put
+it there and it hasn't moved since; one made on GitHub stays, and `ntr mirror`
+lists it. Every update is leased on what the copy saw, so a push to GitHub in
+the middle of one fails it rather than being lost. The mirror's URL is in the hosted repository's own git config
 (`neutrino.mirror`) and the last copy's outcome beside it, in
 `neutrino-mirror.json`. The server pushes with its own SSH key, so that key
 must be able to push to the GitHub repository.
@@ -489,6 +505,7 @@ checked.
 - Partial clones: file contents that were never fetched can't be diffed, and
   the app says so; Neutrino doesn't fetch them.
 - Mirrors copy branches and tags only (no Git LFS objects, no GitHub issues,
-  releases or wikis). A push made straight to the mirror is overwritten by
-  the next copy from the server. Mirror state isn't shown in the apps yet;
+  releases or wikis). Commits pushed straight to the mirror stop that
+  branch's copies until they're merged on the server. Mirror state isn't
+  shown in the apps yet;
   `ntr mirror` and the phone's failure notice are where to look.

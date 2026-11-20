@@ -818,6 +818,10 @@ fn main() -> Result<()> {
                                 writeln!(out, "         {}", style.paint("2", line))?;
                             }
                         }
+                        if !m.mirror_only.is_empty() {
+                            let names: Vec<&str> = m.mirror_only.iter().map(|r| r.strip_prefix("refs/heads/").or_else(|| r.strip_prefix("refs/tags/")).unwrap_or(r)).collect();
+                            writeln!(out, "         {}", style.paint("2", &format!("only on the mirror, left alone: {}", names.join(", "))))?;
+                        }
                     }
                 }
                 r => return Err(unexpected(r)),

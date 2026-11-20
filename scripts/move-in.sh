@@ -9,8 +9,8 @@
 #      after every push, so GitHub keeps a full copy off the server. A
 #      repository someone else owns is imported without that copy.
 #   2. origin is pointed at the server. The GitHub URL stays as the `github`
-#      remote, to look at; don't push to it, since the next copy from the
-#      server overwrites what's there.
+#      remote, to look at. A push to it isn't lost, but it stops that
+#      branch's copies until it's merged on the server.
 #   3. origin is fetched, and branches with commits the server doesn't have
 #      yet are listed, to push when you're ready.
 # Another clone of a repository already on the server only gets steps 2 and 3.

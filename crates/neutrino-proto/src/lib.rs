@@ -864,8 +864,12 @@ pub struct MirrorStatus {
     /// Unix seconds of the last copy that worked.
     pub last_ok: Option<i64>,
     pub last_attempt: Option<i64>,
-    /// What git said when the last copy failed.
+    /// What git said when the last copy failed, or which refs it left alone
+    /// because the mirror has commits this side doesn't.
     pub last_error: Option<String>,
+    /// Refs only the mirror has (a branch made on GitHub, say), left alone.
+    #[serde(default)]
+    pub mirror_only: Vec<String>,
 }
 
 /// One database snapshot.
