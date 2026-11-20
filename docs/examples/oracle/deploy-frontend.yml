@@ -1,0 +1,100 @@
+# Oracle's .github/workflows/deploy-frontend.yml, on Neutrino.
+#
+# Builds the Oracle Plant app and deploys it to Firebase Hosting's live
+# channel when something the site serves changes on main. Changes from the
+# GitHub version:
+#   * ubuntu-latest + setup-bun  ->  a node:22 container on Graviton, with bun
+#     and firebase-tools installed by npm
+#   * the six VITE_FIREBASE_* values are variables, not secrets: they're the
+#     public web config (the old workflow says so). VITE_STITCH_API_KEY stays
+#     a secret.
+#   * FirebaseExtended/action-hosting-deploy  ->  `firebase deploy --only
+#     hosting` with the service account, in the production environment
+#
+# Set up once (values are in apps/oracle-plant/.env and a service-account key
+# for oracle-neuro-sym):
+#   ntr -r oracle env set production --branch main
+#   ntr -r oracle var set VITE_FIREBASE_API_KEY …   (and the other five)
+#   ntr -r oracle secret set VITE_STITCH_API_KEY --env production
+#   ntr -r oracle secret set FIREBASE_SERVICE_ACCOUNT_ORACLE_NEURO_SYM --env production < sa.json
+
+name: Deploy frontend to Firebase Hosting
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/oracle-plant/**'
+      - 'paper/plantclef2026_research_paper.tex'
+      - 'paper/plantclef2026_research_paper.pdf'
+      - 'firebase.json'
+      - '.firebaserc'
+      - '.neutrino/workflows/deploy-frontend.yml'
+  workflow_dispatch: {}
+
+# A deploy in progress is never killed by a newer push; the next one waits.
+concurrency:
+  group: deploy-frontend
+  cancel-in-progress: false
+
+jobs:
+  build_and_deploy:
+    image: node:22
+    resources: { cpus: 2, memory: 4G }
+    timeout-minutes: 15
+    environment: production
+    cache:
+      - key: bun-deploy-${{ hashFiles('apps/oracle-plant/bun.lock') }}
+        path: .bun-cache
+        restore-keys: [bun-deploy-]
+    env:
+      BUN_INSTALL_CACHE_DIR: /workspace/.bun-cache
+      npm_config_cache: /workspace/.npm
+      GOOGLE_APPLICATION_CREDENTIALS: /tmp/firebase-sa.json
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+    steps:
+      # A bundle built without the API key takes the live site down (it has
+      # happened twice), so refuse first.
+      - name: Verify the Firebase config is set
+        run: |
+          if [ -z "$VITE_FIREBASE_API_KEY" ]; then
+            echo "VITE_FIREBASE_API_KEY isn't set; refusing to deploy a broken bundle."
+            echo "Add the six VITE_FIREBASE_* variables with ntr var set (see this file's header)."
+            exit 1
+          fi
+
+      # As scripts/redeploy_frontend.sh does: the paper, if present, goes in
+      # public/ so the Research tab serves a fresh PDF and Copy-LaTeX.
+      - name: Sync paper artifacts
+        run: |
+          if [ -f paper/plantclef2026_research_paper.tex ]; then
+            cp paper/plantclef2026_research_paper.tex apps/oracle-plant/public/oracle_plantclef2026.tex
+          fi
+          if [ -f paper/plantclef2026_research_paper.pdf ]; then
+            cp paper/plantclef2026_research_paper.pdf apps/oracle-plant/public/oracle_plantclef2026.pdf
+          fi
+
+      - name: Install bun and firebase-tools
+        run: npm install -g bun firebase-tools@latest
+
+      - name: Install dependencies
+        working-directory: apps/oracle-plant
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        working-directory: apps/oracle-plant
+        env:
+          VITE_STITCH_API_KEY: ${{ secrets.VITE_STITCH_API_KEY }}
+        run: bun run build
+
+      - name: Deploy to Firebase Hosting
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_ORACLE_NEURO_SYM }}
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
+          firebase deploy --only hosting --project oracle-neuro-sym --non-interactive

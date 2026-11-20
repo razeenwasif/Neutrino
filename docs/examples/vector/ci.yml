@@ -1,0 +1,33 @@
+# Vector's .github/workflows/ci.yml, on Neutrino.
+#
+# `npm run ci` (Prisma client, lint, tests, build) on pushes to main and every
+# pull request. Changes from the GitHub version:
+#   * ubuntu-latest + setup-node 22  ->  a node:22 container on Graviton
+#     (arm64 Linux)
+#   * setup-node's npm cache  ->  a Neutrino cache for npm's download cache,
+#     kept in the workspace on atlas's disk
+
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    image: node:22
+    resources: { cpus: 4, memory: 6G }
+    timeout-minutes: 30
+    env:
+      npm_config_cache: /workspace/.npm
+      NEXT_TELEMETRY_DISABLED: 1
+    cache:
+      - key: npm-${{ hashFiles('package-lock.json') }}
+        path: .npm
+        restore-keys: [npm-]
+    steps:
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify
+        run: npm run ci

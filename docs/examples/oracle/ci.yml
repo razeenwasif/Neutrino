@@ -1,0 +1,42 @@
+# Oracle's checks, on Neutrino.
+#
+# GitHub's "ORACLE-ULTIMATE CI" checks src/, tests/, engines/ and
+# orchestrator/, which main no longer has (only the Oracle Plant frontend is
+# left), so it has failed since September and isn't carried over. This checks
+# what is here: the frontend lints and builds, on pull requests and pushes to
+# main, in an oven/bun container on Graviton (arm64 Linux). No secrets: a
+# build without the VITE_* values is fine for a check.
+
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  frontend:
+    name: Lint and build the frontend
+    image: oven/bun:1
+    resources: { cpus: 2, memory: 4G }
+    timeout-minutes: 15
+    env:
+      BUN_INSTALL_CACHE_DIR: /workspace/.bun-cache
+    cache:
+      - key: bun-${{ hashFiles('apps/oracle-plant/bun.lock') }}
+        path: .bun-cache
+        restore-keys: [bun-]
+    steps:
+      - name: Install dependencies
+        working-directory: apps/oracle-plant
+        run: bun install --frozen-lockfile
+      # The app has lint errors today (setState in effects, `any`, unused
+      # imports), and nothing checked lint before; they show here without
+      # failing the check until they're fixed. Then drop continue-on-error.
+      - name: Lint
+        working-directory: apps/oracle-plant
+        continue-on-error: true
+        run: bun run lint
+      - name: Build
+        working-directory: apps/oracle-plant
+        run: bun run build
