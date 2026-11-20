@@ -7,7 +7,9 @@
 #     Firestore, so Neutrino sends it no secrets (and these aren't secret)
 #   * the installer is kept as a run artifact (download it from the run, or
 #     `ntr run download`) instead of a GitHub Release
-#   * forge needs bun on its PATH (https://bun.sh) and Git for Windows' bash
+#   * forge needs bun (https://bun.sh) and Git for Windows' bash. The Bun steps
+#     put %USERPROFILE%\.bun\bin, where Bun's installer puts it, first on their
+#     PATH: the Nexus agent's PATH doesn't have it.
 #
 # Neutrino's server needs a Nexus token: neutrinod --nexus-token-file …
 
@@ -51,8 +53,12 @@ jobs:
 
       - name: Install dependencies
         shell: cmd
-        run: bun install --frozen-lockfile
+        run: |
+          set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
+          bun install --frozen-lockfile
 
       - name: Build renderer + package installer
         shell: cmd
-        run: bun run desktop:win
+        run: |
+          set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
+          bun run desktop:win
