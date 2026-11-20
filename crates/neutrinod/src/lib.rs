@@ -347,6 +347,7 @@ impl Daemon {
                 protocol: PROTOCOL_VERSION,
                 role: self.options.role.name().into(),
                 repos: self.registry.len() as u32,
+                commit: option_env!("NEUTRINO_COMMIT").map(String::from),
             }),
             Request::ListRepos => Response::Repos(self.registry.list()),
             Request::AddRepo { path } => {

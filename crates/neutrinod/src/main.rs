@@ -135,8 +135,9 @@ async fn run(args: Args, socket: PathBuf) -> Result<()> {
     };
     let daemon = neutrinod::Daemon::with(&state, options)?;
     eprintln!(
-        "neutrinod {} ({}) listening on {}",
+        "neutrinod {}{} ({}) listening on {}",
         env!("CARGO_PKG_VERSION"),
+        option_env!("NEUTRINO_COMMIT").map(|c| format!(" at {}", &c[..12.min(c.len())])).unwrap_or_default(),
         if args.server { "server" } else { "workstation" },
         socket.display()
     );

@@ -922,6 +922,10 @@ pub struct EngineInfo {
     /// `workstation` or `server`.
     pub role: String,
     pub repos: u32,
+    /// The commit this neutrinod was built from, when the build said
+    /// (scripts/deploy-server.sh sets it); `None` for an ordinary cargo build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

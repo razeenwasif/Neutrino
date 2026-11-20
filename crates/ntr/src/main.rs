@@ -686,7 +686,13 @@ fn main() -> Result<()> {
             r => return Err(unexpected(r)),
         },
         Cmd::Info => match c.call(Request::EngineInfo)? {
-            Response::Engine(e) => writeln!(out, "neutrinod {} · {} · {} repos · protocol {}", e.version, e.role, e.repos, e.protocol)?,
+            Response::Engine(e) => {
+                let commit = match &e.commit {
+                    Some(c) => format!("commit {c}"),
+                    None => "commit unknown (not built by deploy-server.sh)".into(),
+                };
+                writeln!(out, "neutrinod {} · {} · {} repos · protocol {} · {commit}", e.version, e.role, e.repos, e.protocol)?
+            }
             r => return Err(unexpected(r)),
         },
         Cmd::Repos => {
