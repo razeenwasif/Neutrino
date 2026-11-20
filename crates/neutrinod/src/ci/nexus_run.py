@@ -31,6 +31,29 @@ def marker(text):
     sys.stdout.flush()
 
 
+GIT_BASH = (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe")
+
+
+def posix_shell(shell):
+    """The bash or sh to run a step with, or None. On Windows that's Git for
+    Windows' bash: System32\\bash.exe is WSL's launcher, which can't open a
+    Windows path (it ran "C:UsersRazeen..." and found nothing)."""
+    if not WINDOWS:
+        return shutil.which(shell)
+    for guess in GIT_BASH:
+        if os.path.exists(guess):
+            return guess
+    exe = shutil.which("bash") or shutil.which(shell)
+    if exe and "\\system32\\" in exe.lower():
+        return None
+    return exe
+
+
+def bash_path(path):
+    """A path bash reads as written: Git's bash takes C:/... but not backslashes."""
+    return path.replace("\\", "/") if WINDOWS else path
+
+
 def shell_command(shell, path):
     """argv to run the script at `path` with `shell`."""
     if shell == "cmd":
@@ -38,20 +61,19 @@ def shell_command(shell, path):
     if shell in ("pwsh", "powershell"):
         exe = shutil.which(shell) or shutil.which("pwsh") or shutil.which("powershell") or shell
         return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path]
+    if shell in ("bash", "sh"):
+        exe = posix_shell(shell)
+        if exe is None:
+            raise RuntimeError(shell + " isn't installed on this node" + (" (install Git for Windows)" if WINDOWS else ""))
+        return [exe, "-e", bash_path(path)]
     exe = shutil.which(shell)
-    if exe is None and shell == "bash" and WINDOWS:
-        # Git for Windows' bash, when it isn't on PATH.
-        for guess in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"):
-            if os.path.exists(guess):
-                exe = guess
-                break
     if exe is None:
         raise RuntimeError(shell + " isn't installed on this node")
-    return [exe, "-e", path] if shell in ("bash", "sh") else [exe, path]
+    return [exe, path]
 
 
 def default_shell():
-    if shutil.which("bash") or (WINDOWS and os.path.exists(r"C:\Program Files\Git\bin\bash.exe")):
+    if posix_shell("bash"):
         return "bash"
     return "cmd" if WINDOWS else "sh"
 
@@ -64,7 +86,7 @@ def script_file(index, shell, text, cwd):
     elif shell in ("pwsh", "powershell"):
         body = "$ErrorActionPreference = 'Stop'\nSet-Location -LiteralPath '" + cwd.replace("'", "''") + "'\n" + text + "\nexit $LASTEXITCODE\n"
     else:
-        body = "cd '" + cwd.replace("'", "'\\''") + "' || exit 1\n" + text + "\n"
+        body = "cd '" + bash_path(cwd).replace("'", "'\\''") + "' || exit 1\n" + text + "\n"
     with open(path, "w", newline="") as f:
         f.write(body)
     return path
