@@ -43,14 +43,14 @@ fi
 # 1. A clean checkout of the commit, built into its own target folder (kept
 #    between deploys, so dependencies aren't rebuilt each time).
 target_root="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
-src="$target_root/deploy-src"
+src="$target_root/neutrino-deploy-src"
 git worktree remove --force "$src" 2>/dev/null || rm -rf "$src"
 git worktree prune
 git worktree add --quiet --detach "$src" "$commit"
 trap 'git worktree remove --force "$src" 2>/dev/null || true' EXIT
-(cd "$src" && NEUTRINO_COMMIT="$commit" CARGO_TARGET_DIR="$target_root/deploy" \
+(cd "$src" && NEUTRINO_COMMIT="$commit" CARGO_TARGET_DIR="$target_root/neutrino-deploy" \
     cargo build -q --release --locked -p neutrinod -p ntr)
-out="$target_root/deploy/release"
+out="$target_root/neutrino-deploy/release"
 codesign --force --identifier dev.neutrino.neutrinod --sign "$identity" --timestamp=none "$out/neutrinod"
 
 # 2. Copy beside the old files, then swap each in as a new file and restart.
