@@ -92,7 +92,7 @@ final class CodeModel {
         case let .failure(e):
             guard g == generation else { return }
             listing = nil
-            listingError = e.localizedDescription
+            listingError = Self.explain(e)
         }
         latest = try? await latestResult.get()
         if g == generation { overview = try? await overviewResult.get() }
@@ -187,6 +187,15 @@ final class CodeModel {
         } else if !path.isEmpty {
             open(dir: path.split(separator: "/").dropLast().joined(separator: "/"))
         }
+    }
+
+    /// A daemon from before browsing rejects the request outright; say so plainly.
+    nonisolated static func explain(_ error: any Error) -> String {
+        let message = error.localizedDescription
+        if message.contains("unknown variant `tree`") {
+            return "This neutrinod is older than file browsing. Update it (protocol 8 or later) to see the files here."
+        }
+        return message
     }
 
     nonisolated static func isReadme(_ e: TreeEntry) -> Bool {

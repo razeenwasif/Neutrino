@@ -349,15 +349,13 @@ private struct EntryRow: View {
                 .font(.system(size: 13, weight: entry.kind.isFolder ? .medium : .regular))
                 .foregroundStyle(entry.kind == .submodule ? N.second : N.text)
                 .lineLimit(1)
-                .frame(minWidth: 140, maxWidth: 260, alignment: .leading)
-            if let commit {
-                Text(commit.subject).font(.system(size: 12.5)).foregroundStyle(N.faint).lineLimit(1).help(commit.subject)
-            }
+                .truncationMode(.middle)
+                .frame(width: 230, alignment: .leading)
+            Text(commit?.subject ?? "").font(.system(size: 12.5)).foregroundStyle(N.faint).lineLimit(1).help(commit?.subject ?? "")
             Spacer(minLength: 8)
-            if let size = entry.size, entry.kind != .symlink {
-                Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                    .font(N.mono(11)).foregroundStyle(N.faint.opacity(0.8)).fixedSize()
-            }
+            Text(entry.size.flatMap { entry.kind == .symlink ? nil : ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "")
+                .font(N.mono(11)).foregroundStyle(N.faint.opacity(0.8))
+                .frame(width: 70, alignment: .trailing)
             Text(commit.map { Format.ago($0.time) } ?? "")
                 .font(.system(size: 12)).foregroundStyle(N.faint)
                 .frame(width: 84, alignment: .trailing)
