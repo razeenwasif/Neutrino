@@ -729,7 +729,10 @@ impl Daemon {
                 self.settled(q.run, &run.repo);
                 continue;
             }
-            if q.cpus > ci.options.cpus || q.memory_mib > ci.options.memory_mib {
+            // A Nexus job runs on another machine: its resources are Nexus's to
+            // place, so it neither needs nor takes this machine's CI budget.
+            let (cpus, memory_mib) = if def.runs_on == Executor::Nexus { (0, 0) } else { (q.cpus, q.memory_mib) };
+            if cpus > ci.options.cpus || memory_mib > ci.options.memory_mib {
                 let why = format!(
                     "it asks for {} CPUs and {} MiB, more than CI's budget on this machine ({} CPUs, {} MiB)",
                     q.cpus, q.memory_mib, ci.options.cpus, ci.options.memory_mib
@@ -739,14 +742,14 @@ impl Daemon {
                 continue;
             }
             let (used_cpus, used_mem) = ci.used();
-            if used_cpus + q.cpus > ci.options.cpus || used_mem + q.memory_mib > ci.options.memory_mib {
+            if used_cpus + cpus > ci.options.cpus || used_mem + memory_mib > ci.options.memory_mib {
                 // First come, first served: nothing jumps a job that's waiting for room.
                 break;
             }
             let name = format!("{}{}-{}-{}", runner::CONTAINER_PREFIX, q.run, q.id, q.attempt);
             store.start_job(q.id, &name)?;
             let (cancel, cancelled) = watch::channel(false);
-            ci.active.lock().unwrap().insert(q.id, Active { cpus: q.cpus, memory_mib: q.memory_mib, cancel, container: None, services: Vec::new() });
+            ci.active.lock().unwrap().insert(q.id, Active { cpus, memory_mib, cancel, container: None, services: Vec::new() });
             self.runs_changed(&run.repo);
             let this = Arc::clone(self);
             tokio::spawn(async move {

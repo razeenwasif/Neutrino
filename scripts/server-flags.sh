@@ -41,7 +41,10 @@ cat > "\$plist" <<PLIST
 </plist>
 PLIST
 launchctl bootout "gui/\$(id -u)/\$label" 2>/dev/null || true
+# bootout returns before the old one has stopped; bootstrapping then fails
+# with "5: Input/output error" and leaves the server down.
+for _ in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/\$(id -u)/\$label" >/dev/null 2>&1 || break; sleep 1; done
 launchctl bootstrap "gui/\$(id -u)" "\$plist"
-sleep 2
+for _ in 1 2 3 4 5 6 7 8 9 10; do "\$state/bin/ntr" info 2>/dev/null && exit 0; sleep 1; done
 "\$state/bin/ntr" info
 REMOTE

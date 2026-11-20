@@ -256,6 +256,8 @@ jobs:
   windows:
     runs-on: nexus
     nexus: { node: forge }
+    # More than atlas's CI budget: a Nexus job runs elsewhere and mustn't be held to it.
+    resources: { cpus: 8, memory: 8G }
     timeout-minutes: 5
     artifacts: [dist/*.txt]
     steps:
