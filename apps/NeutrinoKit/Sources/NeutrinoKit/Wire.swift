@@ -102,10 +102,13 @@ public struct Branch: Codable, Hashable, Identifiable, Sendable {
     public var upstream: String?
     public var ahead: UInt32?
     public var behind: UInt32?
+    /// Its tip is already in the default branch (main, else master). nil for
+    /// that branch itself, or from an older neutrinod.
+    public var merged: Bool?
 
     public var id: String { "\(kind.rawValue):\(name)" }
 
-    public init(name: String, kind: RefKind, sha: String, subject: String, time: Int64, isHead: Bool = false, upstream: String? = nil, ahead: UInt32? = nil, behind: UInt32? = nil) {
+    public init(name: String, kind: RefKind, sha: String, subject: String, time: Int64, isHead: Bool = false, upstream: String? = nil, ahead: UInt32? = nil, behind: UInt32? = nil, merged: Bool? = nil) {
         self.name = name
         self.kind = kind
         self.sha = sha
@@ -115,6 +118,7 @@ public struct Branch: Codable, Hashable, Identifiable, Sendable {
         self.upstream = upstream
         self.ahead = ahead
         self.behind = behind
+        self.merged = merged
     }
 }
 
@@ -529,6 +533,7 @@ public enum Request: Sendable, Equatable {
     case fetch(repo: String, remote: String?)
     case push(repo: String, remote: String?, branch: String?, setUpstream: Bool)
     case createHosted(name: String, description: String?)
+    case deleteHosted(repo: String)
     case listPulls(repo: String)
     case createPull(repo: String, title: String, body: String, source: String, target: String)
     case pull(repo: String, number: UInt32)
@@ -736,6 +741,7 @@ public enum Wire {
         case let .fetch(repo, remote): try line(id, "fetch", FetchParam(repo: repo, remote: remote))
         case let .push(repo, remote, branch, up): try line(id, "push", PushParam(repo: repo, remote: remote, branch: branch, setUpstream: up))
         case let .createHosted(name, description): try line(id, "create_hosted", HostParam(name: name, description: description))
+        case let .deleteHosted(repo): try line(id, "delete_hosted", RepoParam(repo: repo))
         case let .listPulls(repo): try line(id, "list_pulls", RepoParam(repo: repo))
         case let .createPull(repo, title, body, source, target):
             try line(id, "create_pull", CreatePullParam(repo: repo, title: title, body: body, source: source, target: target))

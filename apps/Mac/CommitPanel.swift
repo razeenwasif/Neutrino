@@ -92,6 +92,28 @@ struct CommitHeader: View {
                         HStack(spacing: 6) { ForEach(detail.refs, id: \.name) { RefChip(label: $0) } }
                     }
                 }
+                let checks = model.checkRuns(for: detail.sha)
+                if !checks.isEmpty {
+                    GridRow(alignment: .top) {
+                        label("Checks")
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(checks) { r in
+                                Button {
+                                    Task { await model.openRun(r.id) }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        RunStateIcon(state: r.state, size: 11)
+                                        Text(r.name).foregroundStyle(N.body)
+                                        Text("\(r.state.label) · run \(r.number)").foregroundStyle(N.faint)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Open run \(r.number)")
+                            }
+                        }
+                    }
+                }
             }
             .font(.system(size: 12.5))
         }

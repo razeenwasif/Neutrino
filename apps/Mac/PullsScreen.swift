@@ -80,6 +80,8 @@ struct PullList: View {
             }
         }
         .sheet(isPresented: $creating) { NewPullSheet() }
+        .onAppear { takeSheetRequest() }
+        .onChange(of: model.sheetRequest) { takeSheetRequest() }
         .sheet(isPresented: $editingRules) { RulesSheet() }
     }
 
@@ -690,6 +692,8 @@ private extension View {
 struct NewPullSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    /// Start with this branch (on the server) to merge, e.g. from Branches.
+    var preferredSource: String? = nil
     @State private var branches: [Branch] = []
     @State private var source = ""
     @State private var target = ""
@@ -740,7 +744,7 @@ struct NewPullSheet: View {
             // Start from the most recently pushed branch that isn't the target.
             let candidates = branches.filter { $0.name != target }.sorted { $0.time > $1.time }
             let current = model.source == .local ? model.repo?.head?.label : nil
-            source = candidates.first { $0.name == current }?.name ?? candidates.first?.name ?? ""
+            source = candidates.first { $0.name == preferredSource }?.name ?? candidates.first { $0.name == current }?.name ?? candidates.first?.name ?? ""
             if title.isEmpty { title = branches.first { $0.name == source }?.subject ?? "" }
         }
         .onChange(of: source) { _, new in
@@ -885,5 +889,14 @@ struct RulesSheet: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+extension PullList {
+    /// Open New pull request when the palette asked for it.
+    func takeSheetRequest() {
+        guard model.sheetRequest == .newPull else { return }
+        model.sheetRequest = nil
+        creating = true
     }
 }

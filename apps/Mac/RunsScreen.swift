@@ -42,6 +42,26 @@ struct RunStateIcon: View {
     }
 }
 
+/// A commit's or branch's CI result; opens its run when clicked.
+struct CheckMark: View {
+    @Environment(AppModel.self) private var model
+    var sha: String
+
+    var body: some View {
+        if let state = model.checkState(for: sha) {
+            let runs = model.checkRuns(for: sha)
+            Button {
+                if let r = model.runToOpen(for: sha) { Task { await model.openRun(r.id) } }
+            } label: {
+                RunStateIcon(state: state, size: 11.5)
+            }
+            .buttonStyle(.plain)
+            .help(runs.map { "\($0.name): \($0.state.label)" }.joined(separator: "\n") + "\nClick to open the run.")
+            .accessibilityLabel("CI \(state.label)")
+        }
+    }
+}
+
 func formatDuration(_ seconds: Int64?) -> String {
     guard let s = seconds, s >= 0 else { return "" }
     if s < 60 { return "\(s)s" }
@@ -87,6 +107,8 @@ struct RunList: View {
         }
         .island()
         .sheet(isPresented: $starting) { DispatchSheet() }
+        .onAppear { takeSheetRequest() }
+        .onChange(of: model.sheetRequest) { takeSheetRequest() }
     }
 }
 
@@ -541,5 +563,14 @@ struct ApprovalBanner: View {
         .background(N.warn.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+}
+
+extension RunList {
+    /// Open Run workflow when the palette asked for it.
+    func takeSheetRequest() {
+        guard model.sheetRequest == .runWorkflow else { return }
+        model.sheetRequest = nil
+        starting = true
     }
 }

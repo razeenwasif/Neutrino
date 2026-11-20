@@ -44,6 +44,12 @@ extension AppModel {
             for await event in stream {
                 guard let self else { return }
                 if let list = try? await server.repos() { self.hostedRepos = list }
+                // The open repo stopped being hosted (deleted elsewhere): show another.
+                if event.kind == "removed", self.source == .server, event.repo == self.repoID {
+                    self.recentRepos.removeAll { $0 == "server:\(event.repo)" }
+                    if let first = self.hostedRepos.first { await self.selectHosted(first.id) } else { self.source = .local; self.repoID = self.repos.first?.id; await self.reload() }
+                    continue
+                }
                 if self.source == .server, event.repo == self.repoID, event.kind != "pulls" {
                     await self.loadBranches()
                     if self.section == .history { await self.reloadHistory() }
@@ -65,6 +71,7 @@ extension AppModel {
         guard source != .server || repoID != id else { return }
         source = .server
         repoID = id
+        noteRecent()
         rev = nil
         selectedSHA = nil
         selectedBranch = nil
@@ -72,6 +79,19 @@ extension AppModel {
         status = nil
         if section == .changes { section = .history }
         await reload()
+    }
+
+    /// Stop hosting a repo on the server (it moves to the server's deleted
+    /// folder), then show something else if it was open.
+    func deleteHosted(_ id: String) async throws {
+        guard let server = serverService else { throw ServiceError.daemon("Connect to the server first.") }
+        try await server.deleteHosted(repo: id)
+        hostedRepos.removeAll { $0.id == id }
+        recentRepos.removeAll { $0 == "server:\(id)" }
+        if source == .server, repoID == id {
+            if let first = hostedRepos.first { await selectHosted(first.id) } else { source = .local; repoID = repos.first?.id; await reload() }
+        }
+        hostedRepos = (try? await server.repos()) ?? hostedRepos
     }
 
     func paired(_ link: ServerLink) async {

@@ -167,7 +167,7 @@ public final class DemoService: NeutrinoService {
         return [
             Branch(name: "reservations", kind: .local, sha: Self.sha("a41f9c2"), subject: "Coordinator: accept reservation requests", time: t - 720, isHead: true, upstream: "origin/reservations", ahead: 2, behind: 0),
             Branch(name: "main", kind: .local, sha: Self.sha("5f0a7b8"), subject: "Merge fleet-ram into main", time: t - 26 * 3600, upstream: "origin/main", ahead: 0, behind: 0),
-            Branch(name: "fleet-ram", kind: .local, sha: Self.sha("e1c4a90"), subject: "Fleet: show reserved RAM per node", time: t - 27 * 3600, upstream: "origin/fleet-ram", ahead: 0, behind: 0),
+            Branch(name: "fleet-ram", kind: .local, sha: Self.sha("e1c4a90"), subject: "Fleet: show reserved RAM per node", time: t - 27 * 3600, upstream: "origin/fleet-ram", ahead: 0, behind: 0, merged: true),
             Branch(name: "win-installer-arm64", kind: .local, sha: Self.sha("6ab31f0"), subject: "Desktop: try an arm64 Windows build", time: t - 21 * 86400),
             Branch(name: "origin/reservations", kind: .remote, sha: Self.sha("c9d2e55"), subject: "Add /v1/reservations endpoint", time: t - 7200),
             Branch(name: "origin/main", kind: .remote, sha: Self.sha("5f0a7b8"), subject: "Merge fleet-ram into main", time: t - 26 * 3600),

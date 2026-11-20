@@ -59,6 +59,45 @@ extension AppModel {
         }
     }
 
+    /// Load just the run list for the selection, for the CI marks beside
+    /// commits and branches; leaves the selected run alone.
+    func loadRunList() async {
+        guard let hosted = await hostedTarget(), let service = runService else { return }
+        if let list = try? await service.runs(repo: hosted, pull: nil) { runList = list }
+    }
+
+    /// The latest run of each workflow at `sha`, by name, from the run list.
+    func checkRuns(for sha: String) -> [Run] {
+        var latest: [String: Run] = [:]
+        for r in runList where r.sha == sha {
+            if let seen = latest[r.workflow], seen.id > r.id { continue }
+            latest[r.workflow] = r
+        }
+        return latest.values.sorted { $0.name < $1.name }
+    }
+
+    /// One state for a commit's checks: failed if any failed, else in progress
+    /// if any is, else passed. nil when no run covers it.
+    func checkState(for sha: String) -> RunState? {
+        let states = checkRuns(for: sha).map(\.state)
+        if states.isEmpty { return nil }
+        for s in [RunState.failure, .running, .waiting, .queued] where states.contains(s) { return s }
+        if states.contains(.success) { return .success }
+        return states.contains(.cancelled) ? .cancelled : .skipped
+    }
+
+    /// Show a run on the Runs screen.
+    func openRun(_ id: Int64) async {
+        section = .runs
+        await select(run: id)
+    }
+
+    /// The run to open from a commit's mark: a failed one first, else the latest.
+    func runToOpen(for sha: String) -> Run? {
+        let runs = checkRuns(for: sha)
+        return runs.first { $0.state == .failure } ?? runs.max { $0.id < $1.id }
+    }
+
     /// A run changed on the server: refresh the list and what's shown, keeping the log.
     func refreshRuns() async {
         guard let hosted = pullRepo, let service = runService else { return }

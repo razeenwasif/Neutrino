@@ -56,6 +56,46 @@ final class AppModel {
         didSet { UserDefaults.standard.set(repoID, forKey: "repo") }
     }
 
+    /// What the sidebar's filter field holds.
+    var repoFilter = ""
+    /// The ⌘K palette is showing.
+    var paletteOpen = false
+    /// A sheet a screen should open when it appears (asked for from the palette).
+    enum SheetRequest { case newPull, runWorkflow }
+    var sheetRequest: SheetRequest?
+    /// Repos opened lately, newest first, as "local:ID" or "server:ID".
+    var recentRepos: [String] = UserDefaults.standard.stringArray(forKey: "recentRepos") ?? [] {
+        didSet { UserDefaults.standard.set(recentRepos, forKey: "recentRepos") }
+    }
+
+    /// Whether a repo's name has the filter's text in it. Not the path: every
+    /// hosted repo's path has ".neutrino" in it.
+    func matchesFilter(_ repo: Repo) -> Bool {
+        let q = repoFilter.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty || repo.name.localizedCaseInsensitiveContains(q)
+    }
+
+    /// Put the selected repo at the head of the recents.
+    func noteRecent() {
+        guard let repoID else { return }
+        let key = "\(source.rawValue):\(repoID)"
+        recentRepos = Array(([key] + recentRepos.filter { $0 != key }).prefix(8))
+    }
+
+    /// The recents that still exist, other than the one open now, up to `limit`.
+    func recentEntries(limit: Int = 5) -> [(source: Source, repo: Repo)] {
+        var out: [(source: Source, repo: Repo)] = []
+        for key in recentRepos {
+            let parts = key.split(separator: ":", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let src = Source(rawValue: parts[0]) else { continue }
+            if src == source && parts[1] == repoID { continue }
+            let pool = src == .local ? repos.filter { $0.error == nil } : hostedRepos
+            if let r = pool.first(where: { $0.id == parts[1] }) { out.append((src, r)) }
+            if out.count == limit { break }
+        }
+        return out
+    }
+
     var section: Section = Section(rawValue: UserDefaults.standard.string(forKey: "section") ?? "") ?? .changes {
         didSet { UserDefaults.standard.set(section.rawValue, forKey: "section") }
     }
@@ -276,6 +316,7 @@ final class AppModel {
             repoID = hosted.id
             if section == .changes { section = .history }
         }
+        noteRecent()
         await reload()
     }
 
@@ -283,6 +324,7 @@ final class AppModel {
         guard id != repoID || source != .local else { return }
         source = .local
         repoID = id
+        noteRecent()
         rev = nil
         selectedSHA = nil
         selectedBranch = nil

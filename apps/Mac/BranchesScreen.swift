@@ -14,13 +14,27 @@ struct BranchesScreen: View {
 
 struct BranchList: View {
     @Environment(AppModel.self) private var model
+    @State private var pruning = false
+
+    /// Local branches already in the default branch, other than the one checked out.
+    private var mergedLocal: [Branch] {
+        model.source == .local ? model.branches.filter { $0.kind == .local && $0.merged == true && !$0.isHead } : []
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Text("Branches").font(.system(size: 14, weight: .semibold)).foregroundStyle(N.text)
-                Text("ahead and behind their upstream").font(.system(size: 12)).foregroundStyle(N.muted)
+                if model.source == .local {
+                    Text("ahead and behind their upstream").font(.system(size: 12)).foregroundStyle(N.muted)
+                }
                 Spacer()
+                if !mergedLocal.isEmpty {
+                    Button("Delete merged (\(mergedLocal.count))…") { pruning = true }
+                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
+                        .disabled(model.writing || !model.isLive)
+                        .help("Delete the local branches whose work is already in the default branch")
+                }
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)
@@ -36,7 +50,7 @@ struct BranchList: View {
                         let local = model.branches.filter { $0.kind == .local }
                         let remote = model.branches.filter { $0.kind == .remote }
                         let scale = max(1, model.branches.compactMap { max($0.ahead ?? 0, $0.behind ?? 0) }.max() ?? 1)
-                        group("On this Mac", local, scale: scale)
+                        group(model.source == .server ? "On \(model.serverLink?.name ?? "the server")" : "On this Mac", local, scale: scale)
                         if !remote.isEmpty { group("Remote", remote, scale: scale) }
                     }
                     .padding(.horizontal, 6)
@@ -45,13 +59,30 @@ struct BranchList: View {
             }
         }
         .island()
+        .task(id: "\(model.source.rawValue):\(model.repoID ?? ""):\(model.isServerOnline)") {
+            await model.loadRunList()
+            await model.refreshGlancePulls()
+        }
+        .confirmationDialog("Delete \(mergedLocal.count) merged branch\(mergedLocal.count == 1 ? "" : "es")?", isPresented: $pruning) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    var refused: [String] = []
+                    for b in mergedLocal {
+                        if await model.deleteBranch(b.name, force: false) != nil { refused.append(b.name) }
+                    }
+                    if !refused.isEmpty { model.notice = "Git kept \(refused.joined(separator: ", ")): it doesn't count as merged from here." }
+                }
+            }
+        } message: {
+            Text(mergedLocal.map(\.name).joined(separator: ", ") + "\n\nTheir commits are already in the default branch. Branches on the server aren't touched.")
+        }
     }
 
     @ViewBuilder
     private func group(_ title: String, _ list: [Branch], scale: UInt32) -> some View {
         Text(title).font(.system(size: 12)).foregroundStyle(N.muted).padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 4)
         ForEach(list) { b in
-            BranchRow(branch: b, scale: scale, selected: b.id == model.selectedBranch)
+            BranchRow(branch: b, scale: scale, selected: b.id == model.selectedBranch, hosted: model.source == .server)
                 .onTapGesture { model.selectedBranch = b.id }
                 .onTapGesture(count: 2) { Task { await model.showHistory(of: b) } }
         }
@@ -62,19 +93,32 @@ struct BranchRow: View {
     var branch: Branch
     var scale: UInt32
     var selected: Bool
+    /// A branch of a hosted repo: on the server itself, so there's no upstream to compare with.
+    var hosted = false
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 12) {
             Dot(color: branch.isHead ? N.accent : .clear, glow: false, size: 7)
                 .help(branch.isHead ? "Checked out" : "")
-            Text(branch.name)
-                .font(N.mono(12.5, weight: .medium))
-                .foregroundStyle(branch.kind == .remote ? N.second : N.text)
-                .lineLimit(1)
-                .frame(width: 220, alignment: .leading)
+            HStack(spacing: 6) {
+                Text(branch.name)
+                    .font(N.mono(12.5, weight: .medium))
+                    .foregroundStyle(branch.kind == .remote ? N.second : N.text)
+                    .lineLimit(1)
+                if branch.merged == true {
+                    Text("merged").font(.system(size: 10.5, weight: .medium)).foregroundStyle(N.muted)
+                        .padding(.horizontal, 6).frame(height: 17)
+                        .background(Color.white.opacity(0.06), in: Capsule())
+                        .fixedSize()
+                        .help("Its tip is already in the default branch")
+                }
+            }
+            .frame(width: 220, alignment: .leading)
+            CheckMark(sha: branch.sha).frame(width: 14)
             Text(branch.subject).font(.system(size: 12.5)).foregroundStyle(N.muted).lineLimit(1)
             Spacer(minLength: 8)
+            if !hosted {
             Group {
                 if branch.kind == .remote {
                     Color.clear
@@ -85,6 +129,7 @@ struct BranchRow: View {
                 }
             }
             .frame(width: 150)
+            }
             Text(Format.ago(branch.time)).font(.system(size: 12)).foregroundStyle(N.faint).frame(width: 80, alignment: .trailing)
         }
         .padding(.horizontal, 10)
@@ -131,6 +176,7 @@ struct AheadBehind: View {
 
 struct BranchPanel: View {
     @Environment(AppModel.self) private var model
+    @State private var opening: String?
     @State private var naming: NameSheet.Purpose?
     @State private var deleting: Branch?
     @State private var unmerged: (branch: Branch, message: String)?
@@ -155,7 +201,7 @@ struct BranchPanel: View {
                         Text("Updated").foregroundStyle(N.faint)
                         Text(Format.full(b.time))
                     }
-                    if b.kind == .local {
+                    if b.kind == .local, model.source == .local {
                         GridRow {
                             Text("Upstream").foregroundStyle(N.faint)
                             if let up = b.upstream {
@@ -173,7 +219,8 @@ struct BranchPanel: View {
                 .font(.system(size: 12.5))
                 .foregroundStyle(N.body)
                 HStack(spacing: 6) {
-                    if !b.isHead {
+                    // A hosted repo has no working copy here to switch.
+                    if !b.isHead, model.source == .local {
                         Button(b.kind == .remote ? "Check out as local" : "Check out") { Task { await model.checkout(b) } }
                             .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
                             .disabled(model.writing || !model.isLive)
@@ -182,6 +229,8 @@ struct BranchPanel: View {
                     Button("Show history") { Task { await model.showHistory(of: b) } }
                         .buttonStyle(PillButtonStyle(kind: b.isHead ? .primary : .secondary, height: 30))
                 }
+                pullActions(for: b)
+                if model.source == .local {
                 HStack(spacing: 6) {
                     Button("New branch from here…") { naming = .create(start: b.name) }
                         .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
@@ -196,6 +245,7 @@ struct BranchPanel: View {
                     }
                 }
                 .disabled(model.writing || !model.isLive)
+                }
                 Spacer()
             } else {
                 EmptyState(title: "No branch selected", message: "Pick a branch to see where it stands.")
@@ -205,6 +255,7 @@ struct BranchPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .island()
         .sheet(item: $naming) { purpose in NameSheet(purpose: purpose) }
+        .sheet(item: Binding(get: { opening.map(IdentifiedName.init) }, set: { opening = $0?.name })) { n in NewPullSheet(preferredSource: n.name) }
         .confirmationDialog(deleting.map { "Delete \($0.name)?" } ?? "", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { b in
             Button("Delete branch", role: .destructive) {
                 Task {
@@ -224,6 +275,42 @@ struct BranchPanel: View {
             }
         } message: { u in
             Text("\(u.message)\n\nIts commits stay reachable through the reflog for a while, but no branch will point at them.")
+        }
+    }
+}
+
+extension BranchPanel {
+    /// The branch's name on the server: origin/x and a local x tracking it are both x.
+    func serverName(of b: Branch) -> String? {
+        if model.source == .server { return b.kind == .local ? b.name : nil }
+        if b.kind == .remote { return b.name.split(separator: "/", maxSplits: 1).last.map(String.init) }
+        guard let up = b.upstream, b.ahead != nil else { return nil }
+        return up.split(separator: "/", maxSplits: 1).last.map(String.init)
+    }
+
+    /// Show the pull request from this branch, or open one.
+    @ViewBuilder
+    func pullActions(for b: Branch) -> some View {
+        let isDefault = b.merged == nil && (b.name == "main" || b.name == "master" || b.name.hasSuffix("/main") || b.name.hasSuffix("/master"))
+        if model.serverLink != nil, !isDefault {
+            let name = serverName(of: b)
+            if let name, let pr = model.glancePulls.first(where: { $0.source == name }) {
+                Button("Show pull request #\(pr.number)") {
+                    Task {
+                        model.section = .pulls
+                        await model.select(pull: pr.number)
+                    }
+                }
+                .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                .help(pr.title)
+            } else if b.merged == true {
+                Text("Merged: its work is already in the default branch.").font(.system(size: 12)).foregroundStyle(N.muted)
+            } else {
+                Button("Open pull request…") { if let name { opening = name } }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                    .disabled(name == nil || !model.isServerOnline)
+                    .help(name == nil ? "Push this branch first; pull requests are made from branches on the server." : "Propose merging \(name ?? "") on \(model.serverLink?.name ?? "the server")")
+            }
         }
     }
 }

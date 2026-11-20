@@ -293,7 +293,11 @@ struct ServerSection: View {
                 if model.hostedRepos.isEmpty {
                     Text("No repositories yet.").font(.system(size: 12)).foregroundStyle(N.faint).padding(.horizontal, 10)
                 }
-                ForEach(model.hostedRepos) { r in
+                let shown = model.hostedRepos.filter(model.matchesFilter)
+                if shown.isEmpty, !model.hostedRepos.isEmpty {
+                    Text("None match.").font(.system(size: 12)).foregroundStyle(N.faint).padding(.horizontal, 10)
+                }
+                ForEach(shown) { r in
                     HostedRow(repo: r)
                 }
                 if model.source == .local, model.repo != nil, model.isLive, !alreadyHosted {
@@ -320,6 +324,7 @@ struct HostedRow: View {
     @Environment(AppModel.self) private var model
     var repo: Repo
     @State private var hovering = false
+    @State private var deleting = false
 
     var body: some View {
         let selected = model.source == .server && model.repoID == repo.id
@@ -343,7 +348,19 @@ struct HostedRow: View {
         .contextMenu {
             if let link = model.serverLink {
                 Button("Copy push URL") { model.copy(link.pushURL(for: repo.path)) }
+                Divider()
+                Button("Delete from \(link.name)…", role: .destructive) { deleting = true }
+                    .disabled(!model.isServerOnline)
             }
+        }
+        .confirmationDialog("Stop hosting \(repo.name) on \(model.serverLink?.name ?? "the server")?", isPresented: $deleting) {
+            Button("Delete \(repo.name)", role: .destructive) {
+                Task {
+                    do { try await model.deleteHosted(repo.id) } catch { model.notice = error.localizedDescription }
+                }
+            }
+        } message: {
+            Text("Working copies whose origin is this repo stop being able to fetch and push, and its GitHub mirror stops being updated. Nothing is erased: it moves to ~/.neutrino/deleted/ on \(model.serverLink?.name ?? "the server"), from where it can be moved back.")
         }
     }
 }

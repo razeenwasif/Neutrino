@@ -37,6 +37,7 @@ struct NeutrinoMacApp: App {
                 Toggle("Show in Menu Bar", isOn: $showMenuBarIcon)
             }
             CommandMenu("Repository") {
+                Button("Go to…") { model.paletteOpen.toggle() }.keyboardShortcut("k")
                 Button("Reload") { Task { await model.reload() } }.keyboardShortcut("r")
                 Divider()
                 Button("Code") { model.section = .code }.keyboardShortcut("0")

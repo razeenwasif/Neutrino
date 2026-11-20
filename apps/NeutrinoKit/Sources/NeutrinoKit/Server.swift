@@ -401,6 +401,11 @@ public final class ServerService: NeutrinoService {
         return r
     }
 
+    /// Stop hosting a repo; the server moves it to its deleted folder.
+    public func deleteHosted(repo: String) async throws {
+        guard case .removed = try await call(.deleteHosted(repo: repo)) else { throw ServiceError.unexpectedResponse }
+    }
+
     public func status(repo _: String) async throws -> WorkingStatus { throw Self.notHere }
     public func workDiff(repo _: String, path _: String, area _: Area) async throws -> FileDiff { throw Self.notHere }
     public func stage(repo _: String, paths _: [String]) async throws { throw Self.notHere }

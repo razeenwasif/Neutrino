@@ -60,6 +60,9 @@ struct CommitList: View {
         }
         .island()
         .onChange(of: model.scope) { Task { await model.reloadHistory() } }
+        .task(id: "\(model.source.rawValue):\(model.repoID ?? ""):\(model.isServerOnline)") {
+            await model.loadRunList()
+        }
         .task(id: model.query) {
             // Wait for typing to pause.
             try? await Task.sleep(for: .milliseconds(220))
@@ -120,15 +123,19 @@ struct CommitList: View {
 struct SearchField: View {
     @Binding var text: String
     var focused: FocusState<Bool>.Binding
+    var prompt = "Message, author or hash"
+    /// nil: as wide as there's room for.
+    var width: CGFloat? = 180
 
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(N.faint)
-            TextField("Message, author or hash", text: $text)
+            TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12.5))
                 .focused(focused)
-                .frame(width: 180)
+                .frame(width: width)
+                .frame(maxWidth: width == nil ? .infinity : nil)
                 .onKeyPress(.escape) {
                     text = ""
                     return .handled
@@ -176,6 +183,7 @@ struct CommitRow: View {
             if showAuthor {
                 Text(commit.author.name).font(.system(size: 12)).foregroundStyle(N.muted).lineLimit(1).frame(width: 120, alignment: .trailing)
             }
+            CheckMark(sha: commit.sha).frame(width: 14)
             Text(commit.shortSHA).font(N.mono(12)).foregroundStyle(N.muted).fixedSize()
             Text(Format.ago(commit.time)).font(.system(size: 12)).foregroundStyle(N.faint).lineLimit(1).frame(width: 78, alignment: .trailing)
                 .help(Format.full(commit.time))

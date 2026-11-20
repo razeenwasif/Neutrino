@@ -33,6 +33,16 @@ struct RootView: View {
         .ignoresSafeArea(.container, edges: .top)
         .background(N.ground.ignoresSafeArea())
         .foregroundStyle(N.body)
+        .overlay(alignment: .top) {
+            if model.paletteOpen {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { model.paletteOpen = false }
+                    CommandPalette().padding(.top, 96)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: model.paletteOpen)
         .task { model.start() }
     }
 }
@@ -180,6 +190,7 @@ struct ConnectionPill: View {
 
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
+    @FocusState private var filterFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -208,14 +219,34 @@ struct Sidebar: View {
                 model.section = .secrets
             }
 
+            @Bindable var model = model
+            SearchField(text: $model.repoFilter, focused: $filterFocused, prompt: "Filter repositories", width: nil)
+                .padding(.top, 14)
+                .help("Filter repositories (⌘⇧F)")
+                .background {
+                    Button("") { filterFocused = true }.keyboardShortcut("f", modifiers: [.command, .shift]).hidden()
+                }
+
             // The server's repos and this Mac's share one scroll area, so a long
             // list scrolls instead of pushing the window's header off the top.
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
+                    let recents = model.repoFilter.isEmpty ? model.recentEntries() : []
+                    if !recents.isEmpty {
+                        SectionLabel("Recent").padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 8)
+                        ForEach(recents, id: \.repo.id) { entry in
+                            if entry.source == .server { HostedRow(repo: entry.repo) } else { RepoRow(repo: entry.repo, compact: true) }
+                        }
+                    }
+
                     ServerSection()
 
                     SectionLabel("Repositories").padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 8)
-                    ForEach(model.repos) { repo in
+                    let local = model.repos.filter(model.matchesFilter)
+                    if local.isEmpty, !model.repos.isEmpty {
+                        Text("None match.").font(.system(size: 12)).foregroundStyle(N.faint).padding(.horizontal, 10)
+                    }
+                    ForEach(local) { repo in
                         RepoRow(repo: repo)
                     }
                     Button {
@@ -287,10 +318,36 @@ struct NavRow: View {
 struct RepoRow: View {
     @Environment(AppModel.self) private var model
     var repo: Repo
+    /// One line, like a hosted row (in Recent).
+    var compact = false
     @State private var hovering = false
 
     var body: some View {
-        let selected = model.repoID == repo.id
+        let selected = model.source == .local && model.repoID == repo.id
+        if compact {
+            Button {
+                Task { await model.select(repo: repo.id) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "laptopcomputer").font(.system(size: 11)).foregroundStyle(N.faint).frame(width: 18)
+                    Text(repo.name).font(.system(size: 12.5)).foregroundStyle(N.body).lineLimit(1)
+                    Spacer()
+                    Text(repo.head?.label ?? "").font(N.mono(11)).foregroundStyle(N.faint).lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(hovering ? Color.white.opacity(0.04) : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .help(repo.path)
+        } else {
+            full(selected: selected)
+        }
+    }
+
+    private func full(selected: Bool) -> some View {
         Button {
             Task { await model.select(repo: repo.id) }
         } label: {
