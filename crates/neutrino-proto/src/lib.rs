@@ -94,6 +94,10 @@ pub struct Branch {
     /// Both `None` without an upstream (or when the upstream ref is missing).
     pub ahead: Option<u32>,
     pub behind: Option<u32>,
+    /// Whether the tip is already in the default branch (`main`, else
+    /// `master`): `None` for the default branch itself, or when it's unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1062,10 @@ pub enum Request {
     },
 
     // --- Hosting (server) ---
+    /// Stop hosting a repository: its bare repo moves to `<state>/deleted/`,
+    /// from where moving it back and restarting the server restores it.
+    /// Refused while it has CI running. Answers `removed`.
+    DeleteHosted { repo: String },
     /// Create a hosted bare repository. Answers `repo`; its `path` is what to push to.
     CreateHosted {
         name: String,

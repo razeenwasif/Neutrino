@@ -68,6 +68,14 @@ enum Cmd {
     },
     /// Print change events as they happen, until Ctrl-C.
     Watch,
+    /// Server: stop hosting a repository. Its bare repo moves to
+    /// ~/.neutrino/deleted/ on the server, from where it can be moved back.
+    Unhost {
+        name: String,
+        /// Do it; without this, only say what would happen.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Server: create a hosted repository.
     Host {
         name: String,
@@ -461,6 +469,7 @@ fn server_only(c: &Cmd) -> bool {
     matches!(
         c,
         Cmd::Host { .. }
+            | Cmd::Unhost { .. }
             | Cmd::Import { .. }
             | Cmd::Mirror { .. }
             | Cmd::Pair
@@ -768,6 +777,21 @@ fn main() -> Result<()> {
             let repo = pick_repo(&mut c, cli.repo)?;
             done(out, c.call(Request::Discard { repo, paths: rel_paths(&paths)? })?)?;
             writeln!(out, "Discarded. Copies are listed in ~/.neutrino/discarded.log.")?;
+        }
+        Cmd::Unhost { name, yes } => {
+            if !yes {
+                writeln!(out, "This stops hosting {name}: its repository moves to ~/.neutrino/deleted/ on the server,")?;
+                writeln!(out, "its working copies' origin stops answering, and the GitHub mirror stops being updated.")?;
+                writeln!(out, "Nothing is erased. Run again with --yes to do it.")?;
+                return Ok(());
+            }
+            match c.call(Request::DeleteHosted { repo: name.clone() })? {
+                Response::Removed { .. } => {
+                    writeln!(out, "Stopped hosting {name}. It's in ~/.neutrino/deleted/ on the server;")?;
+                    writeln!(out, "move it back to ~/.neutrino/repos/{name}.git and restart neutrinod to host it again.")?;
+                }
+                r => return Err(unexpected(r)),
+            }
         }
         Cmd::Host { name, description } => match c.call(Request::CreateHosted { name, description })? {
             Response::Repo(r) => {

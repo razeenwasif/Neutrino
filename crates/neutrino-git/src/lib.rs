@@ -180,12 +180,45 @@ pub fn branches(repo: &gix::Repository) -> Result<Vec<Branch>> {
             let is_head = head_name.as_ref().is_some_and(|h| h.as_ref() == r.name());
 
             let (upstream, ahead, behind) = if kind == RefKind::Local { upstream_of(repo, r.name())? } else { (None, None, None) };
-            out.push(Branch { name: short, kind, sha: sha.to_string(), subject, time, is_head, upstream, ahead, behind });
+            out.push(Branch { name: short, kind, sha: sha.to_string(), subject, time, is_head, upstream, ahead, behind, merged: None });
         }
     }
+    mark_merged(repo, &mut out);
     // The checked-out branch first, then the most recently changed.
     out.sort_by(|a, b| (b.is_head, a.kind as u8, b.time).cmp(&(a.is_head, b.kind as u8, a.time)));
     Ok(out)
+}
+
+/// How far back `mark_merged` looks in the default branch's history.
+const MERGED_HORIZON: usize = 20_000;
+
+/// Set `merged` on each branch: whether its tip is in the default branch
+/// (local `main`, else `master`). One walk of that branch's history, so it
+/// stays cheap with many branches; tips older than the horizon stay unknown.
+fn mark_merged(repo: &gix::Repository, branches: &mut [Branch]) {
+    let Some(base) = ["main", "master"].into_iter().find_map(|n| branches.iter().find(|b| b.kind == RefKind::Local && b.name == n)) else {
+        return;
+    };
+    let (base_name, base_sha) = (base.name.clone(), base.sha.clone());
+    let Ok(tip) = ObjectId::from_hex(base_sha.as_bytes()) else { return };
+    let Ok(walk) = repo.rev_walk([tip]).all() else { return };
+    let mut seen = std::collections::HashSet::new();
+    let mut complete = true;
+    for (i, info) in walk.enumerate() {
+        if i >= MERGED_HORIZON {
+            complete = false;
+            break;
+        }
+        let Ok(info) = info else { return };
+        seen.insert(info.id.to_string());
+    }
+    let remote_twin = |name: &str| name.split_once('/').is_some_and(|(_, rest)| rest == base_name);
+    for b in branches.iter_mut() {
+        if (b.kind == RefKind::Local && b.name == base_name) || (b.kind == RefKind::Remote && remote_twin(&b.name)) {
+            continue;
+        }
+        b.merged = if seen.contains(&b.sha) { Some(true) } else if complete { Some(false) } else { None };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +280,75 @@ fn matches_query(entry: &LogEntry, body: &str, needle: &str) -> bool {
     entry.sha.starts_with(needle) || has(&entry.subject) || has(body) || has(&entry.author.name) || has(&entry.author.email)
 }
 
+/// One walked commit, in walk order, with its graph row and the graph's width so far.
+struct WalkedRow {
+    id: ObjectId,
+    parents: Vec<ObjectId>,
+    row: neutrino_proto::GraphRow,
+    widest: u16,
+}
+
+struct Walked {
+    rows: Vec<WalkedRow>,
+    /// The walk reached the first commit: there's nothing past `rows`.
+    complete: bool,
+}
+
+/// Walks kept between pages, newest use last. Keyed by the repository and its
+/// exact tips, so a new commit or a moved branch starts a fresh walk.
+type WalkKey = (std::path::PathBuf, Vec<ObjectId>);
+static WALKS: std::sync::Mutex<Vec<(WalkKey, std::sync::Arc<Walked>)>> = std::sync::Mutex::new(Vec::new());
+const KEPT_WALKS: usize = 8;
+
+/// The history from `tips` in log order, at least `need` commits of it (or all
+/// of it). The graph needs every commit from the top, so deep pages used to
+/// re-walk everything above them; this keeps the walk and grows it by doubling,
+/// which makes paging cost proportional to how far you've scrolled overall.
+fn walked(repo: &gix::Repository, tips: &[ObjectId], need: usize) -> Result<std::sync::Arc<Walked>> {
+    let key: WalkKey = (repo.git_dir().to_path_buf(), tips.to_vec());
+    let previous = {
+        let mut walks = WALKS.lock().unwrap();
+        let found = walks.iter().position(|(k, _)| *k == key).map(|i| walks.remove(i));
+        if let Some((k, w)) = found {
+            let enough = w.complete || w.rows.len() >= need;
+            walks.push((k, w.clone()));
+            if enough {
+                return Ok(w);
+            }
+            w.rows.len()
+        } else {
+            0
+        }
+    };
+    let target = need.max(previous * 2).max(256);
+    let walk = repo
+        .rev_walk(tips.iter().copied())
+        .sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()))
+        .all()
+        .ctx("walking history")?;
+    let mut lanes = graph::Lanes::new();
+    let mut rows = Vec::with_capacity(target.min(1 << 16));
+    let mut complete = true;
+    for info in walk {
+        if rows.len() == target {
+            complete = false;
+            break;
+        }
+        let info = info.ctx("walking history")?;
+        let parents: Vec<ObjectId> = info.parent_ids().map(|p| p.detach()).collect();
+        let row = lanes.row(&info.id, &parents);
+        rows.push(WalkedRow { id: info.id, parents, row, widest: lanes.widest });
+    }
+    let w = std::sync::Arc::new(Walked { rows, complete });
+    let mut walks = WALKS.lock().unwrap();
+    walks.retain(|(k, _)| *k != key);
+    walks.push((key, w.clone()));
+    if walks.len() > KEPT_WALKS {
+        walks.remove(0);
+    }
+    Ok(w)
+}
+
 pub fn log(repo: &gix::Repository, q: &LogQuery) -> Result<LogPage> {
     let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, MAX_LOG_LIMIT) as usize;
     let skip = q.skip as usize;
@@ -258,6 +360,29 @@ pub fn log(repo: &gix::Repository, q: &LogQuery) -> Result<LogPage> {
         return Ok(page);
     }
     let labels = ref_labels(repo)?;
+
+    // Without a search, pages come from the kept walk: only the page's own
+    // commits are read.
+    if needle.is_none() {
+        let w = walked(repo, &tips, skip + limit + 1)?;
+        let end = (skip + limit).min(w.rows.len());
+        for r in w.rows.get(skip..end).unwrap_or_default() {
+            let commit = repo.find_commit(r.id).ctx("reading commit")?;
+            let (subject, _) = split_message(commit.message_raw_sloppy());
+            page.commits.push(LogEntry {
+                sha: r.id.to_string(),
+                parents: r.parents.iter().map(|p| p.to_string()).collect(),
+                subject,
+                author: signature(commit.author().ctx("reading author")?),
+                time: commit.time().map(|t| t.seconds).unwrap_or(0),
+                refs: labels.get(&r.id).cloned().unwrap_or_default(),
+                graph: Some(r.row.clone()),
+            });
+        }
+        page.has_more = w.rows.len() > skip + limit || !w.complete;
+        page.lanes = w.rows.get(end.saturating_sub(1)).map(|r| r.widest).unwrap_or(1).max(1);
+        return Ok(page);
+    }
     let walk = repo
         .rev_walk(tips)
         .sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()))

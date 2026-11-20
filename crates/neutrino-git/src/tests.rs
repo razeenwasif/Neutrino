@@ -168,9 +168,17 @@ fn branches_with_upstream() {
     f.commit("two");
     f.commit("three");
     f.git(&["branch", "local-only"]);
+    f.git(&["checkout", "-q", "-b", "unmerged"]);
+    f.commit("only here");
+    f.git(&["checkout", "-q", "main"]);
 
     let repo = f.repo();
     let list = branches(&repo).unwrap();
+    let merged = |n: &str| list.iter().find(|b| b.name == n).unwrap().merged;
+    assert_eq!(merged("main"), None, "the default branch isn't merged into itself");
+    assert_eq!(merged("origin/main"), None, "nor is its remote copy");
+    assert_eq!(merged("local-only"), Some(true), "its tip is main's");
+    assert_eq!(merged("unmerged"), Some(false));
     let main = list.iter().find(|b| b.name == "main").unwrap();
     assert!(main.is_head);
     assert_eq!(list[0].name, "main", "the checked-out branch comes first");
@@ -851,4 +859,67 @@ mod browse {
         assert_eq!(o.languages[7].bytes, 93 + 92 + 91);
         assert_eq!((o.readme, o.license), (None, None));
     }
+}
+
+#[test]
+fn pages_match_one_long_page_and_see_new_commits() {
+    let f = Fixture::new();
+    for i in 0..12 {
+        f.commit(&format!("main {i}"));
+        if i % 4 == 1 {
+            // Side branches merged back, so the graph has lanes to keep.
+            f.git(&["checkout", "-q", "-b", &format!("side{i}")]);
+            f.commit(&format!("side {i} a"));
+            f.commit(&format!("side {i} b"));
+            f.git(&["checkout", "-q", "main"]);
+            f.commit(&format!("main {i} meanwhile"));
+            f.git(&["merge", "-q", "--no-ff", &format!("side{i}"), "-m", &format!("merge {i}")]);
+        }
+    }
+    let repo = f.repo();
+    let whole = log(&repo, &LogQuery { limit: Some(1000), ..q(true) }).unwrap();
+    assert!(!whole.has_more);
+
+    let mut paged = Vec::new();
+    let mut lanes = 0;
+    loop {
+        let page = log(&repo, &LogQuery { skip: paged.len() as u32, limit: Some(5), ..q(true) }).unwrap();
+        lanes = lanes.max(page.lanes);
+        paged.extend(page.commits);
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(paged.len(), whole.commits.len());
+    for (a, b) in paged.iter().zip(&whole.commits) {
+        assert_eq!((&a.sha, &a.graph, &a.refs), (&b.sha, &b.graph, &b.refs), "page rows match the long page");
+    }
+    assert_eq!(lanes, whole.lanes);
+
+    // A new commit moves the tip, so page one walks again and shows it.
+    f.commit("newest");
+    let first = log(&repo, &LogQuery { limit: Some(5), ..q(true) }).unwrap();
+    assert_eq!(first.commits[0].subject, "newest");
+}
+
+/// Timing, not a check: `NEUTRINO_BENCH_REPO=/path cargo test -p neutrino-git
+/// --release paging_timings -- --ignored --nocapture` prints how long pages
+/// take at increasing depths, cold and then with the kept walk.
+#[test]
+#[ignore]
+fn paging_timings() {
+    let Ok(path) = std::env::var("NEUTRINO_BENCH_REPO") else { return };
+    let repo = gix::open(&path).unwrap();
+    // Scrolling: every page in turn, as the History screen asks for them.
+    let (mut total, mut worst) = (0.0f64, 0.0f64);
+    for skip in (0u32..=20_000).step_by(100) {
+        let t = std::time::Instant::now();
+        let page = log(&repo, &LogQuery { skip, limit: Some(100), ..q(false) }).unwrap();
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        (total, worst) = (total + ms, worst.max(ms));
+        if [0, 1_000, 10_000, 20_000].contains(&skip) {
+            println!("page at skip {skip:>6}: {ms:>7.1} ms ({} commits)", page.commits.len());
+        }
+    }
+    println!("201 pages in turn: {total:.0} ms in all, slowest {worst:.1} ms");
 }

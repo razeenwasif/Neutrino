@@ -121,6 +121,7 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::Blob { .. }
             | Request::Overview { .. }
             | Request::CreateHosted { .. }
+            | Request::DeleteHosted { .. }
             | Request::ListPulls { .. }
             | Request::CreatePull { .. }
             | Request::Pull { .. }
@@ -409,6 +410,20 @@ impl Daemon {
             }
 
             // Hosting
+            Request::DeleteHosted { repo } => {
+                self.server_only()?;
+                let _guard = self.writes.lock().unwrap();
+                let path = self.registry.get(&repo)?.path().to_path_buf();
+                let busy = self.store()?.runs(&repo, None, 50)?.into_iter().filter(|r| !r.state.finished()).count();
+                if busy > 0 {
+                    bail!("{repo} has {busy} CI run{} going; cancel or wait for {} first", if busy == 1 { "" } else { "s" }, if busy == 1 { "it" } else { "them" });
+                }
+                let moved = hosting::retire(&self.hosted_dir(), &path)?;
+                self.watchers.unwatch(&repo);
+                self.registry.remove(&repo)?;
+                eprintln!("stopped hosting {repo}; it's in {}", moved.display());
+                Response::Removed { repo }
+            }
             Request::CreateHosted { name, description } => {
                 self.server_only()?;
                 let _guard = self.writes.lock().unwrap();

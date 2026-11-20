@@ -232,6 +232,32 @@ async fn a_restarted_server_adopts_its_repos() {
 }
 
 #[tokio::test]
+async fn deleting_a_hosted_repo_moves_it_aside() {
+    unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let state = root.join("server");
+    let sock = root.join("s.sock");
+    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
+    let (_s, stop) = start(state.clone(), sock.clone(), options).await;
+    let Response::Repo(gone) = call(&sock, Request::CreateHosted { name: "gone".into(), description: None }).await else { panic!() };
+    let Response::Repo(_) = call(&sock, Request::CreateHosted { name: "stays".into(), description: None }).await else { panic!() };
+
+    assert!(matches!(call(&sock, Request::DeleteHosted { repo: "nope".into() }).await, Response::Error { .. }));
+    assert!(matches!(call(&sock, Request::DeleteHosted { repo: "gone".into() }).await, Response::Removed { repo } if repo == "gone"));
+
+    let Response::Repos(left) = call(&sock, Request::ListRepos).await else { panic!() };
+    assert_eq!(left.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["stays"]);
+    assert!(!Path::new(&gone.path).exists(), "moved out of the hosting folder");
+    let kept: Vec<_> = std::fs::read_dir(state.join("deleted")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert!(kept.len() == 1 && kept[0].starts_with("gone-") && kept[0].ends_with(".git"), "{kept:?}");
+    assert!(state.join("deleted").join(&kept[0]).join("HEAD").exists(), "nothing erased");
+    // The name is free again.
+    assert!(matches!(call(&sock, Request::CreateHosted { name: "gone".into(), description: None }).await, Response::Repo(_)));
+    stop.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn the_first_pushed_branch_becomes_the_default() {
     unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
     let dir = tempfile::tempdir().unwrap();

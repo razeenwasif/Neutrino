@@ -35,6 +35,24 @@ pub fn scan(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Move a hosted repo out of the hosting folder into `deleted/` beside it,
+/// stamped with the time, and say where it went. Nothing is erased: moving it
+/// back and restarting the server hosts it again.
+pub fn retire(dir: &Path, path: &Path) -> Result<PathBuf> {
+    let dir = dir.canonicalize().with_context(|| format!("reading {}", dir.display()))?;
+    let path = path.canonicalize().with_context(|| format!("reading {}", path.display()))?;
+    if path.parent() != Some(dir.as_path()) {
+        bail!("{} isn't a hosted repository", path.display());
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).context("a repository's folder has no name")?;
+    let deleted = dir.parent().context("the hosting folder has no parent")?.join("deleted");
+    std::fs::create_dir_all(&deleted).with_context(|| format!("creating {}", deleted.display()))?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let dest = deleted.join(format!("{stem}-{stamp}.git"));
+    std::fs::rename(&path, &dest).with_context(|| format!("moving {} to {}", path.display(), dest.display()))?;
+    Ok(dest)
+}
+
 /// `git init --bare` a new repository whose first branch is `main`.
 pub fn create(dir: &Path, name: &str, description: Option<&str>) -> Result<PathBuf> {
     check_name(name)?;
