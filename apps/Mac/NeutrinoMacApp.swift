@@ -24,6 +24,8 @@ struct NeutrinoMacApp: App {
                 .tint(N.accent)
         }
         .windowStyle(.hiddenTitleBar)
+        // The header shares the title bar's row; empty space still drags the window.
+        .windowBackgroundDragBehavior(.enabled)
         .defaultSize(width: 1440, height: 900)
         .commands {
             CommandGroup(replacing: .newItem) {

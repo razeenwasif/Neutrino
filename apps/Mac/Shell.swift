@@ -30,6 +30,7 @@ struct RootView: View {
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 8)
+        .ignoresSafeArea(.container, edges: .top)
         .background(N.ground.ignoresSafeArea())
         .foregroundStyle(N.body)
         .task { model.start() }
@@ -148,7 +149,8 @@ struct HeaderBar: View {
             .accessibilityLabel("Reload")
             ConnectionPill()
         }
-        .frame(height: 52)
+        // Sits in the title bar, centred on the traffic lights.
+        .frame(height: 30)
         .contentShape(Rectangle())
         .gesture(WindowDragGesture())
     }
