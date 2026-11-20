@@ -475,8 +475,6 @@ checked.
   `DerivedData` and a few more) by name rather than by `.gitignore`.
 - The phone talks to the server directly, so away from home it needs a way
   back to atlas (Tailscale or similar); there's no relay.
-- Push delivery hasn't been tried against Apple's servers yet: it needs your
-  APNs key. The sender is tested against the signed JWT and payload shape.
 - Line staging uses the working tree's bytes as they are, without git's
   clean filters (LFS, CRLF conversion); files that rely on them should be
   staged whole.
