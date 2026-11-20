@@ -22,8 +22,14 @@ jobs:
     runs-on: host
     timeout-minutes: 60
     steps:
-      - run: npm ci
-      - run: npm run shell:build
+      # Node 22 from Homebrew: atlas's default Node 26 brings an npm that skips
+      # install scripts (esbuild's included) until they're approved.
+      - run: |
+          export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+          npm ci
+      - run: |
+          export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+          npm run shell:build
       - run: cargo test -p flux-core --lib --locked
       - run: cargo check -p flux-core --bin flux --features custom-protocol --locked
       # Shields on macOS: WebKit must accept the content-blocker JSON, or every
