@@ -696,7 +696,9 @@ private struct ServerActivity: View {
         }
         .task(id: "\(model.source.rawValue):\(model.repoID ?? ""):\(model.isServerOnline)") {
             await model.refreshGlancePulls()
-            if model.runList.isEmpty { await model.loadRuns() }
+            // Always for the repo now selected: skipping when the list wasn't
+            // empty kept the previous repo's latest run on this one's page.
+            await model.loadRuns()
         }
     }
 

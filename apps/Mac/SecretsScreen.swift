@@ -121,8 +121,10 @@ struct SecretList: View {
                         ForEach(model.secretList) { s in
                             HStack(spacing: 8) {
                                 Image(systemName: "key.fill").font(.system(size: 10)).foregroundStyle(N.accent.opacity(model.isOwn(s.scope) ? 1 : 0.4))
+                                // One line, truncated in the middle: long names used to wrap mid-word.
                                 Text(s.name).font(N.mono(12.5, weight: .medium)).foregroundStyle(model.isOwn(s.scope) ? N.text : N.muted)
-                                if !model.isOwn(s.scope) { Inherited(scope: s.scope) }
+                                    .lineLimit(1).truncationMode(.middle).help(s.name)
+                                if !model.isOwn(s.scope) { Inherited(scope: s.scope).fixedSize() }
                                 Spacer()
                                 Text(Format.ago(s.updatedAt)).font(.system(size: 11)).foregroundStyle(N.faint)
                                 if model.isOwn(s.scope) {
@@ -227,9 +229,11 @@ struct VariableList: View {
                     VStack(spacing: 2) {
                         ForEach(model.variableList) { v in
                             HStack(spacing: 8) {
+                                // The name keeps one line and wins the space; the value truncates.
                                 Text(v.name).font(N.mono(12.5, weight: .medium)).foregroundStyle(model.isOwn(v.scope) ? N.text : N.muted)
-                                if !model.isOwn(v.scope) { Inherited(scope: v.scope) }
-                                Text(v.value).font(N.mono(12)).foregroundStyle(N.body).lineLimit(1).truncationMode(.tail).textSelection(.enabled)
+                                    .lineLimit(1).truncationMode(.middle).layoutPriority(1).help(v.name)
+                                if !model.isOwn(v.scope) { Inherited(scope: v.scope).fixedSize() }
+                                Text(v.value).font(N.mono(12)).foregroundStyle(N.body).lineLimit(1).truncationMode(.tail).textSelection(.enabled).help(v.value)
                                 Spacer()
                                 if model.isOwn(v.scope) {
                                     Menu {
@@ -270,13 +274,19 @@ struct VariableSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(editing ? "Edit \(name)" : "New variable").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
             Text("For \(model.vaultScope.label).").font(.system(size: 12)).foregroundStyle(N.muted)
-            TextField("REGION", text: $name)
-                .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .disabled(editing)
-            TextField("Value", text: $value)
-                .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Name").font(.system(size: 11)).foregroundStyle(N.muted)
+                TextField("REGION", text: $name)
+                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
+                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .disabled(editing)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Value").font(.system(size: 11)).foregroundStyle(N.muted)
+                TextField("eu-west", text: $value)
+                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
+                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
             if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.danger) }
             HStack {
                 Spacer()
@@ -360,10 +370,14 @@ struct EnvironmentSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(editing ? "Edit \(env.name)" : "New environment").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
-            TextField("production", text: $env.name)
-                .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .disabled(editing)
+            Text("For \(model.repo?.name ?? "this repository").").font(.system(size: 12)).foregroundStyle(N.muted)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Name").font(.system(size: 11)).foregroundStyle(N.muted)
+                TextField("production", text: $env.name)
+                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
+                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .disabled(editing)
+            }
             Toggle("Jobs wait for approval", isOn: $env.requireApproval).toggleStyle(.checkbox).font(.system(size: 12.5))
             VStack(alignment: .leading, spacing: 5) {
                 Text("Branches that may deploy (comma-separated, * allowed; empty for any)").font(.system(size: 11)).foregroundStyle(N.muted)

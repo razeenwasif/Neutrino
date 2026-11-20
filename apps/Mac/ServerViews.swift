@@ -176,11 +176,14 @@ struct PublishSheet: View {
     @State private var description = ""
     @State private var working = false
     @State private var error: String?
+    @State private var remote = "origin"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Publish to \(model.serverLink?.name ?? "atlas")").font(.system(size: 16, weight: .semibold)).foregroundStyle(N.text)
-            Text("Creates a repository on the server, adds it to this one as the remote atlas, and pushes \(branch) to it.")
+            Text("Publish to \(model.serverLink?.name ?? "the server")").font(.system(size: 16, weight: .semibold)).foregroundStyle(N.text)
+            Text(remote == "origin"
+                 ? "Creates a repository on the server, makes it this one's origin, and pushes \(branch) to it."
+                 : "Creates a repository on the server, adds it to this one as the remote \(remote) (origin stays as it is), and pushes \(branch) to it.")
                 .font(.system(size: 12.5)).foregroundStyle(N.muted).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 5) {
                 Text("Name on the server").font(.system(size: 11)).foregroundStyle(N.muted)
@@ -195,7 +198,7 @@ struct PublishSheet: View {
                     .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
             if let link = model.serverLink {
-                Text("Pushes over \(link.sshHost.isEmpty ? "the local filesystem" : "SSH to \(link.sshHost)"), with your own keys.")
+                Text(link.sshHost.isEmpty ? "Pushes over the local filesystem." : "Pushes over SSH through the host \(link.sshHost) in your SSH config, with your own keys.")
                     .font(.system(size: 11.5)).foregroundStyle(N.faint)
             }
             if let error {
@@ -214,6 +217,7 @@ struct PublishSheet: View {
         .frame(width: 440)
         .background(N.island)
         .onAppear { name = model.repo?.name.replacingOccurrences(of: " ", with: "-").lowercased() ?? "" }
+        .task { remote = await model.publishRemoteName() }
     }
 
     private var branch: String {
@@ -242,6 +246,8 @@ struct ServerSection: View {
     @Environment(AppModel.self) private var model
     @State private var pairing = false
     @State private var publishing = false
+    /// The selected working copy already pushes to the server: nothing to publish.
+    @State private var alreadyHosted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -250,7 +256,7 @@ struct ServerSection: View {
                 Spacer()
                 if model.serverLink != nil {
                     Menu {
-                        if model.source == .local, model.repo != nil {
+                        if model.source == .local, model.repo != nil, !alreadyHosted {
                             Button("Publish \(model.repo?.name ?? "this repo")…") { publishing = true }.disabled(!model.isServerOnline || !model.isLive)
                         }
                         Button("Reconnect") { Task { await model.connectServer() } }
@@ -290,7 +296,7 @@ struct ServerSection: View {
                 ForEach(model.hostedRepos) { r in
                     HostedRow(repo: r)
                 }
-                if model.source == .local, model.repo != nil, model.isLive {
+                if model.source == .local, model.repo != nil, model.isLive, !alreadyHosted {
                     Button {
                         publishing = true
                     } label: {
@@ -304,6 +310,9 @@ struct ServerSection: View {
         }
         .sheet(isPresented: $pairing) { PairSheet() }
         .sheet(isPresented: $publishing) { PublishSheet() }
+        .task(id: "\(model.source)/\(model.repoID ?? "")/\(model.hostedRepos.count)/\(publishing)") {
+            alreadyHosted = await model.selectedIsHosted()
+        }
     }
 }
 

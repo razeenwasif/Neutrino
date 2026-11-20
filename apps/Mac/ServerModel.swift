@@ -101,21 +101,45 @@ extension AppModel {
         return remotes.first { $0.name == "atlas" } ?? remotes.first { r in hostedRepos.contains { link.pushURL(for: $0.path) == r.url } }
     }
 
-    /// Create a hosted repo for the selected working copy, add it as the
-    /// `atlas` remote and push the current branch there. Returns git's output.
+    /// Whether the selected working copy already pushes to a repo on the
+    /// server, so there's nothing to publish.
+    func selectedIsHosted() async -> Bool {
+        guard source == .local, let repoID, serverLink != nil,
+              let remotes = try? await service.remotes(repo: repoID) else { return false }
+        return serverRemote(in: remotes) != nil
+    }
+
+    /// The remote Publish adds: origin, as `ntr` expects, unless the working
+    /// copy already has an origin elsewhere; then atlas, and origin is left alone.
+    static func publishRemoteName(for remotes: [RemoteInfo]) -> String {
+        remotes.contains { $0.name == "origin" } ? "atlas" : "origin"
+    }
+
+    func publishRemoteName() async -> String {
+        guard let repoID, let remotes = try? await service.remotes(repo: repoID) else { return "origin" }
+        return Self.publishRemoteName(for: remotes)
+    }
+
+    /// Create a hosted repo for the selected working copy, add it as a remote
+    /// (see publishRemoteName) and push the current branch there. Returns
+    /// git's output.
     func publish(name: String, description: String) async throws -> String {
         guard source == .local, let repoID, let server = serverService, let link = serverLink else {
             throw ServiceError.daemon("Pick one of this Mac's repositories first.")
         }
         let existing = try await service.remotes(repo: repoID)
-        if existing.contains(where: { $0.name == "atlas" }) {
-            throw ServiceError.daemon("This repository already has a remote called atlas.")
+        if serverRemote(in: existing) != nil {
+            throw ServiceError.daemon("This repository is already on \(link.name).")
+        }
+        let remote = Self.publishRemoteName(for: existing)
+        if existing.contains(where: { $0.name == remote }) {
+            throw ServiceError.daemon("This repository already has a remote called \(remote).")
         }
         syncing = "Publishing"
         defer { syncing = nil }
         let hosted = try await server.createHosted(name: name, description: description.isEmpty ? nil : description)
-        try await service.addRemote(repo: repoID, name: "atlas", url: link.pushURL(for: hosted.path))
-        let output = try await service.push(repo: repoID, remote: "atlas", branch: nil, setUpstream: true)
+        try await service.addRemote(repo: repoID, name: remote, url: link.pushURL(for: hosted.path))
+        let output = try await service.push(repo: repoID, remote: remote, branch: nil, setUpstream: true)
         hostedRepos = (try? await server.repos()) ?? hostedRepos
         await loadStatus()
         await loadBranches()
