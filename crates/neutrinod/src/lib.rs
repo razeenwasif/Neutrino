@@ -422,6 +422,8 @@ impl Daemon {
                 self.watchers.unwatch(&repo);
                 self.registry.remove(&repo)?;
                 eprintln!("stopped hosting {repo}; it's in {}", moved.display());
+                // So clients drop it from their lists.
+                self.watchers.notify(RepoEvent { repo: repo.clone(), kind: "removed".into() });
                 Response::Removed { repo }
             }
             Request::CreateHosted { name, description } => {
@@ -431,6 +433,8 @@ impl Daemon {
                 let repo = self.registry.add(&path.display().to_string())?;
                 self.refresh_hooks(&path, &repo.id);
                 self.watch(&repo.id);
+                // So clients add it to their lists.
+                self.watchers.notify(RepoEvent { repo: repo.id.clone(), kind: "created".into() });
                 Response::Repo(repo)
             }
             Request::ImportHosted { name, url, description, mirror } => {
