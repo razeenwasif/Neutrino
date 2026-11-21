@@ -285,6 +285,7 @@ final class AppModel {
         case .live:
             if (try? await service.ping()) == nil { await connect() }
             await checkServer()
+            _ = await followVanishedRepo()
         case .demo, .connecting:
             if (try? await SocketService().ping()) != nil { await connect() }
             await checkServer()
@@ -305,9 +306,17 @@ final class AppModel {
         if source == .server, repoID == nil, let saved, hostedRepos.contains(where: { $0.id == saved }) { repoID = saved }
         if source == .server, hostedRepos.isEmpty { source = .local }
         if repo == nil || repo?.error != nil {
-            source = .local
-            repoID = repos.first(where: { $0.id == saved && $0.error == nil })?.id ?? repos.first(where: { $0.error == nil })?.id
             rev = nil
+            if let saved, !repos.contains(where: { $0.id == saved && $0.error == nil }),
+               let hosted = hostedRepos.first(where: { $0.id.lowercased() == saved.lowercased() || $0.name.lowercased() == saved.lowercased() }) {
+                // The working copy picked last time is gone from this Mac; its copy on the server is still there.
+                source = .server
+                repoID = hosted.id
+                if section == .changes { section = .code }
+            } else {
+                source = .local
+                repoID = repos.first(where: { $0.id == saved && $0.error == nil })?.id ?? repos.first(where: { $0.error == nil })?.id
+            }
         }
         // No working copy here (a Mac that only reads the server): show a hosted repo
         // rather than an empty window.
@@ -318,6 +327,24 @@ final class AppModel {
         }
         noteRecent()
         await reload()
+    }
+
+    /// A working copy forgotten while the app runs (`ntr repo rm`, or its folder
+    /// deleted and removed) stops being shown: its copy on the server takes its
+    /// place when there is one by the same name, else the usual first choice.
+    /// Returns whether the selection moved.
+    func followVanishedRepo() async -> Bool {
+        guard source == .local, isLive, let id = repoID, let list = try? await service.repos(),
+              !list.contains(where: { $0.id == id }) else { return false }
+        let name = repo?.name.lowercased()
+        repos = list
+        if let name, let hosted = hostedRepos.first(where: { $0.name.lowercased() == name }) {
+            await selectHosted(hosted.id)
+        } else {
+            repoID = nil
+            await loadRepos()
+        }
+        return true
     }
 
     func select(repo id: String) async {
@@ -363,6 +390,7 @@ final class AppModel {
 
     /// Reload what's on screen, keeping the selection where it still exists.
     func reload() async {
+        if await followVanishedRepo() { return }
         async let h: Void = reloadHistory()
         async let b: Void = loadBranches()
         async let s: Void = loadStatus()
