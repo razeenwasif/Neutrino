@@ -5,3 +5,13 @@ apps/DerivedData
 apps/build
 apps/**/.build
 apps/**/.swiftpm
+**/xcuserdata/
+*.p8
+*.pem
+*.key
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+.neutrino/
