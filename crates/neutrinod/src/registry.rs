@@ -102,6 +102,12 @@ impl Registry {
         Ok(())
     }
 
+    /// Drop a cached repository handle so gitoxide releases mmap'd packfiles
+    /// after a repack (allowing the OS to reclaim unlinked disk blocks).
+    pub fn evict(&self, id: &str) {
+        self.open.lock().unwrap().remove(id);
+    }
+
     /// The open repository for `id`, opening it on first use and again
     /// whenever its config changed (a new remote, upstream or setting).
     pub fn get(&self, id: &str) -> Result<ThreadSafeRepository> {

@@ -420,24 +420,8 @@ impl Daemon {
             bail!("job {job} isn't in {repo_id}");
         }
         let (_, log) = self.job_paths(j.run, &j.key);
-        let (text, next) = match std::fs::File::open(&log) {
-            Ok(mut f) => {
-                use std::io::{Read, Seek, SeekFrom};
-                let len = f.metadata()?.len();
-                let start = offset.min(len);
-                f.seek(SeekFrom::Start(start))?;
-                let mut buf = Vec::new();
-                f.take(MAX_LOG_READ).read_to_end(&mut buf)?;
-                // Don't split a UTF-8 character at the end of a read.
-                let end = match std::str::from_utf8(&buf) {
-                    Err(e) if e.error_len().is_none() && e.valid_up_to() > 0 => e.valid_up_to(),
-                    _ => buf.len(),
-                };
-                (String::from_utf8_lossy(&buf[..end]).into_owned(), start + end as u64)
-            }
-            Err(_) => (String::new(), offset),
-        };
-        let done = j.state.finished() && next >= std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+        let (text, next, at_eof) = workspace::read_log_chunk(&log, offset, MAX_LOG_READ)?;
+        let done = j.state.finished() && at_eof;
         Ok(LogChunk { job, offset, text, next, done })
     }
 
@@ -521,6 +505,7 @@ impl Daemon {
                                 Ok(p) => eprintln!("database snapshot: {}", p.display()),
                                 Err(e) => eprintln!("database snapshot failed: {e:#}"),
                             }
+                            t.maintain_repos();
                         }
                     })
                     .await;
@@ -599,8 +584,8 @@ impl Daemon {
                 }
                 let Ok(jobs) = std::fs::read_dir(run.path()) else { continue };
                 for job in jobs.flatten() {
-                    if job.path().join("workspace").exists() {
-                        let _ = std::fs::remove_dir_all(job.path());
+                    if job.file_type().is_ok_and(|t| t.is_dir()) {
+                        let _ = workspace::remove_tree(&job.path());
                     }
                 }
             }
@@ -810,10 +795,12 @@ impl Daemon {
             _ => ci.options.runner.clone(),
         };
         let (workspace, log_path) = self.job_paths(run.id, &q.key);
-        if let Some(dir) = workspace.parent() {
-            let _ = tokio::fs::remove_dir_all(dir).await;
-            tokio::fs::create_dir_all(dir).await?;
-        }
+        let scratch = workspace.parent().map(Path::to_path_buf).unwrap_or_else(|| workspace.clone());
+        let rm_scratch = |p: PathBuf| async move {
+            let _ = tokio::task::spawn_blocking(move || workspace::remove_tree(&p)).await;
+        };
+        rm_scratch(scratch.clone()).await;
+        tokio::fs::create_dir_all(&scratch).await?;
         let mut log = Log::open(&log_path).await?;
         if q.attempt > 1 {
             log.note(&format!("attempt {}", q.attempt)).await?;
@@ -827,7 +814,7 @@ impl Daemon {
         if let Err(e) = checkout {
             log.note(&format!("checkout failed: {e}")).await?;
             store.finish_job(q.id, RunState::Failure, Some("checkout failed"))?;
-            let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
+            rm_scratch(scratch).await;
             return Ok(());
         }
 
@@ -839,7 +826,7 @@ impl Daemon {
             Err(e) => {
                 log.note(&format!("can't open this job's secrets: {e:#}")).await?;
                 store.finish_job(q.id, RunState::Failure, Some("secrets unavailable"))?;
-                let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
+                rm_scratch(scratch).await;
                 return Ok(());
             }
         };
@@ -930,7 +917,7 @@ impl Daemon {
                         runner.remove(id).await;
                     }
                     store.finish_job(q.id, RunState::Failure, Some(&format!("service {} didn't start", svc.name)))?;
-                    let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
+                    rm_scratch(scratch).await;
                     return Ok(());
                 }
             }
@@ -964,7 +951,7 @@ impl Daemon {
                     runner.stop(id).await;
                     runner.remove(id).await;
                 }
-                let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
+                rm_scratch(scratch).await;
                 return Ok(());
             }
         };
@@ -1168,8 +1155,11 @@ impl Daemon {
             runner.stop(id).await;
             runner.remove(id).await;
         }
-        let _ = tokio::fs::remove_dir_all(workspace.parent().unwrap_or(&workspace)).await;
+        rm_scratch(scratch).await;
         log.note(&format!("job {}", state.name())).await?;
+        drop(log);
+        let lp = log_path.clone();
+        let _ = tokio::task::spawn_blocking(move || workspace::compress_log(&lp)).await;
         store.finish_job(q.id, state, job_error.as_deref())?;
         Ok(())
     }

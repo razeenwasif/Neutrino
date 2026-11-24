@@ -54,16 +54,17 @@ impl Daemon {
     }
 
     /// Drop logs and artifacts of runs finished longer ago than the retention
-    /// period, and the least recently used caches over the size cap.
+    /// period, evict least recently used caches over the size cap, compress
+    /// finished job logs, and checkpoint/optimize SQLite.
     pub(crate) fn prune(&self) -> Result<()> {
         let store = self.store()?;
         let ci = self.ci.as_ref().expect("server");
         let before = now() - i64::from(ci.options.retention_days) * 86_400;
         for run in store.finished_before(before)? {
-            let _ = std::fs::remove_dir_all(self.runs_dir().join(run.to_string()));
+            let _ = super::workspace::remove_tree(&self.runs_dir().join(run.to_string()));
             let artifacts = self.state_dir.join("artifacts").join(run.to_string());
             if artifacts.exists() {
-                let _ = std::fs::remove_dir_all(&artifacts);
+                let _ = super::workspace::remove_tree(&artifacts);
                 store.forget_artifacts(run)?;
             }
         }
@@ -74,11 +75,57 @@ impl Daemon {
             if total <= cap {
                 break;
             }
-            let _ = std::fs::remove_dir_all(super::workspace::cache_dir(&self.state_dir, &repo, &key));
+            let _ = super::workspace::remove_tree(&super::workspace::cache_dir(&self.state_dir, &repo, &key));
             store.drop_cache(&repo, &key)?;
             total = total.saturating_sub(size);
         }
+        self.compress_finished_logs();
+        let _ = store.optimize();
         Ok(())
+    }
+
+    /// Compress any leftover plain `.log` files belonging to finished runs.
+    pub(crate) fn compress_finished_logs(&self) {
+        let Ok(store) = self.store() else { return };
+        let Ok(runs) = std::fs::read_dir(self.runs_dir()) else { return };
+        for run_dir in runs.flatten() {
+            let Ok(id) = run_dir.file_name().to_string_lossy().parse::<i64>() else { continue };
+            let finished = store.run(id).map(|r| r.state.finished()).unwrap_or(false);
+            if !finished {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(run_dir.path()) else { continue };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().is_some_and(|e| e == "log") {
+                    let _ = super::workspace::compress_log(&p);
+                }
+            }
+        }
+    }
+
+    /// Nightly repository maintenance: pack refs, repack with high compression
+    /// (deep delta pass on first run), prune stale unreachable objects, rebuild
+    /// commit-graphs, and evict cached gitoxide handles so unlinked pack space
+    /// is reclaimed immediately.
+    pub(crate) fn maintain_repos(&self) {
+        let mut compacted = 0usize;
+        let mut saved: u64 = 0;
+        for r in self.registry.list().into_iter().filter(|r| r.bare && r.error.is_none()) {
+            let dir = PathBuf::from(&r.path);
+            let Some(aggressive) = self.maintainer.nightly_plan(&dir) else { continue };
+            match self.maintainer.compact(&r.id, &dir, aggressive, false) {
+                Ok(rep) => {
+                    self.registry.evict(&r.id);
+                    compacted += 1;
+                    saved += rep.before_bytes.saturating_sub(rep.after_bytes);
+                }
+                Err(e) => eprintln!("repo maintenance for {}: {e:#}", r.id),
+            }
+        }
+        if compacted > 0 {
+            eprintln!("repo maintenance: compacted {compacted} repo{} (saved {:.1} MiB)", if compacted == 1 { "" } else { "s" }, saved as f64 / 1_048_576.0);
+        }
     }
 
     pub(crate) fn backup_dir(&self) -> PathBuf {

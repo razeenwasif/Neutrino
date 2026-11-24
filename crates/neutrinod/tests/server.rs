@@ -387,6 +387,20 @@ async fn import_then_every_push_reaches_the_mirror() {
         Response::Backups(b) => assert!(b.files.len() == 1 && b.files[0].name.starts_with("neutrino-") && b.source.is_none(), "{b:?}"),
         other => panic!("{other:?}"),
     }
+
+    // Compacting the hosted repo packs everything and evicts stale handles cleanly.
+    match call(&sock, Request::Compact { repo: None, aggressive: true, prune_now: true }).await {
+        Response::Compacted(reports) => {
+            assert_eq!(reports.len(), 1);
+            assert_eq!((reports[0].repo.as_str(), reports[0].loose_after, reports[0].packs_after), ("app", 0, 1));
+        }
+        other => panic!("{other:?}"),
+    }
+    // Reading history after compaction still works cleanly.
+    match call(&sock, Request::Log(LogQuery { repo: "app".into(), ..Default::default() })).await {
+        Response::Log(p) => assert!(!p.commits.is_empty()),
+        other => panic!("{other:?}"),
+    }
     stop.send(()).unwrap();
 }
 

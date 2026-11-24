@@ -899,6 +899,18 @@ pub struct BackupList {
     pub last_error: Option<String>,
 }
 
+/// Before/after sizes and object counts from compacting one repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactReport {
+    pub repo: String,
+    pub before_bytes: u64,
+    pub after_bytes: u64,
+    pub loose_before: u64,
+    pub loose_after: u64,
+    pub packs_before: u64,
+    pub packs_after: u64,
+}
+
 /// What the scheduler is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CiInfo {
@@ -1093,6 +1105,17 @@ pub enum Request {
     },
     /// Copy a hosted repository to its mirror now, and wait. Answers `mirrors`. Local only.
     MirrorNow { repo: String },
+    /// Pack refs, repack objects, prune unreachable objects and rebuild
+    /// commit-graphs for one hosted repository (or all of them when `repo` is
+    /// `None`). Answers `compacted`. Local only.
+    Compact {
+        #[serde(default)]
+        repo: Option<String>,
+        #[serde(default)]
+        aggressive: bool,
+        #[serde(default)]
+        prune_now: bool,
+    },
     /// From the pre-receive hook: may these updates land? Local only.
     HookPreReceive {
         repo: String,
@@ -1314,6 +1337,7 @@ pub enum Response {
     Artifacts(Vec<Artifact>),
     ArtifactChunk(ArtifactChunk),
     Mirrors(Vec<MirrorStatus>),
+    Compacted(Vec<CompactReport>),
     Backups(BackupList),
     Inbox(Box<Inbox>),
     Notification(NotificationText),
@@ -1472,6 +1496,18 @@ mod tests {
         let (_, off) = decode_request(r#"{"id":4,"method":"set_mirror","params":{"repo":"flux"}}"#);
         assert_eq!(off.unwrap(), Request::SetMirror { repo: "flux".into(), url: None });
         assert_eq!(wire(&encode_request(5, &Request::ListBackups)), json!({"id": 5, "method": "list_backups"}));
+        let (_, compact) = decode_request(r#"{"id":6,"method":"compact","params":{"aggressive":true}}"#);
+        assert_eq!(compact.unwrap(), Request::Compact { repo: None, aggressive: true, prune_now: false });
+        let report = Response::Compacted(vec![CompactReport {
+            repo: "app".into(),
+            before_bytes: 2000,
+            after_bytes: 1000,
+            loose_before: 10,
+            loose_after: 0,
+            packs_before: 2,
+            packs_after: 1,
+        }]);
+        assert_eq!(decode_response(&encode_response(6, &report)).unwrap().1, report);
     }
 
     #[test]

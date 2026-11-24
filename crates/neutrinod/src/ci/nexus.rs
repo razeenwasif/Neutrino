@@ -153,7 +153,10 @@ impl Daemon {
         let nexus = ci.options.nexus.clone().expect("checked when scheduled");
         let (workspace, log_path) = self.job_paths(run.id, &q.key);
         let scratch = workspace.parent().map(Path::to_path_buf).unwrap_or_else(|| workspace.clone());
-        let _ = tokio::fs::remove_dir_all(&scratch).await;
+        let rm_scratch = |p: PathBuf| async move {
+            let _ = tokio::task::spawn_blocking(move || super::workspace::remove_tree(&p)).await;
+        };
+        rm_scratch(scratch.clone()).await;
         tokio::fs::create_dir_all(&scratch).await?;
         let mut log = Log::open(&log_path).await?;
         let fail = |why: &str| store.finish_job(q.id, RunState::Failure, Some(why));
@@ -164,6 +167,7 @@ impl Daemon {
         if mentions_secrets {
             log.note("this job uses secrets, and Nexus jobs can't have any: Nexus mirrors jobs and their logs to Firestore. Use variables for values that aren't secret.").await?;
             fail("secrets aren't sent to Nexus")?;
+            rm_scratch(scratch).await;
             return Ok(());
         }
 
@@ -173,7 +177,7 @@ impl Daemon {
         if let Err(e) = tokio::task::spawn_blocking(move || neutrino_git::forge::checkout_into(&neutrino_git::local(&repo_handle), &sha, &ws)).await? {
             log.note(&format!("checkout failed: {e}")).await?;
             fail("checkout failed")?;
-            let _ = tokio::fs::remove_dir_all(&scratch).await;
+            rm_scratch(scratch).await;
             return Ok(());
         }
 
@@ -241,7 +245,7 @@ impl Daemon {
         if let Err(e) = nexus.upload(&digest, body).await {
             log.note(&format!("couldn't upload the snapshot: {e:#}")).await?;
             fail("Nexus is unreachable")?;
-            let _ = tokio::fs::remove_dir_all(&scratch).await;
+            rm_scratch(scratch).await;
             return Ok(());
         }
         let spec = json!({
@@ -264,11 +268,11 @@ impl Daemon {
             Err(e) => {
                 log.note(&format!("Nexus refused the job: {e:#}")).await?;
                 fail("Nexus refused the job")?;
-                let _ = tokio::fs::remove_dir_all(&scratch).await;
+                rm_scratch(scratch).await;
                 return Ok(());
             }
         };
-        let _ = tokio::fs::remove_dir_all(&scratch).await;
+        rm_scratch(scratch).await;
         let id = submitted[0]["id"].as_str().context("Nexus didn't say which job it made")?.to_string();
         store.set_container(q.id, &format!("nexus:{id}"))?;
         log.note(&format!("Nexus job {id}")).await?;
@@ -404,6 +408,9 @@ impl Daemon {
             }
         }
         log.note(&format!("job {}", state.name())).await?;
+        drop(log);
+        let lp = log_path.clone();
+        let _ = tokio::task::spawn_blocking(move || super::workspace::compress_log(&lp)).await;
         let error = match (state, stop_reason) {
             (RunState::Failure, Some(why)) => Some(why.to_string()),
             (RunState::Failure, None) if status != "finished" => Some(format!("Nexus job {status}{}", if reason.is_empty() { String::new() } else { format!(": {reason}") })),

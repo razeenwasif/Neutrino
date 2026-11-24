@@ -5,10 +5,17 @@
 //! APFS (instant, and no space until a file changes), so it works the same
 //! whether steps run in a VM or as plain processes.
 
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use flate2::Compression;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+
+/// Minimum log size before compressing a finished job's log to `.log.gz`.
+const MIN_COMPRESS_LOG_BYTES: u64 = 4096;
 
 /// How a cache restore went.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +67,151 @@ pub fn size_of(path: &Path) -> u64 {
     }
 }
 
+/// Remove a file or directory tree, making read-only directories writable first
+/// (Go module caches like `.go/pkg/mod` mark directories `0555`, which causes
+/// plain `remove_dir_all` to fail with `PermissionDenied`). Never follows symlinks.
+pub fn remove_tree(path: &Path) -> Result<()> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if !meta.is_dir() {
+        return match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        };
+    }
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            make_writable_tree(path);
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(unix)]
+fn make_writable_tree(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if meta.is_dir() {
+        if mode & 0o700 != 0o700 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700));
+        }
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for e in entries.flatten() {
+                make_writable_tree(&e.path());
+            }
+        }
+    } else if mode & 0o200 == 0 {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o200));
+    }
+}
+
+#[cfg(not(unix))]
+fn make_writable_tree(_path: &Path) {}
+
+/// Path to the gzipped companion of a job's `.log` file (`<job>.log.gz`).
+pub fn log_gz_path(log: &Path) -> PathBuf {
+    let mut os = log.as_os_str().to_os_string();
+    os.push(".gz");
+    PathBuf::from(os)
+}
+
+/// Compress a finished job's `.log` file to `.log.gz` when it is at least 4 KiB
+/// and compression saves space. Atomically writes `.log.gz` before removing `.log`
+/// so concurrent readers never see both missing.
+pub fn compress_log(log: &Path) -> Result<bool> {
+    let meta = match std::fs::metadata(log) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    if meta.len() < MIN_COMPRESS_LOG_BYTES {
+        return Ok(false);
+    }
+    let gz = log_gz_path(log);
+    let mut tmp_os = gz.as_os_str().to_os_string();
+    tmp_os.push(".tmp");
+    let tmp = PathBuf::from(tmp_os);
+
+    let res = (|| -> Result<u64> {
+        let mut src = BufReader::new(std::fs::File::open(log)?);
+        let dst = std::fs::File::create(&tmp)?;
+        let mut enc = GzEncoder::new(BufWriter::new(dst), Compression::best());
+        std::io::copy(&mut src, &mut enc)?;
+        let mut inner = enc.finish()?;
+        inner.flush()?;
+        Ok(std::fs::metadata(&tmp)?.len())
+    })();
+
+    match res {
+        Ok(gz_len) if gz_len < meta.len() => {
+            std::fs::rename(&tmp, &gz)?;
+            let _ = std::fs::remove_file(log);
+            Ok(true)
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&tmp);
+            Ok(false)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Read up to `limit` uncompressed bytes from `log` (or its compressed `.log.gz`
+/// companion) starting at `offset`, without splitting a UTF-8 sequence.
+/// Returns `(text, next_offset, at_eof)`.
+pub fn read_log_chunk(log: &Path, offset: u64, limit: u64) -> Result<(String, u64, bool)> {
+    if let Ok(mut f) = std::fs::File::open(log) {
+        let len = f.metadata()?.len();
+        let start = offset.min(len);
+        f.seek(SeekFrom::Start(start))?;
+        let mut buf = Vec::new();
+        f.take(limit).read_to_end(&mut buf)?;
+        let end = utf8_boundary(&buf);
+        let next = start + end as u64;
+        return Ok((String::from_utf8_lossy(&buf[..end]).into_owned(), next, next >= len));
+    }
+    let gz = log_gz_path(log);
+    if let Ok(f) = std::fs::File::open(&gz) {
+        let mut dec = GzDecoder::new(BufReader::new(f));
+        let skipped = std::io::copy(&mut dec.by_ref().take(offset), &mut std::io::sink())?;
+        let mut buf = Vec::new();
+        dec.take(limit.saturating_add(1)).read_to_end(&mut buf)?;
+        let has_more = buf.len() > limit as usize;
+        if has_more {
+            buf.truncate(limit as usize);
+        }
+        let end = utf8_boundary(&buf);
+        let at_eof = !has_more && end == buf.len();
+        return Ok((String::from_utf8_lossy(&buf[..end]).into_owned(), skipped + end as u64, at_eof));
+    }
+    Ok((String::new(), offset, true))
+}
+
+fn utf8_boundary(buf: &[u8]) -> usize {
+    match std::str::from_utf8(buf) {
+        Err(e) if e.error_len().is_none() && e.valid_up_to() > 0 => e.valid_up_to(),
+        _ => buf.len(),
+    }
+}
+
 /// Put a cache's paths back into the workspace.
 pub fn restore(dir: &Path, paths: &[String], workspace: &Path) -> Result<()> {
     for p in paths {
@@ -69,7 +221,7 @@ pub fn restore(dir: &Path, paths: &[String], workspace: &Path) -> Result<()> {
         }
         let dest = workspace.join(p);
         if dest.exists() {
-            let _ = std::fs::remove_dir_all(&dest).or_else(|_| std::fs::remove_file(&dest));
+            let _ = remove_tree(&dest);
         }
         clone(&saved, &dest)?;
     }
@@ -79,7 +231,7 @@ pub fn restore(dir: &Path, paths: &[String], workspace: &Path) -> Result<()> {
 /// Save the workspace's paths as a cache, replacing what was there. Returns its size.
 pub fn save(dir: &Path, paths: &[String], workspace: &Path) -> Result<u64> {
     let tmp = dir.with_extension("saving");
-    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = remove_tree(&tmp);
     std::fs::create_dir_all(&tmp)?;
     for p in paths {
         let src = workspace.join(p);
@@ -87,7 +239,7 @@ pub fn save(dir: &Path, paths: &[String], workspace: &Path) -> Result<u64> {
             clone(&src, &tmp.join(p))?;
         }
     }
-    let _ = std::fs::remove_dir_all(dir);
+    let _ = remove_tree(dir);
     std::fs::rename(&tmp, dir)?;
     Ok(size_of(dir))
 }
@@ -157,5 +309,52 @@ mod tests {
         let kept = collect(&ws, &["dist/*.zip".into(), "target".into()], &out).unwrap();
         assert_eq!(kept, vec![("dist/a.zip".to_string(), 3), ("target/debug/app".to_string(), 6)]);
         assert!(out.join("target/debug/app").exists() && !out.join("dist/notes.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_tree_cleans_read_only_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("ws/.go/pkg/mod/example");
+        std::fs::create_dir_all(&ro).unwrap();
+        let file = ro.join("go.mod");
+        std::fs::write(&file, "module example\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::set_permissions(ro.parent().unwrap(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        remove_tree(&dir.path().join("ws")).unwrap();
+        assert!(!dir.path().join("ws").exists());
+    }
+
+    #[test]
+    fn compressed_logs_read_exact_offsets_and_utf8_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("build.log");
+        // Mix ASCII and multi-byte UTF-8 (`▸` is 3 bytes) across > 4 KiB.
+        let line = "\u{25b8} compiling crate foo v1.0.0 — ok\n";
+        let full = line.repeat(200);
+        std::fs::write(&log, &full).unwrap();
+
+        assert!(compress_log(&log).unwrap());
+        assert!(!log.exists(), "plain log removed after gzip");
+        assert!(log_gz_path(&log).exists(), "gzipped log created");
+        assert!(std::fs::metadata(log_gz_path(&log)).unwrap().len() < full.len() as u64 / 4);
+
+        // Stream back in awkward small chunks (17 bytes) that split multi-byte chars.
+        let mut rebuilt = String::new();
+        let mut offset = 0u64;
+        loop {
+            let (text, next, eof) = read_log_chunk(&log, offset, 17).unwrap();
+            assert_eq!(next - offset, text.len() as u64);
+            rebuilt.push_str(&text);
+            offset = next;
+            if eof {
+                break;
+            }
+        }
+        assert_eq!(rebuilt, full);
+        assert_eq!(offset, full.len() as u64);
     }
 }

@@ -7,9 +7,11 @@
 //! `git update-ref <ref> <new> <old>`, so a push that raced the merge wins and
 //! the merge fails rather than overwriting it.
 
+use std::collections::{HashMap, VecDeque};
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
 
 use gix::ObjectId;
 use neutrino_proto::{FileChange, FileDiff, LogEntry, MergeStrategy, Mergeability, Side};
@@ -180,8 +182,20 @@ fn merge_trees(repo: &gix::Repository, base: Option<ObjectId>, ours: ObjectId, t
     }
 }
 
+/// Mergeability already computed, keyed by `(git_dir, target_sha, source_sha)`.
+/// Commit OIDs are immutable, so entries never go stale; caching avoids
+/// repeated `git merge-tree --write-tree` subprocesses and loose tree objects.
+type MergeKey = (PathBuf, ObjectId, ObjectId);
+const MERGE_CACHE_CAP: usize = 256;
+static MERGE_CACHE: LazyLock<Mutex<(HashMap<MergeKey, Mergeability>, VecDeque<MergeKey>)>> =
+    LazyLock::new(|| Mutex::new((HashMap::new(), VecDeque::new())));
+
 pub fn mergeability(repo: &gix::Repository, target: &str, source: &str) -> Result<Mergeability> {
     let (t, s) = (branch_tip(repo, target)?, branch_tip(repo, source)?);
+    let key = (repo.git_dir().to_path_buf(), t, s);
+    if let Some(cached) = MERGE_CACHE.lock().unwrap().0.get(&key).cloned() {
+        return Ok(cached);
+    }
     let fast_forward = is_ancestor(repo, t, s)?;
     let behind = ok(root(repo), &["rev-list", "--count", &format!("{s}..{t}")], &[], None)?.parse().unwrap_or(0);
     let (clean, conflicts) = if fast_forward {
@@ -192,7 +206,17 @@ pub fn mergeability(repo: &gix::Repository, target: &str, source: &str) -> Resul
             Err(files) => (false, files),
         }
     };
-    Ok(Mergeability { clean, conflicts, fast_forward, behind })
+    let result = Mergeability { clean, conflicts, fast_forward, behind };
+    let mut cache = MERGE_CACHE.lock().unwrap();
+    if cache.0.insert(key.clone(), result.clone()).is_none() {
+        cache.1.push_back(key);
+        while cache.1.len() > MERGE_CACHE_CAP {
+            if let Some(old) = cache.1.pop_front() {
+                cache.0.remove(&old);
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn identity_env(prefix: &str, who: &Identity) -> [(String, String); 2] {

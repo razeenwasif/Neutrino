@@ -156,6 +156,19 @@ enum Cmd {
     Env(EnvCmd),
     /// Server: snapshot the database now.
     Backup,
+    /// Server: pack refs, repack objects at max compression, prune unreachable
+    /// objects and rebuild commit-graphs for one or all hosted repositories.
+    Compact {
+        /// Compact every hosted repository (plus compress finished CI logs and optimize SQLite).
+        #[arg(long)]
+        all: bool,
+        /// Recompute deltas from scratch (--depth=250 --window=250) for maximum compression.
+        #[arg(long)]
+        aggressive: bool,
+        /// Prune all unreachable objects immediately instead of keeping the last hour.
+        #[arg(long)]
+        prune_now: bool,
+    },
     /// Server: what needs you: deploys to approve, pull requests ready to merge, runs.
     Inbox,
     /// Server: push notifications to paired phones (through Apple; only an id goes there).
@@ -485,6 +498,7 @@ fn server_only(c: &Cmd) -> bool {
             | Cmd::Var(_)
             | Cmd::Env(_)
             | Cmd::Backup
+            | Cmd::Compact { .. }
             | Cmd::Inbox
             | Cmd::Notify { .. }
     )
@@ -1120,6 +1134,52 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Backup => done(out, c.call(Request::Backup)?)?,
+        Cmd::Compact { all, aggressive, prune_now } => {
+            let repo = if all {
+                None
+            } else if cli.repo.is_some() || std::env::var_os("NEUTRINO_REPO").is_some() {
+                Some(pick_repo(&mut c, cli.repo)?)
+            } else {
+                pick_repo(&mut c, None).ok()
+            };
+            // Repacking large or many repositories can take minutes.
+            c.stream.get_mut().set_read_timeout(None)?;
+            match c.call(Request::Compact { repo, aggressive, prune_now })? {
+                Response::Compacted(reports) => {
+                    if reports.is_empty() {
+                        writeln!(out, "No hosted repositories to compact.")?;
+                    } else {
+                        let mut total_before = 0u64;
+                        let mut total_after = 0u64;
+                        for r in &reports {
+                            total_before += r.before_bytes;
+                            total_after += r.after_bytes;
+                            let delta = format_delta(r.before_bytes, r.after_bytes, &style);
+                            writeln!(
+                                out,
+                                "{:<32} {:>9} → {:>9}  {}  {}",
+                                style.paint("1", &r.repo),
+                                format_bytes(r.before_bytes),
+                                format_bytes(r.after_bytes),
+                                delta,
+                                style.paint("2", &format!("loose {}→{}, packs {}→{}", r.loose_before, r.loose_after, r.packs_before, r.packs_after)),
+                            )?;
+                        }
+                        if reports.len() > 1 {
+                            writeln!(
+                                out,
+                                "{:<32} {:>9} → {:>9}  {}",
+                                style.paint("1", &format!("Total ({} repos)", reports.len())),
+                                format_bytes(total_before),
+                                format_bytes(total_after),
+                                format_delta(total_before, total_after, &style),
+                            )?;
+                        }
+                    }
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
         Cmd::Inbox => match c.call(Request::Inbox)? {
             Response::Inbox(i) => {
                 if i.waiting.is_empty() && i.ready.is_empty() && i.open.is_empty() {
@@ -1538,6 +1598,35 @@ fn pr(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: PrCm
 
 fn short_fp(fp: &str) -> String {
     fp.as_bytes().chunks(4).take(4).map(|c| String::from_utf8_lossy(c).to_uppercase()).collect::<Vec<_>>().join(" ")
+}
+
+fn format_bytes(n: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let f = n as f64;
+    if f >= GIB {
+        format!("{:.2} GiB", f / GIB)
+    } else if f >= MIB {
+        format!("{:.1} MiB", f / MIB)
+    } else if f >= KIB {
+        format!("{:.0} KiB", f / KIB)
+    } else {
+        format!("{n} B")
+    }
+}
+
+fn format_delta(before: u64, after: u64, style: &Style) -> String {
+    if before == 0 || before == after {
+        return style.paint("2", "   0%");
+    }
+    if after < before {
+        let pct = (before - after) as f64 * 100.0 / before as f64;
+        style.paint("32", &format!("-{pct:4.1}%"))
+    } else {
+        let pct = (after - before) as f64 * 100.0 / before as f64;
+        style.paint("33", &format!("+{pct:4.1}%"))
+    }
 }
 
 /// Paths relative to the repo root, from paths given relative to here.

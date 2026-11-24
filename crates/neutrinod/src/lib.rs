@@ -11,6 +11,7 @@
 mod backups;
 pub mod ci;
 pub mod hosting;
+pub mod maintenance;
 mod mirror;
 mod phone;
 pub use neutrino_remote;
@@ -175,7 +176,7 @@ fn first_line(text: &str) -> String {
 pub struct Daemon {
     options: Options,
     state_dir: PathBuf,
-    registry: Registry,
+    registry: Arc<Registry>,
     diffs: DiffCache,
     watchers: watch::Watchers,
     /// One write at a time, so two never race for the index lock.
@@ -195,6 +196,8 @@ pub struct Daemon {
     apns: phone::Apns,
     /// Copies of hosted repos to their mirrors, in flight.
     mirrors: Arc<mirror::Mirrors>,
+    /// Background and on-demand git maintenance (repack, prune, commit-graph).
+    maintainer: Arc<maintenance::Maintainer>,
     /// The socket hooks call back on; set by `serve`.
     socket: Mutex<Option<PathBuf>>,
     /// The TLS port actually bound (the option may be 0 for "any").
@@ -229,11 +232,12 @@ impl Daemon {
             nonces: Mutex::new(HashMap::new()),
             apns: phone::Apns::default(),
             mirrors: Arc::default(),
+            maintainer: Arc::default(),
             store,
             ci,
             vault,
             state_dir: state_dir.to_path_buf(),
-            registry: Registry::load(state_dir)?,
+            registry: Arc::new(Registry::load(state_dir)?),
             diffs: DiffCache::default(),
             watchers: watch::Watchers::new(),
             writes: Mutex::new(()),
@@ -286,6 +290,9 @@ impl Daemon {
                 Ok(repo) => {
                     self.refresh_hooks(&path, &repo.id);
                     self.sync_rules_marker(&repo.id);
+                    if let Err(e) = maintenance::configure_repo(&path) {
+                        eprintln!("can't tune {}: {e:#}", path.display());
+                    }
                 }
                 Err(e) => eprintln!("can't host {}: {e:#}", path.display()),
             }
@@ -430,6 +437,7 @@ impl Daemon {
                 self.server_only()?;
                 let _guard = self.writes.lock().unwrap();
                 let path = hosting::create(&self.hosted_dir(), &name, description.as_deref())?;
+                let _ = maintenance::configure_repo(&path);
                 let repo = self.registry.add(&path.display().to_string())?;
                 self.refresh_hooks(&path, &repo.id);
                 self.watch(&repo.id);
@@ -441,6 +449,7 @@ impl Daemon {
                 self.server_only()?;
                 // No write lock: a big import takes minutes, and only its own name is at stake.
                 let path = hosting::import(&self.hosted_dir(), &name, &url, description.as_deref())?;
+                let _ = maintenance::configure_repo(&path);
                 let repo = match self.registry.add(&path.display().to_string()) {
                     Ok(r) => r,
                     Err(e) => {
@@ -454,7 +463,7 @@ impl Daemon {
                     mirror::mark_in_step(&path);
                 }
                 self.watch(&repo.id);
-                write_commit_graph(path);
+                self.maintain_after_import(&repo.id, path);
                 Response::Repo(repo)
             }
             Request::Mirrors => Response::Mirrors(self.mirror_list()?),
@@ -470,6 +479,33 @@ impl Daemon {
                 let dir = self.hosted_git_dir(&id)?;
                 self.mirrors.copy_now(&dir)?;
                 Response::Mirrors(self.mirror_list()?)
+            }
+            Request::Compact { repo, aggressive, prune_now } => {
+                self.server_only()?;
+                let all_repos = repo.is_none();
+                let targets: Vec<(String, PathBuf)> = match repo {
+                    Some(id) => vec![(id.clone(), self.hosted_git_dir(&id)?)],
+                    None => self
+                        .registry
+                        .list()
+                        .into_iter()
+                        .filter(|r| r.bare && r.error.is_none())
+                        .map(|r| (r.id, PathBuf::from(r.path)))
+                        .collect(),
+                };
+                let mut reports = Vec::with_capacity(targets.len());
+                for (id, dir) in targets {
+                    let report = self.maintainer.compact(&id, &dir, aggressive, prune_now)?;
+                    self.registry.evict(&id);
+                    reports.push(report);
+                }
+                if all_repos {
+                    self.compress_finished_logs();
+                    if let Ok(store) = self.store() {
+                        let _ = store.optimize();
+                    }
+                }
+                Response::Compacted(reports)
             }
             Request::ListBackups => Response::Backups(match self.options.role {
                 Role::Server => {
@@ -507,9 +543,10 @@ impl Daemon {
                     }
                 }
                 self.watchers.notify(RepoEvent { repo: id.clone(), kind: "push".into() });
-                // Keep history fast to read: refresh the commit-graph in the background.
+                // Keep history fast and storage tight: refresh the commit-graph
+                // and geometrically repack when loose objects or packs build up.
                 let git_dir = neutrino_git::local(&r).git_dir().to_path_buf();
-                write_commit_graph(git_dir.clone());
+                self.maintain_after_push(&id, git_dir.clone());
                 let n = updates.len();
                 let mut output = format!("neutrino: {n} ref{} updated", if n == 1 { "" } else { "s" });
                 if let Some(url) = mirror::url(&git_dir) {
@@ -698,21 +735,23 @@ impl Daemon {
         }
     }
 
+    pub(crate) fn maintain_after_push(&self, id: &str, git_dir: PathBuf) {
+        let reg = Arc::clone(&self.registry);
+        let id = id.to_string();
+        self.maintainer.after_push(git_dir, move || reg.evict(&id));
+    }
+
+    fn maintain_after_import(&self, id: &str, git_dir: PathBuf) {
+        let reg = Arc::clone(&self.registry);
+        let repo_id = id.to_string();
+        let evict_id = repo_id.clone();
+        self.maintainer.after_import(repo_id, git_dir, move || reg.evict(&evict_id));
+    }
+
     fn write(&self, f: impl FnOnce() -> Result<String>) -> Result<Response> {
         let _guard = self.writes.lock().unwrap();
         Ok(Response::Done { output: f()? })
     }
-}
-
-/// Keep history fast to read: refresh a repo's commit-graph in the background.
-fn write_commit_graph(git_dir: PathBuf) {
-    std::thread::spawn(move || {
-        let _ = std::process::Command::new(neutrino_git::worktree::git_binary())
-            .arg("--git-dir")
-            .arg(&git_dir)
-            .args(["commit-graph", "write", "--reachable", "--split"])
-            .output();
-    });
 }
 
 /// Workstation: copy the server's database snapshots here when it starts and

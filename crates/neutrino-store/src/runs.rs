@@ -539,9 +539,17 @@ impl Store {
         Ok(())
     }
 
-    /// A consistent copy of the database at `dest`, taken while it's in use.
+    /// A consistent, compacted copy of the database at `dest`, taken while it's
+    /// in use. Uses `VACUUM INTO` for a zero-free-page snapshot, falling back
+    /// to SQLite's online backup API if needed.
     pub fn backup_to(&self, dest: &std::path::Path) -> Result<()> {
         let db = self.db.lock().unwrap();
+        if let Some(s) = dest.to_str() {
+            if db.execute("VACUUM INTO ?1", params![s]).is_ok() {
+                return Ok(());
+            }
+            let _ = std::fs::remove_file(dest);
+        }
         let mut out = Connection::open(dest)?;
         let backup = rusqlite::backup::Backup::new(&db, &mut out)?;
         backup.run_to_completion(256, std::time::Duration::from_millis(0), None)?;

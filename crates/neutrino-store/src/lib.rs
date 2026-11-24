@@ -231,7 +231,11 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
+        db.pragma_update(None, "synchronous", "NORMAL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
+        db.pragma_update(None, "temp_store", "MEMORY")?;
+        db.pragma_update(None, "mmap_size", 67_108_864_i64)?;
+        db.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
         for (i, step) in MIGRATIONS.iter().enumerate().skip(version as usize) {
@@ -239,6 +243,14 @@ impl Store {
             db.pragma_update(None, "user_version", (i + 1) as i64)?;
         }
         Ok(Store { db: Mutex::new(db) })
+    }
+
+    /// Checkpoint and truncate the WAL, reclaim freed pages, and refresh query
+    /// planner statistics. Safe to call while the database is in use.
+    pub fn optimize(&self) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        let _ = db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum; PRAGMA optimize;");
+        Ok(())
     }
 
     pub fn in_memory() -> Result<Self> {
@@ -601,5 +613,10 @@ mod tests {
         drop(s);
         let again = Store::open(&path).unwrap();
         assert_eq!(again.pulls("r").unwrap().len(), 1, "data and schema survive reopening");
+        again.optimize().unwrap();
+        let snap = dir.path().join("snap.db");
+        again.backup_to(&snap).unwrap();
+        let restored = Store::open(&snap).unwrap();
+        assert_eq!(restored.pulls("r").unwrap().len(), 1, "VACUUM INTO snapshot preserves data");
     }
 }

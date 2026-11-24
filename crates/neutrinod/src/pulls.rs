@@ -213,6 +213,7 @@ impl Daemon {
         // main, say), and copy the repository to its mirror.
         self.watchers.notify(RepoEvent { repo: id.into(), kind: "push".into() });
         self.pulls_changed(id);
+        self.maintain_after_push(id, repo.git_dir().to_path_buf());
         let sha = sha.to_string();
         let changed = target_before.as_deref().and_then(|old| self.changed_files(id, old, &sha));
         let push = neutrino_ci::Event::Push { name: format!("refs/heads/{}", pull.target), sha: sha.clone() };
