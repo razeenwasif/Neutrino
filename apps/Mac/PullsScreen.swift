@@ -7,11 +7,15 @@ struct PullsScreen: View {
     var body: some View {
         Group {
             if let problem = model.pullRepoProblem {
-                EmptyState(title: "No pull requests here", message: problem).island()
+                EmptyState(icon: "arrow.triangle.pull", title: "No pull requests here", message: problem)
+                    .background(N.ground)
             } else {
-                HStack(alignment: .top, spacing: 10) {
-                    PullList().frame(width: 340).frame(maxHeight: .infinity)
-                    PullDetailPanel().frame(maxWidth: .infinity, maxHeight: .infinity)
+                HStack(spacing: 0) {
+                    PullList()
+                        .frame(width: 340)
+                        .frame(maxHeight: .infinity)
+                    PullDetailPanel()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
@@ -25,55 +29,71 @@ struct PullList: View {
     @Environment(AppModel.self) private var model
     @State private var creating = false
     @State private var editingRules = false
+    @State private var rulesHovered = false
 
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("Pull requests").font(.system(size: 14, weight: .semibold)).foregroundStyle(N.text)
+                Text("Pull requests")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(N.text)
                 Spacer(minLength: 6)
                 Button {
                     editingRules = true
                 } label: {
-                    Image(systemName: "lock.shield").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "lock.shield")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(rulesHovered ? N.text : N.muted)
+                        .frame(width: 28, height: 28)
+                        .background(rulesHovered ? N.surfaceActive : N.surfacePill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
-                .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
+                .buttonStyle(.plain)
+                .onHover { rulesHovered = $0 }
                 .help("Branch rules")
                 .accessibilityLabel("Branch rules")
+
                 Button("New") { creating = true }
-                    .buttonStyle(PillButtonStyle(kind: .primary, height: 26))
+                    .buttonStyle(PillButtonStyle(kind: .primary, height: 28))
                     .help("Open a pull request")
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-            HStack {
-                Segmented(options: [(PullFilter.open, "Open \(count(.open))"), (.closed, "Closed \(count(.closed))")], selection: $model.pullFilter)
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+
+            HStack(spacing: 4) {
+                FilterPillButton(title: "Open \(count(.open))", isSelected: model.pullFilter == .open) {
+                    model.pullFilter = .open
+                }
+                FilterPillButton(title: "Closed \(count(.closed))", isSelected: model.pullFilter == .closed) {
+                    model.pullFilter = .closed
+                }
                 Spacer()
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
 
             if let error = model.pullError, model.pullList.isEmpty {
-                EmptyState(title: "Can't load pull requests", message: error)
+                EmptyState(icon: "exclamationmark.triangle", title: "Can't load pull requests", message: error)
             } else if model.visiblePulls.isEmpty, !model.loadingPulls {
                 EmptyState(
+                    icon: "arrow.triangle.pull",
                     title: model.pullFilter == .open ? "Nothing open" : "Nothing closed yet",
                     message: model.pullFilter == .open ? "Push a branch, then open a pull request to merge it." : "Merged and closed pull requests show up here."
                 )
             } else {
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 2) {
                         ForEach(model.visiblePulls) { p in
                             PullRow(pull: p, selected: p.number == model.pullNumber)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 16)
                 }
             }
         }
-        .island()
+        .background(N.inspector)
         .onChange(of: model.pullFilter) {
             if let first = model.visiblePulls.first, !model.visiblePulls.contains(where: { $0.number == model.pullNumber }) {
                 Task { await model.select(pull: first.number) }
@@ -95,16 +115,11 @@ struct StateChip: View {
 
     var body: some View {
         let color: Color = switch state {
-        case .open: N.ok
-        case .merged: N.accent
-        case .closed: N.danger
+        case .open: N.mint
+        case .merged: N.violet
+        case .closed: N.rose
         }
-        Text(state.label)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .frame(height: 19)
-            .background(color.opacity(0.13), in: Capsule())
+        TagPill(text: state.label, color: color, textColor: color, background: color.opacity(0.14))
     }
 }
 
@@ -114,9 +129,9 @@ struct BranchFlow: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Text(source).foregroundStyle(N.accent).lineLimit(1).truncationMode(.middle)
+            Text(source).foregroundStyle(N.indigo).lineLimit(1).truncationMode(.middle)
             Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(N.faint)
-            Text(target).foregroundStyle(N.second).lineLimit(1)
+            Text(target).foregroundStyle(N.sky).lineLimit(1)
         }
         .font(N.mono(11.5, weight: .medium))
     }
@@ -128,32 +143,53 @@ struct PullRow: View {
     var selected: Bool
     @State private var hovering = false
 
+    private var dotColor: Color {
+        switch pull.state {
+        case .open: N.mint
+        case .merged: N.violet
+        case .closed: N.rose
+        }
+    }
+
     var body: some View {
         Button {
             Task { await model.select(pull: pull.number) }
         } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 7) {
-                    Text("#\(pull.number)").font(N.mono(11.5, weight: .semibold)).foregroundStyle(N.faint)
-                    Text(pull.title).font(.system(size: 13, weight: .medium)).foregroundStyle(N.text).lineLimit(1)
+                    StatusDot(color: dotColor, size: 5)
+                    Text("#\(pull.number)")
+                        .font(N.mono(11, weight: .semibold))
+                        .foregroundStyle(N.faint)
+                    Text(pull.title)
+                        .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(N.text)
+                        .lineLimit(1)
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: 8) {
                     BranchFlow(source: pull.source, target: pull.target)
                     Spacer(minLength: 4)
                     if pull.openNotes > 0 {
-                        Label("\(pull.openNotes)", systemImage: "text.bubble").font(.system(size: 11)).foregroundStyle(N.warn)
+                        Label("\(pull.openNotes)", systemImage: "text.bubble")
+                            .font(.system(size: 11))
+                            .foregroundStyle(N.amber)
                             .help("\(pull.openNotes) unresolved notes")
                     }
                     if pull.state != .open { StateChip(state: pull.state) }
-                    Text(Format.ago(pull.updatedAt)).font(.system(size: 11)).foregroundStyle(N.faint)
+                    Text(Format.ago(pull.updatedAt))
+                        .font(N.mono(10.5))
+                        .foregroundStyle(N.faint)
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? N.selected : (hovering ? Color.white.opacity(0.04) : .clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .contentShape(Rectangle())
+            .background(
+                selected ? N.surfaceActive : (hovering ? N.surfaceHover : Color.clear),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -172,17 +208,21 @@ struct PullDetailPanel: View {
             if let d = model.pullDetail {
                 VStack(spacing: 0) {
                     PullHeader(detail: d)
-                    HStack {
-                        Segmented(options: [
-                            (PullTab.overview, "Overview"),
-                            (.files, "Files \(d.files.count)"),
-                            (.commits, "Commits \(d.commits.count)"),
-                        ], selection: $model.pullTab)
+                    HStack(spacing: 4) {
+                        FilterPillButton(title: "Overview", isSelected: model.pullTab == .overview) {
+                            model.pullTab = .overview
+                        }
+                        FilterPillButton(title: "Files \(d.files.count)", isSelected: model.pullTab == .files) {
+                            model.pullTab = .files
+                        }
+                        FilterPillButton(title: "Commits \(d.commits.count)", isSelected: model.pullTab == .commits) {
+                            model.pullTab = .commits
+                        }
                         Spacer()
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-                    Rectangle().fill(N.hairline).frame(height: 1)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 14)
+
                     switch model.pullTab {
                     case .overview: PullOverview(detail: d)
                     case .files: PullFiles(detail: d)
@@ -190,12 +230,12 @@ struct PullDetailPanel: View {
                     }
                 }
             } else if let error = model.pullError {
-                EmptyState(title: "Can't show this pull request", message: error)
+                EmptyState(icon: "exclamationmark.triangle", title: "Can't show this pull request", message: error)
             } else {
-                EmptyState(title: "No pull request selected", message: "Pick one from the list, or open a new one.")
+                EmptyState(icon: "arrow.triangle.pull", title: "No pull request selected", message: "Pick one from the list, or open a new one.")
             }
         }
-        .island()
+        .background(N.ground)
     }
 }
 
@@ -206,29 +246,37 @@ struct PullHeader: View {
 
     var body: some View {
         let p = detail.pull
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(p.title).font(.system(size: 18, weight: .semibold)).foregroundStyle(N.text).lineLimit(2)
-                Text("#\(p.number)").font(N.mono(15)).foregroundStyle(N.faint)
+                Text(p.title)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(N.text)
+                    .lineLimit(2)
+                Text("#\(p.number)")
+                    .font(N.mono(16))
+                    .foregroundStyle(N.faint)
                 Spacer(minLength: 8)
                 if p.state != .merged {
-                    Button("Edit") { editing = true }.buttonStyle(PillButtonStyle(kind: .quiet, height: 26))
+                    ActionPillButton(title: "Edit", systemImage: "pencil", tint: N.muted, background: N.surfacePill) {
+                        editing = true
+                    }
                 }
             }
             HStack(spacing: 10) {
                 StateChip(state: p.state)
                 BranchFlow(source: p.source, target: p.target)
                 Text("·").foregroundStyle(N.faint)
-                Text(p.versions == 1 ? "1 version" : "\(p.versions) versions").help("Each push to \(p.source) while it's open is a new version.")
+                Text(p.versions == 1 ? "1 version" : "\(p.versions) versions")
+                    .help("Each push to \(p.source) while it's open is a new version.")
                 Text("·").foregroundStyle(N.faint)
                 Text("opened \(Format.ago(p.createdAt))")
             }
             .font(.system(size: 12))
             .foregroundStyle(N.muted)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(.horizontal, 28)
+        .padding(.top, 22)
+        .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $editing) { EditPullSheet(pull: p) }
     }
@@ -241,19 +289,28 @@ struct PullOverview: View {
     var detail: PullDetail
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 22) {
                 if detail.pull.body.isEmpty {
-                    Text("No description.").font(.system(size: 13)).foregroundStyle(N.faint).italic()
+                    Text("No description.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(N.faint)
+                        .italic()
                 } else {
-                    Text(detail.pull.body).font(.system(size: 13)).foregroundStyle(N.body).textSelection(.enabled)
+                    Text(detail.pull.body)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(N.body)
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
                 }
                 MergeBox(detail: detail)
                 NotesList(detail: detail)
                 VersionList(detail: detail)
             }
-            .padding(16)
-            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 28)
+            .padding(.top, 6)
+            .padding(.bottom, 36)
+            .frame(maxWidth: 780, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -269,19 +326,19 @@ struct MergeBox: View {
 
     var body: some View {
         let p = detail.pull
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             switch p.state {
             case .merged:
-                status(icon: "checkmark.circle.fill", color: N.accent, title: "Merged into \(p.target)",
+                status(icon: "checkmark.circle.fill", color: N.violet, title: "Merged into \(p.target)",
                        detail: [p.mergeSha.map { "as \($0.prefix(7))" }, p.mergedAt.map { Format.ago($0) }].compactMap { $0 }.joined(separator: ", "))
             case .closed:
-                status(icon: "xmark.circle.fill", color: N.danger, title: "Closed without merging", detail: "Reopen it to carry on.")
-                Button("Reopen") { Task { await model.setPullState(.open) } }
-                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
-                    .disabled(model.pullBusy != nil)
+                status(icon: "xmark.circle.fill", color: N.rose, title: "Closed without merging", detail: "Reopen it to carry on.")
+                ActionPillButton(title: "Reopen", systemImage: "arrow.uturn.backward", tint: N.text, background: N.surfacePill) {
+                    Task { await model.setPullState(.open) }
+                }
+                .disabled(model.pullBusy != nil)
             case .open:
                 checks
-                Rectangle().fill(N.hairline).frame(height: 1)
                 HStack(spacing: 10) {
                     Menu {
                         ForEach(MergeStrategy.allCases) { s in
@@ -298,33 +355,44 @@ struct MergeBox: View {
                             Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
                         }
                         .font(.system(size: 12, weight: .medium))
-                        .padding(.horizontal, 12)
+                        .foregroundStyle(N.text)
+                        .padding(.horizontal, 11)
                         .frame(height: 30)
-                        .background(N.control, in: Capsule())
+                        .background(N.surfacePill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     }
                     .menuStyle(.button)
                     .buttonStyle(.plain)
                     .fixedSize()
                     .help(strategy.detail)
-                    Toggle("Delete \(p.source) afterwards", isOn: $deleteSource).toggleStyle(.checkbox).font(.system(size: 12))
+
+                    Toggle("Delete \(p.source) afterwards", isOn: $deleteSource)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.muted)
+
                     Spacer()
+
                     Button("Close") { Task { await model.setPullState(.closed) } }
                         .buttonStyle(PillButtonStyle(kind: .quiet, height: 30))
                         .disabled(model.pullBusy != nil)
-                    Button {
+
+                    ActionPillButton(
+                        title: model.pullBusy == "Merging" ? "Merging…" : "Merge",
+                        systemImage: "arrow.triangle.merge",
+                        tint: canMerge ? N.onAccent : N.muted,
+                        background: canMerge ? N.mint : N.surfacePill,
+                        isLoading: model.pullBusy == "Merging"
+                    ) {
                         Task { await model.merge(strategy: strategy, deleteSource: deleteSource) }
-                    } label: {
-                        Text(model.pullBusy == "Merging" ? "Merging…" : "Merge")
                     }
-                    .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
                     .disabled(!canMerge || model.pullBusy != nil)
                     .help(mergeHelp)
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .well()
+        .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var canMerge: Bool {
@@ -348,22 +416,22 @@ struct MergeBox: View {
         let p = detail.pull
         if let m = detail.mergeability {
             if !m.clean {
-                status(icon: "exclamationmark.triangle.fill", color: N.danger, title: "Conflicts with \(p.target)",
+                status(icon: "exclamationmark.triangle.fill", color: N.rose, title: "Conflicts with \(p.target)",
                        detail: "In \(m.conflicts.prefix(4).joined(separator: ", "))\(m.conflicts.count > 4 ? " and \(m.conflicts.count - 4) more" : ""). Merge \(p.target) into \(p.source), resolve them and push.")
             } else if m.fastForward {
-                status(icon: "checkmark.circle.fill", color: N.ok, title: "Ready to merge", detail: "\(p.target) hasn't moved, so this can fast-forward.")
+                status(icon: "checkmark.circle.fill", color: N.mint, title: "Ready to merge", detail: "\(p.target) hasn't moved, so this can fast-forward.")
             } else {
-                status(icon: "checkmark.circle.fill", color: N.ok, title: "Merges cleanly",
+                status(icon: "checkmark.circle.fill", color: N.mint, title: "Merges cleanly",
                        detail: "\(p.target) is \(m.behind) commit\(m.behind == 1 ? "" : "s") ahead of where \(p.source) started.")
             }
         } else {
-            status(icon: "questionmark.circle", color: N.warn, title: "Can't check", detail: "\(p.source) or \(p.target) is gone from the server.")
+            status(icon: "questionmark.circle", color: N.amber, title: "Can't check", detail: "\(p.source) or \(p.target) is gone from the server.")
         }
         if p.openNotes > 0 {
-            status(icon: "text.bubble", color: N.warn, title: "\(p.openNotes) unresolved note\(p.openNotes == 1 ? "" : "s")", detail: "Notes don't block merging.")
+            status(icon: "text.bubble", color: N.amber, title: "\(p.openNotes) unresolved note\(p.openNotes == 1 ? "" : "s")", detail: "Notes don't block merging.")
         }
         if let r = detail.rule {
-            status(icon: "lock.shield", color: N.second, title: "\(p.target) is guarded by \(r.pattern)",
+            status(icon: "lock.shield", color: N.sky, title: "\(p.target) is guarded by \(r.pattern)",
                    detail: r.requiredChecks.isEmpty ? r.summary : "\(r.summary); \(r.requiredChecks.joined(separator: ", ")) must pass")
         }
         if !detail.checks.isEmpty {
@@ -376,17 +444,16 @@ struct MergeBox: View {
                             RunStateIcon(state: run.state, size: 12)
                             Text(run.name).font(.system(size: 12.5, weight: .medium)).foregroundStyle(N.text)
                             if detail.rule?.requiredChecks.contains(where: { $0 == run.name || $0 == run.workflow || $0 + ".yml" == run.workflow }) == true {
-                                Text("required").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(N.second)
-                                    .padding(.horizontal, 6).frame(height: 16).background(N.second.opacity(0.12), in: Capsule())
+                                TagPill(text: "required", textColor: N.sky, background: N.sky.opacity(0.14))
                             }
                             Text(run.state.label).font(.system(size: 11.5)).foregroundStyle(N.muted)
                             Spacer()
                             Text(formatDuration(run.duration())).font(N.mono(11)).foregroundStyle(N.faint)
                         }
-                        .padding(.horizontal, 8)
-                        .frame(height: 28)
-                        .background(N.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .help("Open run \(run.number)")
@@ -395,7 +462,7 @@ struct MergeBox: View {
             .padding(.leading, 28)
         }
         ForEach(missing.filter { name in !detail.checks.contains { $0.name == name || $0.workflow.hasPrefix(name) } }, id: \.self) { name in
-            status(icon: "circle.dashed", color: N.warn, title: "\(name) hasn't run", detail: "It's required, but no workflow by that name ran on this version.")
+            status(icon: "circle.dashed", color: N.amber, title: "\(name) hasn't run", detail: "It's required, but no workflow by that name ran on this version.")
         }
     }
 
@@ -434,7 +501,7 @@ struct NoteCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: note.resolved ? "checkmark.bubble" : "text.bubble")
-                .foregroundStyle(note.resolved ? N.faint : N.warn)
+                .foregroundStyle(note.resolved ? N.faint : N.amber)
                 .font(.system(size: 13))
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -443,19 +510,25 @@ struct NoteCard: View {
                             model.pullTab = .files
                             Task { await model.select(pullFile: note.path) }
                         } label: {
-                            Text("\(note.path):\(note.currentLine ?? note.line)").font(N.mono(11.5, weight: .medium)).foregroundStyle(N.second)
+                            Text("\(note.path):\(note.currentLine ?? note.line)")
+                                .font(N.mono(11.5, weight: .medium))
+                                .foregroundStyle(N.sky)
                         }
                         .buttonStyle(.plain)
                         .help("Show it in Files")
                     }
                     if note.outdated {
-                        Text("outdated").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(N.faint)
-                            .padding(.horizontal, 6).frame(height: 17).background(Color.white.opacity(0.06), in: Capsule())
+                        TagPill(text: "outdated", textColor: N.faint)
                             .help("The line changed after version \(note.version), where this was written.")
                     }
-                    Text("v\(note.version) · \(Format.ago(note.createdAt))").font(.system(size: 11)).foregroundStyle(N.faint)
+                    Text("v\(note.version) · \(Format.ago(note.createdAt))")
+                        .font(N.mono(10.5))
+                        .foregroundStyle(N.faint)
                 }
-                Text(note.text).font(.system(size: 12.5)).foregroundStyle(note.resolved ? N.muted : N.body).textSelection(.enabled)
+                Text(note.text)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(note.resolved ? N.muted : N.body)
+                    .textSelection(.enabled)
             }
             Spacer(minLength: 8)
             Button(note.resolved ? "Reopen" : "Resolve") { Task { await model.resolve(note, !note.resolved) } }
@@ -463,8 +536,8 @@ struct NoteCard: View {
                 .font(.system(size: 11))
                 .disabled(model.pullBusy != nil)
         }
-        .padding(10)
-        .background(N.raised.opacity(note.resolved ? 0.5 : 1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(12)
+        .background(N.surfaceSubtle.opacity(note.resolved ? 0.65 : 1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -472,16 +545,29 @@ struct VersionList: View {
     var detail: PullDetail
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             SectionLabel("Versions")
-            ForEach(detail.versions.reversed()) { v in
-                HStack(spacing: 10) {
-                    Text("v\(v.version)").font(N.mono(11.5, weight: .semibold)).foregroundStyle(v.version == detail.versions.last?.version ? N.accent : N.muted)
-                        .frame(width: 30, alignment: .leading)
-                    Text(String(v.headSha.prefix(7))).font(N.mono(11.5)).foregroundStyle(N.body)
-                    Text("from \(v.baseSha.prefix(7))").font(N.mono(11)).foregroundStyle(N.faint)
-                    Spacer()
-                    Text(Format.ago(v.createdAt)).font(.system(size: 11)).foregroundStyle(N.faint)
+            VStack(spacing: 4) {
+                ForEach(detail.versions.reversed()) { v in
+                    HStack(spacing: 10) {
+                        Text("v\(v.version)")
+                            .font(N.mono(11.5, weight: .semibold))
+                            .foregroundStyle(v.version == detail.versions.last?.version ? N.indigo : N.muted)
+                            .frame(width: 30, alignment: .leading)
+                        Text(String(v.headSha.prefix(7)))
+                            .font(N.mono(11.5))
+                            .foregroundStyle(N.text)
+                        Text("from \(v.baseSha.prefix(7))")
+                            .font(N.mono(11))
+                            .foregroundStyle(N.faint)
+                        Spacer()
+                        Text(Format.ago(v.createdAt))
+                            .font(N.mono(11))
+                            .foregroundStyle(N.faint)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
             }
         }
@@ -498,34 +584,46 @@ struct PullFiles: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ScrollView {
-                VStack(spacing: 1) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 2) {
                     ForEach(detail.files) { f in
                         let notes = detail.notes.filter { $0.path == f.path && !$0.resolved }.count
+                        let isSelected = model.pullFile == f.path
                         Button {
                             composing = nil
                             Task { await model.select(pullFile: f.path) }
                         } label: {
                             HStack(spacing: 8) {
-                                Text(f.status.letter).font(N.mono(11, weight: .semibold)).foregroundStyle(N.status(f.status)).frame(width: 12)
-                                Text((f.path as NSString).lastPathComponent).font(.system(size: 12.5)).foregroundStyle(N.text).lineLimit(1)
+                                Text(f.status.letter)
+                                    .font(N.mono(10.5, weight: .semibold))
+                                    .foregroundStyle(N.status(f.status))
+                                    .frame(width: 12)
+                                Text((f.path as NSString).lastPathComponent)
+                                    .font(.system(size: 12.5, weight: isSelected ? .medium : .regular))
+                                    .foregroundStyle(isSelected ? N.text : N.body)
+                                    .lineLimit(1)
                                 Spacer(minLength: 4)
-                                if notes > 0 { Image(systemName: "text.bubble").font(.system(size: 10)).foregroundStyle(N.warn) }
+                                if notes > 0 {
+                                    Image(systemName: "text.bubble")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(N.amber)
+                                }
                                 if !f.binary { StatCounts(additions: f.additions, deletions: f.deletions) }
                             }
                             .padding(.horizontal, 10)
                             .frame(height: 30)
-                            .background(model.pullFile == f.path ? N.selected : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .contentShape(Rectangle())
+                            .background(isSelected ? N.surfaceActive : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .help(f.oldPath.map { "\($0) → \(f.path)" } ?? f.path)
                     }
                 }
-                .padding(8)
+                .padding(10)
             }
-            .frame(width: 220)
-            Rectangle().fill(N.hairline).frame(width: 1)
+            .frame(width: 230)
+            .background(N.inspector)
+
             diff
         }
     }
@@ -535,29 +633,46 @@ struct PullFiles: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 if let d = model.pullDiff {
-                    Text(d.path).font(N.mono(12.5, weight: .medium)).foregroundStyle(N.text).lineLimit(1).truncationMode(.head)
+                    Text(d.path)
+                        .font(N.mono(12, weight: .medium))
+                        .foregroundStyle(N.text)
+                        .lineLimit(1)
+                        .truncationMode(.head)
                     StatCounts(additions: d.additions, deletions: d.deletions)
                 }
-                // The hint gives way first when the panel is narrow; the layout switch never squeezes.
                 ViewThatFits(in: .horizontal) {
-                    Text("Click a line to leave a note").font(.system(size: 11)).foregroundStyle(N.faint).fixedSize()
+                    Text("Click a line to leave a note")
+                        .font(.system(size: 11))
+                        .foregroundStyle(N.faint)
+                        .fixedSize()
                         .frame(maxWidth: .infinity, alignment: .trailing)
                     Spacer(minLength: 0)
                 }
-                Segmented(options: [(DiffLayout.unified, "Unified"), (.split, "Split")], selection: $model.layout)
-                    .fixedSize()
-                    .help("Click a line to leave a note on it")
+                HStack(spacing: 2) {
+                    FilterPillButton(title: "Unified", isSelected: model.layout == .unified) {
+                        model.layout = .unified
+                    }
+                    FilterPillButton(title: "Split", isSelected: model.layout == .split) {
+                        model.layout = .split
+                    }
+                }
+                .padding(2)
+                .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .fixedSize()
+                .help("Click a line to leave a note on it")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(N.ground)
+
             Group {
                 if let d = model.pullDiff {
                     if d.binary {
-                        EmptyState(title: "Binary file", message: "Neutrino doesn't show binary changes yet.")
+                        EmptyState(icon: "doc.zipper", title: "Binary file", message: "Neutrino doesn't show binary changes yet.")
                     } else if d.tooLarge {
-                        EmptyState(title: "Too large to show", message: "One side of this file is over 8 MB.")
+                        EmptyState(icon: "doc.text.magnifyingglass", title: "Too large to show", message: "One side of this file is over 8 MB.")
                     } else if d.hunks.isEmpty {
-                        EmptyState(title: "No line changes", message: d.oldPath != nil ? "Renamed without changes." : "Only the file's mode changed.")
+                        EmptyState(icon: "doc.text", title: "No line changes", message: d.oldPath != nil ? "Renamed without changes." : "Only the file's mode changed.")
                     } else {
                         DiffBody(diff: d, layout: model.layout, onPick: { line in
                             composing = line
@@ -565,15 +680,15 @@ struct PullFiles: View {
                         }, pickContext: true, footer: { line in footer(for: line, path: d.path) })
                     }
                 } else if let error = model.pullDiffError {
-                    EmptyState(title: "Can't show this diff", message: error)
+                    EmptyState(icon: "exclamationmark.triangle", title: "Can't show this diff", message: error)
                 } else if detail.files.isEmpty {
-                    EmptyState(title: "No changes", message: "\(detail.pull.source) has nothing \(detail.pull.target) doesn't.")
+                    EmptyState(icon: "doc", title: "No changes", message: "\(detail.pull.source) has nothing \(detail.pull.target) doesn't.")
                 } else {
                     Color.clear
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(N.well)
+            .background(N.ground)
         }
     }
 
@@ -616,23 +731,26 @@ struct NoteComposer: View {
         VStack(alignment: .leading, spacing: 8) {
             TextEditor(text: $text)
                 .font(.system(size: 12.5))
+                .foregroundStyle(N.text)
                 .scrollContentBackground(.hidden)
                 .focused($focused)
                 .frame(minHeight: 54, maxHeight: 120)
-                .padding(6)
-                .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(8)
+                .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             HStack {
-                Text("⌘↩ to save").font(.system(size: 11)).foregroundStyle(N.faint)
+                Text("⌘↩ to save").font(N.mono(10.5)).foregroundStyle(N.faint)
                 Spacer()
-                Button("Cancel", action: cancel).buttonStyle(PillButtonStyle(kind: .quiet, height: 26)).keyboardShortcut(.cancelAction)
+                Button("Cancel", action: cancel)
+                    .buttonStyle(PillButtonStyle(kind: .quiet, height: 26))
+                    .keyboardShortcut(.cancelAction)
                 Button(saving ? "Saving…" : "Leave note", action: save)
                     .buttonStyle(PillButtonStyle(kind: .primary, height: 26))
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
             }
         }
-        .padding(10)
-        .background(N.island, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(12)
+        .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onAppear { focused = true }
     }
 }
@@ -643,25 +761,41 @@ struct PullCommits: View {
     var detail: PullDetail
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 2) {
                 ForEach(detail.commits) { c in
                     HStack(spacing: 12) {
-                        Text(c.shortSHA).font(N.mono(12, weight: .medium)).foregroundStyle(N.accent)
-                        Text(c.subject).font(.system(size: 13)).foregroundStyle(N.text).lineLimit(1)
+                        Text(c.shortSHA)
+                            .font(N.mono(12, weight: .medium))
+                            .foregroundStyle(N.sky)
+                        Text(c.subject)
+                            .font(.system(size: 13))
+                            .foregroundStyle(N.text)
+                            .lineLimit(1)
                         Spacer(minLength: 8)
-                        Text(c.author.name).font(.system(size: 12)).foregroundStyle(N.muted).lineLimit(1)
-                        Text(Format.ago(c.time)).font(.system(size: 11.5)).foregroundStyle(N.faint).frame(width: 80, alignment: .trailing)
+                        Text(c.author.name)
+                            .font(.system(size: 12))
+                            .foregroundStyle(N.muted)
+                            .lineLimit(1)
+                        Text(Format.ago(c.time))
+                            .font(N.mono(11))
+                            .foregroundStyle(N.faint)
+                            .frame(width: 80, alignment: .trailing)
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 14)
                     .frame(height: 36)
+                    .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .textSelection(.enabled)
-                    Rectangle().fill(N.hairline).frame(height: 1).padding(.leading, 16)
                 }
                 if detail.commits.count >= 250 {
-                    Text("Showing the first 250 commits.").font(.system(size: 12)).foregroundStyle(N.faint).padding(16)
+                    Text("Showing the first 250 commits.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.faint)
+                        .padding(14)
                 }
             }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 8)
         }
     }
 }
@@ -674,7 +808,7 @@ private struct Field<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(label).font(.system(size: 11)).foregroundStyle(N.muted)
+            Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
             content
         }
     }
@@ -683,9 +817,10 @@ private struct Field<Content: View>: View {
 private extension View {
     func sheetField() -> some View {
         textFieldStyle(.plain)
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .foregroundStyle(N.text)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -703,45 +838,53 @@ struct NewPullSheet: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("New pull request").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("New pull request")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(N.text)
             HStack(spacing: 10) {
                 Field(label: "Merge") { picker($source) }
                 Image(systemName: "arrow.right").foregroundStyle(N.faint).padding(.top, 16)
                 Field(label: "Into") { picker($target) }
             }
             Field(label: "Title") {
-                TextField("What this changes", text: $title).font(.system(size: 13)).sheetField()
+                TextField("", text: $title, prompt: Text("What this changes").foregroundStyle(N.faint))
+                    .font(.system(size: 13))
+                    .sheetField()
             }
             Field(label: "Description") {
                 TextEditor(text: $bodyText)
                     .font(.system(size: 12.5))
+                    .foregroundStyle(N.text)
                     .scrollContentBackground(.hidden)
                     .frame(height: 110)
-                    .padding(6)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .padding(8)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             if let error {
-                Text(error).font(.system(size: 12)).foregroundStyle(N.danger).fixedSize(horizontal: false, vertical: true)
+                Text(error).font(.system(size: 12)).foregroundStyle(N.rose).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
-                Text("Branches on \(model.serverLink?.name ?? "the server"). Push yours first.").font(.system(size: 11)).foregroundStyle(N.faint)
+                Text("Branches on \(model.serverLink?.name ?? "the server"). Push yours first.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(N.faint)
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button(working ? "Opening…" : "Open pull request", action: create)
                     .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
                     .keyboardShortcut(.defaultAction)
                     .disabled(working || source.isEmpty || target.isEmpty || source == target || title.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 520)
-        .background(N.island)
+        .background(N.sheet)
         .task {
             branches = await model.hostedBranches()
             let main = model.hostedDefaultBranch ?? "main"
             target = branches.first { $0.name == main }?.name ?? branches.first?.name ?? ""
-            // Start from the most recently pushed branch that isn't the target.
             let candidates = branches.filter { $0.name != target }.sorted { $0.time > $1.time }
             let current = model.source == .local ? model.repo?.head?.label : nil
             source = candidates.first { $0.name == preferredSource }?.name ?? candidates.first { $0.name == current }?.name ?? candidates.first?.name ?? ""
@@ -785,20 +928,25 @@ struct EditPullSheet: View {
     @State private var bodyText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Edit #\(pull.number)").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Edit #\(pull.number)")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(N.text)
             Field(label: "Title") { TextField("Title", text: $title).font(.system(size: 13)).sheetField() }
             Field(label: "Description") {
                 TextEditor(text: $bodyText)
                     .font(.system(size: 12.5))
+                    .foregroundStyle(N.text)
                     .scrollContentBackground(.hidden)
                     .frame(height: 140)
-                    .padding(6)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .padding(8)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     Task {
                         await model.editPull(title: title, body: bodyText)
@@ -810,9 +958,9 @@ struct EditPullSheet: View {
                 .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 520)
-        .background(N.island)
+        .background(N.sheet)
         .onAppear {
             title = pull.title
             bodyText = pull.body
@@ -828,13 +976,20 @@ struct RulesSheet: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Branch rules").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Branch rules")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(N.text)
             Text("Rules guard branches on \(model.serverLink?.name ?? "the server") when people push. A push can still override one with `git push -o neutrino-override=\"why\"`; overrides are recorded.")
-                .font(.system(size: 12)).foregroundStyle(N.muted).fixedSize(horizontal: false, vertical: true)
+                .font(.system(size: 12))
+                .foregroundStyle(N.muted)
+                .fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 6) {
                 if rules.isEmpty {
-                    Text("No rules yet.").font(.system(size: 12)).foregroundStyle(N.faint).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("No rules yet.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.faint)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 ForEach(rules) { r in
                     HStack {
@@ -845,14 +1000,15 @@ struct RulesSheet: View {
                         Button("Remove") { Task { await run { try await model.deleteRule(r.pattern) } } }
                             .buttonStyle(PillButtonStyle(kind: .secondary, height: 24))
                     }
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
-            Rectangle().fill(N.hairline).frame(height: 1)
             Field(label: "Branch or pattern") {
-                TextField("main, release/*", text: $draft.pattern).font(N.mono(13)).sheetField()
+                TextField("", text: $draft.pattern, prompt: Text("main, release/*").foregroundStyle(N.faint))
+                    .font(N.mono(13))
+                    .sheetField()
             }
             HStack(spacing: 16) {
                 Toggle("Pull requests only", isOn: $draft.requirePull)
@@ -861,10 +1017,12 @@ struct RulesSheet: View {
             }
             .toggleStyle(.checkbox)
             .font(.system(size: 12.5))
-            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.danger) }
+            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.rose) }
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Done") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button(rules.contains { $0.pattern == draft.pattern } ? "Update rule" : "Add rule") {
                     let rule = draft
                     Task {
@@ -876,9 +1034,9 @@ struct RulesSheet: View {
                 .disabled(draft.pattern.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 560)
-        .background(N.island)
+        .background(N.sheet)
         .task { rules = await model.loadRules() }
     }
 

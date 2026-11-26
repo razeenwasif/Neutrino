@@ -7,21 +7,32 @@ struct SecretsScreen: View {
     var body: some View {
         Group {
             if let problem = model.pullRepoProblem, model.vaultInfo == nil {
-                EmptyState(title: "No secrets here", message: problem).island()
+                EmptyState(icon: "key", title: "No secrets here", message: problem)
+                    .background(N.ground)
             } else {
-                VStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 22) {
                     ScopeBar()
+
                     if model.vaultInfo?.setUp == false {
                         VaultNotSetUp()
                     }
-                    HStack(alignment: .top, spacing: 10) {
-                        SecretList().frame(maxWidth: .infinity, maxHeight: .infinity)
-                        VariableList().frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    HStack(alignment: .top, spacing: 18) {
+                        SecretList()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        VariableList()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                         if model.pullRepo != nil {
-                            EnvironmentList().frame(width: 300).frame(maxHeight: .infinity)
+                            EnvironmentList()
+                                .frame(width: 300)
+                                .frame(maxHeight: .infinity)
                         }
                     }
                 }
+                .padding(.horizontal, 32)
+                .padding(.top, 22)
+                .padding(.bottom, 28)
+                .background(N.ground)
             }
         }
         .task(id: "\(model.source.rawValue):\(model.repoID ?? ""):\(model.isServerOnline)") { await model.loadSecrets() }
@@ -34,36 +45,58 @@ struct ScopeBar: View {
 
     var body: some View {
         @Bindable var model = model
-        HStack(spacing: 10) {
-            Text("Secrets and variables").font(.system(size: 14, weight: .semibold)).foregroundStyle(N.text)
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Secrets & Variables")
+                    .font(N.pageTitle())
+                    .foregroundStyle(N.text)
+                Text("Encrypted vault credentials, workflow variables, and deployment environments")
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
+            }
             Spacer()
             if let repo = model.pullRepo {
-                var options: [(VaultView, String)] = [(.repo, repo), (.everyRepo, "Every repository")]
-                let _ = options.append(contentsOf: model.environmentList.map { (VaultView.environment($0.name), "\(repo) · \($0.name)") })
-                Segmented(options: options, selection: $model.vaultView)
+                HStack(spacing: 2) {
+                    FilterPillButton(title: repo, isSelected: model.vaultView == .repo) {
+                        model.vaultView = .repo
+                    }
+                    FilterPillButton(title: "Every repository", isSelected: model.vaultView == .everyRepo) {
+                        model.vaultView = .everyRepo
+                    }
+                    ForEach(model.environmentList) { env in
+                        FilterPillButton(title: "\(repo) · \(env.name)", isSelected: model.vaultView == .environment(env.name)) {
+                            model.vaultView = .environment(env.name)
+                        }
+                    }
+                }
+                .padding(3)
+                .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else {
-                Text("Every repository").font(.system(size: 12)).foregroundStyle(N.muted)
+                TagPill(text: "Every repository", textColor: N.muted)
             }
         }
-        .padding(.horizontal, 14)
-        .frame(height: 46)
-        .island()
     }
 }
 
 struct VaultNotSetUp: View {
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "lock.trianglebadge.exclamationmark").foregroundStyle(N.warn).font(.system(size: 15))
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "lock.trianglebadge.exclamationmark")
+                .foregroundStyle(N.amber)
+                .font(.system(size: 15))
             VStack(alignment: .leading, spacing: 3) {
-                Text("The vault isn't set up yet").font(.system(size: 13, weight: .semibold)).foregroundStyle(N.text)
+                Text("The vault isn't set up yet")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(N.text)
                 Text("On the server, run `ntr vault setup`. It creates the key that seals secrets and shows its recovery code once; keep that code somewhere away from the server. Variables work without it.")
-                    .font(.system(size: 12)).foregroundStyle(N.muted).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
         }
         .padding(14)
-        .island()
+        .background(N.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -75,17 +108,22 @@ private struct PanelHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(N.text)
-                Text(detail).font(.system(size: 11)).foregroundStyle(N.faint)
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(N.text)
+                Text(detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(N.faint)
             }
             Spacer()
             if let (label, enabled, act) = action {
-                Button(label, action: act).buttonStyle(PillButtonStyle(kind: .secondary, height: 26)).disabled(!enabled)
+                ActionPillButton(title: label, systemImage: "plus", tint: N.text, background: N.surfacePill, action: act)
+                    .disabled(!enabled)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
     }
 }
 
@@ -94,13 +132,11 @@ private struct Inherited: View {
     var scope: VaultScope
 
     var body: some View {
-        Text(scope.repo == nil ? "every repo" : (scope.environment == nil ? "this repo" : scope.environment!))
-            .font(.system(size: 10.5, weight: .medium))
-            .foregroundStyle(N.faint)
-            .padding(.horizontal, 6)
-            .frame(height: 17)
-            .background(Color.white.opacity(0.06), in: Capsule())
-            .help("Set for \(scope.label); one set here would take its place")
+        TagPill(
+            text: scope.repo == nil ? "every repo" : (scope.environment == nil ? "this repo" : scope.environment!),
+            textColor: N.faint
+        )
+        .help("Set for \(scope.label); one set here would take its place")
     }
 }
 
@@ -114,41 +150,50 @@ struct SecretList: View {
             PanelHeader(title: "Secrets", detail: "Sealed on the server. Write-only: values never come back.",
                         action: ("Add", model.vaultInfo?.setUp == true, { adding = true }))
             if model.secretList.isEmpty {
-                EmptyState(title: "No secrets", message: "Workflows read them as ${{ secrets.NAME }}; logs show *** in their place.")
+                EmptyState(icon: "key", title: "No secrets", message: "Workflows read them as ${{ secrets.NAME }}; logs show *** in their place.")
             } else {
-                ScrollView {
-                    VStack(spacing: 2) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 4) {
                         ForEach(model.secretList) { s in
                             HStack(spacing: 8) {
-                                Image(systemName: "key.fill").font(.system(size: 10)).foregroundStyle(N.accent.opacity(model.isOwn(s.scope) ? 1 : 0.4))
-                                // One line, truncated in the middle: long names used to wrap mid-word.
-                                Text(s.name).font(N.mono(12.5, weight: .medium)).foregroundStyle(model.isOwn(s.scope) ? N.text : N.muted)
-                                    .lineLimit(1).truncationMode(.middle).help(s.name)
+                                Image(systemName: "key.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(model.isOwn(s.scope) ? N.rose : N.faint)
+                                Text(s.name)
+                                    .font(N.mono(12.5, weight: .medium))
+                                    .foregroundStyle(model.isOwn(s.scope) ? N.text : N.muted)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(s.name)
                                 if !model.isOwn(s.scope) { Inherited(scope: s.scope).fixedSize() }
                                 Spacer()
-                                Text(Format.ago(s.updatedAt)).font(.system(size: 11)).foregroundStyle(N.faint)
+                                Text(Format.ago(s.updatedAt))
+                                    .font(N.mono(10.5))
+                                    .foregroundStyle(N.faint)
                                 if model.isOwn(s.scope) {
                                     Menu {
                                         Button("Replace value…") { editing = s.name }
                                         Button("Delete", role: .destructive) { Task { await model.deleteSecret(s) } }
                                     } label: {
-                                        Image(systemName: "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(N.faint)
+                                        Image(systemName: "ellipsis")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(N.muted)
                                     }
                                     .menuStyle(.button).buttonStyle(.plain).fixedSize()
                                     .accessibilityLabel("Actions for \(s.name)")
                                 }
                             }
-                            .padding(.horizontal, 10)
-                            .frame(height: 34)
-                            .background(N.raised.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
                 }
             }
         }
-        .island()
+        .background(N.inspector, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .sheet(isPresented: $adding) { SecretSheet(name: "") }
         .sheet(item: Binding(get: { editing.map { IdentifiedName(name: $0) } }, set: { editing = $0?.name })) { SecretSheet(name: $0.name) }
     }
@@ -169,27 +214,45 @@ struct SecretSheet: View {
 
     var body: some View {
         let replacing = model.secretList.contains { $0.name == name && model.isOwn($0.scope) }
-        VStack(alignment: .leading, spacing: 14) {
-            Text(replacing ? "Replace \(name)" : "New secret").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
-            Text("For \(model.vaultScope.label).").font(.system(size: 12)).foregroundStyle(N.muted)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(replacing ? "Replace \(name)" : "New secret")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(N.text)
+                Text("For \(model.vaultScope.label).")
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
+            }
             VStack(alignment: .leading, spacing: 5) {
-                Text("Name").font(.system(size: 11)).foregroundStyle(N.muted)
-                TextField("DEPLOY_TOKEN", text: $name)
-                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                Text("Name").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
+                TextField("", text: $name, prompt: Text("DEPLOY_TOKEN").foregroundStyle(N.faint))
+                    .textFieldStyle(.plain)
+                    .font(N.mono(13))
+                    .foregroundStyle(N.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .disabled(replacing)
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text("Value").font(.system(size: 11)).foregroundStyle(N.muted)
-                SecureField("Pasted, not shown", text: $value)
-                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                Text("It's sealed on the server and can't be read back, here or anywhere.").font(.system(size: 11)).foregroundStyle(N.faint)
+                Text("Value").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
+                SecureField("", text: $value, prompt: Text("Pasted, not shown").foregroundStyle(N.faint))
+                    .textFieldStyle(.plain)
+                    .font(N.mono(13))
+                    .foregroundStyle(N.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Text("It's sealed on the server and can't be read back, here or anywhere.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(N.faint)
             }
-            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.danger).fixedSize(horizontal: false, vertical: true) }
+            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.rose).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button(working ? "Saving…" : "Save") {
                     working = true
                     Task {
@@ -208,9 +271,9 @@ struct SecretSheet: View {
                 .disabled(working || name.trimmingCharacters(in: .whitespaces).isEmpty || value.isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 440)
-        .background(N.island)
+        .background(N.sheet)
     }
 }
 
@@ -223,40 +286,52 @@ struct VariableList: View {
         VStack(spacing: 0) {
             PanelHeader(title: "Variables", detail: "Plain values, visible to anyone who can see runs.", action: ("Add", true, { adding = true }))
             if model.variableList.isEmpty {
-                EmptyState(title: "No variables", message: "Workflows read them as ${{ vars.NAME }}.")
+                EmptyState(icon: "textformat.abc", title: "No variables", message: "Workflows read them as ${{ vars.NAME }}.")
             } else {
-                ScrollView {
-                    VStack(spacing: 2) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 4) {
                         ForEach(model.variableList) { v in
                             HStack(spacing: 8) {
-                                // The name keeps one line and wins the space; the value truncates.
-                                Text(v.name).font(N.mono(12.5, weight: .medium)).foregroundStyle(model.isOwn(v.scope) ? N.text : N.muted)
-                                    .lineLimit(1).truncationMode(.middle).layoutPriority(1).help(v.name)
+                                Text(v.name)
+                                    .font(N.mono(12.5, weight: .medium))
+                                    .foregroundStyle(model.isOwn(v.scope) ? N.text : N.muted)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .layoutPriority(1)
+                                    .help(v.name)
                                 if !model.isOwn(v.scope) { Inherited(scope: v.scope).fixedSize() }
-                                Text(v.value).font(N.mono(12)).foregroundStyle(N.body).lineLimit(1).truncationMode(.tail).textSelection(.enabled).help(v.value)
+                                Text(v.value)
+                                    .font(N.mono(12))
+                                    .foregroundStyle(N.sky)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .textSelection(.enabled)
+                                    .help(v.value)
                                 Spacer()
                                 if model.isOwn(v.scope) {
                                     Menu {
                                         Button("Edit…") { editing = v }
                                         Button("Delete", role: .destructive) { Task { await model.deleteVariable(v) } }
                                     } label: {
-                                        Image(systemName: "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(N.faint)
+                                        Image(systemName: "ellipsis")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(N.muted)
                                     }
                                     .menuStyle(.button).buttonStyle(.plain).fixedSize()
                                     .accessibilityLabel("Actions for \(v.name)")
                                 }
                             }
-                            .padding(.horizontal, 10)
-                            .frame(height: 34)
-                            .background(N.raised.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
                 }
             }
         }
-        .island()
+        .background(N.inspector, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .sheet(isPresented: $adding) { VariableSheet(name: "", value: "", editing: false) }
         .sheet(item: $editing) { VariableSheet(name: $0.name, value: $0.value, editing: true) }
     }
@@ -271,26 +346,42 @@ struct VariableSheet: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(editing ? "Edit \(name)" : "New variable").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
-            Text("For \(model.vaultScope.label).").font(.system(size: 12)).foregroundStyle(N.muted)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(editing ? "Edit \(name)" : "New variable")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(N.text)
+                Text("For \(model.vaultScope.label).")
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
+            }
             VStack(alignment: .leading, spacing: 5) {
-                Text("Name").font(.system(size: 11)).foregroundStyle(N.muted)
-                TextField("REGION", text: $name)
-                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                Text("Name").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
+                TextField("", text: $name, prompt: Text("REGION").foregroundStyle(N.faint))
+                    .textFieldStyle(.plain)
+                    .font(N.mono(13))
+                    .foregroundStyle(N.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .disabled(editing)
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text("Value").font(.system(size: 11)).foregroundStyle(N.muted)
-                TextField("eu-west", text: $value)
-                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                Text("Value").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
+                TextField("", text: $value, prompt: Text("eu-west").foregroundStyle(N.faint))
+                    .textFieldStyle(.plain)
+                    .font(N.mono(13))
+                    .foregroundStyle(N.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.danger) }
+            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.rose) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     Task {
                         do {
@@ -306,9 +397,9 @@ struct VariableSheet: View {
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 420)
-        .background(N.island)
+        .background(N.sheet)
     }
 }
 
@@ -321,39 +412,46 @@ struct EnvironmentList: View {
         VStack(spacing: 0) {
             PanelHeader(title: "Environments", detail: "Where jobs deploy: own secrets, approval.", action: ("Add", true, { adding = true }))
             if model.environmentList.isEmpty {
-                EmptyState(title: "No environments", message: "A job with environment: production gets its secrets, and waits for you if it needs approval.")
+                EmptyState(icon: "server.rack", title: "No environments", message: "A job with environment: production gets its secrets, and waits for you if it needs approval.")
             } else {
-                ScrollView {
-                    VStack(spacing: 4) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 6) {
                         ForEach(model.environmentList) { e in
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 5) {
                                 HStack {
-                                    Text(e.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(N.text)
+                                    Text(e.name)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(N.text)
                                     Spacer()
                                     Menu {
                                         Button("Edit…") { editing = e }
                                         Button("Delete", role: .destructive) { Task { await model.deleteEnvironment(e) } }
                                     } label: {
-                                        Image(systemName: "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(N.faint)
+                                        Image(systemName: "ellipsis")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(N.muted)
                                     }
                                     .menuStyle(.button).buttonStyle(.plain).fixedSize()
                                     .accessibilityLabel("Actions for \(e.name)")
                                 }
                                 Label(e.requireApproval ? "Needs approval" : "No approval", systemImage: e.requireApproval ? "hand.raised.fill" : "hand.raised.slash")
-                                    .font(.system(size: 11.5)).foregroundStyle(e.requireApproval ? N.warn : N.faint)
-                                Text(e.branches.isEmpty ? "Any branch" : e.branches.joined(separator: ", ")).font(N.mono(11)).foregroundStyle(N.muted)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(e.requireApproval ? N.amber : N.faint)
+                                Text(e.branches.isEmpty ? "Any branch" : e.branches.joined(separator: ", "))
+                                    .font(N.mono(11))
+                                    .foregroundStyle(N.muted)
                             }
-                            .padding(10)
+                            .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(N.raised.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
                 }
             }
         }
-        .island()
+        .background(N.inspector, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .sheet(isPresented: $adding) { EnvironmentSheet(env: DeployEnvironment(repo: model.pullRepo ?? "", name: "", requireApproval: true), editing: false) }
         .sheet(item: $editing) { EnvironmentSheet(env: $0, editing: true) }
     }
@@ -368,27 +466,47 @@ struct EnvironmentSheet: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(editing ? "Edit \(env.name)" : "New environment").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
-            Text("For \(model.repo?.name ?? "this repository").").font(.system(size: 12)).foregroundStyle(N.muted)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(editing ? "Edit \(env.name)" : "New environment")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(N.text)
+                Text("For \(model.repo?.name ?? "this repository").")
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
+            }
             VStack(alignment: .leading, spacing: 5) {
-                Text("Name").font(.system(size: 11)).foregroundStyle(N.muted)
-                TextField("production", text: $env.name)
-                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                Text("Name").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
+                TextField("", text: $env.name, prompt: Text("production").foregroundStyle(N.faint))
+                    .textFieldStyle(.plain)
+                    .font(N.mono(13))
+                    .foregroundStyle(N.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .disabled(editing)
             }
-            Toggle("Jobs wait for approval", isOn: $env.requireApproval).toggleStyle(.checkbox).font(.system(size: 12.5))
+            Toggle("Jobs wait for approval", isOn: $env.requireApproval)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 12.5))
             VStack(alignment: .leading, spacing: 5) {
-                Text("Branches that may deploy (comma-separated, * allowed; empty for any)").font(.system(size: 11)).foregroundStyle(N.muted)
-                TextField("main, release/*", text: $branches)
-                    .textFieldStyle(.plain).font(N.mono(13)).padding(.horizontal, 10).frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                Text("Branches that may deploy (comma-separated, * allowed; empty for any)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(N.muted)
+                TextField("", text: $branches, prompt: Text("main, release/*").foregroundStyle(N.faint))
+                    .textFieldStyle(.plain)
+                    .font(N.mono(13))
+                    .foregroundStyle(N.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.danger) }
+            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.rose) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     var e = env
                     e.branches = branches.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
@@ -406,9 +524,9 @@ struct EnvironmentSheet: View {
                 .disabled(env.name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 420)
-        .background(N.island)
+        .background(N.sheet)
         .onAppear { branches = env.branches.joined(separator: ", ") }
     }
 }

@@ -7,8 +7,6 @@ import SwiftUI
 /// What the menu bar panel shows beyond the main window's state: every working
 /// copy's status and the selected repo's open pull requests.
 extension AppModel {
-    /// The selected repo's status is kept live by change events; the rest are
-    /// refreshed each time the panel opens.
     func glanceStatus(_ repo: Repo) -> WorkingStatus? {
         repo.id == repoID && source == .local ? status : glance[repo.id]
     }
@@ -100,7 +98,7 @@ struct MenuBarPanel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             PanelHeader()
             if model.repo == nil {
                 PanelEmpty()
@@ -113,12 +111,12 @@ struct MenuBarPanel: View {
             if model.workingCopies.count + model.hostedRepos.count > 1 { PanelRepos() }
             PanelFooter()
         }
-        .padding(12)
-        .frame(width: 360)
-        .background(N.ground)
+        .padding(14)
+        .frame(width: 364)
+        .background(N.palette)
         .foregroundStyle(N.body)
         .environment(\.colorScheme, .dark)
-        .tint(N.accent)
+        .tint(N.indigo)
         .task {
             model.start()
             await model.refreshGlance()
@@ -134,12 +132,14 @@ private struct PanelHeader: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 22, height: 22)
-            Text("Neutrino").font(.system(size: 13, weight: .semibold)).foregroundStyle(N.text)
+            Text("Neutrino")
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(N.text)
             Spacer()
-            StatusPill(color: daemonColor, label: daemonLabel)
+            TagPill(text: daemonLabel, color: daemonColor, textColor: N.muted, monospaced: true)
                 .help(daemonHelp)
             if let link = model.serverLink {
-                StatusPill(color: model.isServerOnline ? N.atlas : N.faint, label: link.name)
+                TagPill(text: link.name, color: model.isServerOnline ? N.violet : N.slate, textColor: N.muted, monospaced: true)
                     .help(serverHelp(link.name))
             }
             Button {
@@ -155,9 +155,9 @@ private struct PanelHeader: View {
 
     private var daemonColor: Color {
         switch model.connection {
-        case .live: N.ok
-        case .demo: N.warn
-        case .connecting: N.faint
+        case .live: N.mint
+        case .demo: N.amber
+        case .connecting: N.slate
         }
     }
 
@@ -187,23 +187,7 @@ private struct PanelHeader: View {
     }
 }
 
-private struct StatusPill: View {
-    var color: Color
-    var label: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Dot(color: color, size: 6)
-            Text(label).font(N.mono(10.5, weight: .medium)).foregroundStyle(N.muted)
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 20)
-        .background(N.island, in: Capsule())
-    }
-}
-
-/// The selected repo: branch, sync state, what's changed, and the actions you
-/// reach for without opening the window.
+/// The selected repo: branch, sync state, what's changed, and quick actions.
 private struct FocusCard: View {
     @Environment(AppModel.self) private var model
 
@@ -213,7 +197,10 @@ private struct FocusCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(repo.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(N.text).lineLimit(1)
+                        Text(repo.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(N.text)
+                            .lineLimit(1)
                         Text(model.source == .server ? "on \(model.serverLink?.name ?? "server")" : abbreviated(repo.path))
                             .font(N.mono(10.5))
                             .foregroundStyle(N.faint)
@@ -222,14 +209,18 @@ private struct FocusCard: View {
                     }
                     Spacer(minLength: 8)
                     if let head = repo.head {
-                        Label(head.label, systemImage: "arrow.triangle.branch")
-                            .font(N.mono(11, weight: .medium))
-                            .foregroundStyle(N.accent)
-                            .lineLimit(1)
-                            .padding(.horizontal, 9)
-                            .frame(height: 22)
-                            .background(N.accent.opacity(0.14), in: Capsule())
-                            .fixedSize()
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(head.label)
+                                .font(N.mono(11, weight: .medium))
+                        }
+                        .foregroundStyle(N.indigo)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(N.indigo.opacity(0.14), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .fixedSize()
                     }
                 }
 
@@ -238,7 +229,7 @@ private struct FocusCard: View {
                     ChangeCounts(status: s)
                     QuickCommit(status: s)
                 } else if model.source == .local, let error = model.statusError {
-                    Text(error).font(.system(size: 11.5)).foregroundStyle(N.danger).lineLimit(2)
+                    Text(error).font(.system(size: 11.5)).foregroundStyle(N.rose).lineLimit(2)
                 }
 
                 HStack(spacing: 6) {
@@ -266,7 +257,7 @@ private struct FocusCard: View {
                 .disabled(model.syncing != nil)
             }
             .padding(12)
-            .island(radius: 14)
+            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
     }
 
@@ -287,8 +278,8 @@ private struct SyncLine: View {
                 Text("\(syncing)…").foregroundStyle(N.muted)
             } else if let up = status.upstream {
                 let ahead = status.ahead ?? 0, behind = status.behind ?? 0
-                Text("↑\(ahead)").foregroundStyle(ahead > 0 ? N.accent : N.faint)
-                Text("↓\(behind)").foregroundStyle(behind > 0 ? N.second : N.faint)
+                Text("↑\(ahead)").foregroundStyle(ahead > 0 ? N.indigo : N.faint)
+                Text("↓\(behind)").foregroundStyle(behind > 0 ? N.sky : N.faint)
                 Text(ahead == 0 && behind == 0 ? "up to date with \(up)" : up)
                     .foregroundStyle(N.faint)
                     .lineLimit(1)
@@ -298,7 +289,7 @@ private struct SyncLine: View {
             }
             if let op = status.operation {
                 Spacer()
-                Text(op).foregroundStyle(N.warn)
+                Text(op).foregroundStyle(N.amber)
             }
         }
         .font(N.mono(11))
@@ -311,16 +302,16 @@ private struct ChangeCounts: View {
     var body: some View {
         if status.isClean {
             HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(N.ok)
+                StatusDot(color: N.mint, size: 5)
                 Text("Working tree clean").foregroundStyle(N.muted)
             }
             .font(.system(size: 12))
         } else {
             HStack(spacing: 6) {
-                count(status.staged.count, "staged", N.ok)
-                count(status.unstaged.count, "modified", N.warn)
-                count(status.untracked.count, "new", N.second)
-                count(status.conflicted.count, "conflicts", N.danger)
+                count(status.staged.count, "staged", N.mint)
+                count(status.unstaged.count, "modified", N.amber)
+                count(status.untracked.count, "new", N.sky)
+                count(status.conflicted.count, "conflicts", N.rose)
                 Spacer(minLength: 0)
             }
         }
@@ -330,12 +321,12 @@ private struct ChangeCounts: View {
     private func count(_ n: Int, _ label: String, _ color: Color) -> some View {
         if n > 0 {
             HStack(spacing: 4) {
-                Text("\(n)").font(N.mono(11.5, weight: .semibold)).foregroundStyle(color)
-                Text(label).font(.system(size: 11.5)).foregroundStyle(N.muted)
+                Text("\(n)").font(N.mono(11, weight: .semibold)).foregroundStyle(color)
+                Text(label).font(.system(size: 11)).foregroundStyle(N.muted)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 7)
             .frame(height: 22)
-            .background(color.opacity(0.1), in: Capsule())
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
     }
 }
@@ -349,19 +340,20 @@ private struct QuickCommit: View {
         @Bindable var model = model
         if !status.staged.isEmpty {
             HStack(spacing: 6) {
-                TextField("Commit \(status.staged.count) staged \(status.staged.count == 1 ? "file" : "files")…", text: $model.commitSummary)
+                TextField("", text: $model.commitSummary, prompt: Text("Commit \(status.staged.count) staged \(status.staged.count == 1 ? "file" : "files")…").foregroundStyle(N.faint))
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
+                    .foregroundStyle(N.text)
                     .padding(.horizontal, 10)
                     .frame(height: 28)
-                    .well(radius: 8)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .onSubmit { Task { await model.commit() } }
                 Button {
                     Task { await model.commit() }
                 } label: {
                     if model.committing { ProgressView().controlSize(.mini) } else { Text("Commit") }
                 }
-                .buttonStyle(PillButtonStyle(kind: model.canCommit ? .primary : .secondary))
+                .buttonStyle(PillButtonStyle(kind: model.canCommit ? .primary : .secondary, height: 28))
                 .disabled(!model.canCommit)
                 .keyboardShortcut(.return, modifiers: .command)
                 .help("Commit (⌘↩). Runs git, so your hooks and signing apply.")
@@ -378,7 +370,7 @@ private struct QuickCommit: View {
         if let last = model.lastCommit {
             Text("Committed \(String(last.sha.prefix(7)))")
                 .font(N.mono(10.5))
-                .foregroundStyle(N.ok)
+                .foregroundStyle(N.mint)
         }
     }
 }
@@ -387,6 +379,7 @@ private struct QuickCommit: View {
 private struct SectionJumps: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @State private var hovered: Section?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -399,22 +392,27 @@ private struct SectionJumps: View {
     }
 
     private func jump(_ section: Section, _ title: String, _ symbol: String) -> some View {
-        Button {
+        let isHovered = hovered == section
+        return Button {
             model.section = section
             if section == .pulls { Task { await model.loadPulls() } }
             showMainWindow(openWindow)
         } label: {
             VStack(spacing: 4) {
-                Image(systemName: symbol).font(.system(size: 13))
-                Text(title).font(.system(size: 10.5, weight: .medium))
+                Image(systemName: symbol)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(isHovered ? section.accentColor : N.muted)
+                Text(title)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(isHovered ? N.text : N.body)
             }
-            .foregroundStyle(N.body)
             .frame(maxWidth: .infinity)
-            .frame(height: 46)
-            .background(N.island, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(height: 44)
+            .background(isHovered ? N.surfaceHover : N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
+        .onHover { hovered = $0 ? section : nil }
         .help("Open \(title) in Neutrino")
     }
 }
@@ -429,7 +427,9 @@ private struct PanelPulls: View {
                 SectionLabel("Open pull requests")
                 Spacer()
                 if !model.glancePulls.isEmpty {
-                    Text("\(model.glancePulls.count)").font(N.mono(10.5, weight: .semibold)).foregroundStyle(N.accent)
+                    Text("\(model.glancePulls.count)")
+                        .font(N.mono(10.5, weight: .semibold))
+                        .foregroundStyle(N.mint)
                 }
             }
             if let note = model.glancePullsNote {
@@ -446,16 +446,16 @@ private struct PanelPulls: View {
                             await model.select(pull: pull.number)
                         }
                     } content: {
-                        Text("#\(pull.number)").font(N.mono(11, weight: .semibold)).foregroundStyle(N.accent)
+                        Text("#\(pull.number)").font(N.mono(11, weight: .semibold)).foregroundStyle(N.mint)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(pull.title).font(.system(size: 12)).foregroundStyle(N.text).lineLimit(1)
                             Text("\(pull.source) → \(pull.target)").font(N.mono(10)).foregroundStyle(N.faint).lineLimit(1)
                         }
                         Spacer(minLength: 6)
                         if pull.openNotes > 0 {
-                            Label("\(pull.openNotes)", systemImage: "text.bubble").font(.system(size: 10.5)).foregroundStyle(N.warn)
+                            Label("\(pull.openNotes)", systemImage: "text.bubble").font(.system(size: 10.5)).foregroundStyle(N.amber)
                         }
-                        Text(Format.ago(pull.updatedAt)).font(.system(size: 10.5)).foregroundStyle(N.faint)
+                        Text(Format.ago(pull.updatedAt)).font(N.mono(10)).foregroundStyle(N.faint)
                     }
                 }
             }
@@ -476,10 +476,10 @@ private struct PanelCommits: View {
                     showMainWindow(openWindow)
                     Task { await model.select(commit: c.sha) }
                 } content: {
-                    Text(c.shortSHA).font(N.mono(11)).foregroundStyle(N.faint)
+                    Text(c.shortSHA).font(N.mono(11)).foregroundStyle(N.sky)
                     Text(c.subject).font(.system(size: 12)).foregroundStyle(N.text).lineLimit(1)
                     Spacer(minLength: 6)
-                    Text(Format.ago(c.time)).font(.system(size: 10.5)).foregroundStyle(N.faint).fixedSize()
+                    Text(Format.ago(c.time)).font(N.mono(10)).foregroundStyle(N.faint).fixedSize()
                 }
                 .contextMenu {
                     Button("Copy SHA") { model.copy(c.sha) }
@@ -497,7 +497,7 @@ private struct PanelRepos: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionLabel("Repositories")
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 2) {
                     ForEach(model.workingCopies) { repo in
                         row(repo, hosted: false)
@@ -510,7 +510,6 @@ private struct PanelRepos: View {
                 }
             }
             .frame(maxHeight: 168)
-            .scrollIndicators(.never)
         }
     }
 
@@ -520,16 +519,16 @@ private struct PanelRepos: View {
         return PanelRow(selected: selected) {
             Task { await model.glanceSelect(repo, hosted: hosted) }
         } content: {
-            Dot(color: hosted ? N.atlas : (s.map { $0.isClean ? N.ok : N.warn } ?? N.faint), glow: false, size: 6)
+            StatusDot(color: hosted ? N.violet : (s.map { $0.isClean ? N.mint : N.amber } ?? N.slate), size: 5)
             Text(repo.name).font(.system(size: 12, weight: selected ? .semibold : .regular)).foregroundStyle(N.text).lineLimit(1)
             Text(repo.head?.label ?? "").font(N.mono(10.5)).foregroundStyle(N.faint).lineLimit(1)
             Spacer(minLength: 6)
             if hosted {
-                Text(model.serverLink?.name ?? "server").font(N.mono(10)).foregroundStyle(N.atlas.opacity(0.8))
+                Text(model.serverLink?.name ?? "server").font(N.mono(10)).foregroundStyle(N.violet.opacity(0.85))
             } else if let s {
-                if let a = s.ahead, a > 0 { Text("↑\(a)").font(N.mono(10.5)).foregroundStyle(N.accent) }
-                if let b = s.behind, b > 0 { Text("↓\(b)").font(N.mono(10.5)).foregroundStyle(N.second) }
-                if !s.isClean { Text("\(s.changeCount)").font(N.mono(10.5, weight: .semibold)).foregroundStyle(N.warn) }
+                if let a = s.ahead, a > 0 { Text("↑\(a)").font(N.mono(10.5)).foregroundStyle(N.indigo) }
+                if let b = s.behind, b > 0 { Text("↓\(b)").font(N.mono(10.5)).foregroundStyle(N.sky) }
+                if !s.isClean { Text("\(s.changeCount)").font(N.mono(10.5, weight: .semibold)).foregroundStyle(N.amber) }
             }
         }
         .contextMenu {
@@ -554,7 +553,7 @@ private struct PanelEmpty: View {
         }
         .frame(maxWidth: .infinity)
         .padding(18)
-        .island(radius: 14)
+        .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -595,7 +594,6 @@ private struct PanelFooter: View {
 
 // MARK: - Pieces
 
-/// A full-width row that highlights on hover.
 private struct PanelRow<Content: View>: View {
     var selected = false
     var action: () -> Void
@@ -607,7 +605,7 @@ private struct PanelRow<Content: View>: View {
             HStack(spacing: 8) { content }
                 .padding(.horizontal, 8)
                 .frame(height: 30)
-                .background(selected ? N.selected : (hovering ? N.raised : .clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(selected ? N.surfaceActive : (hovering ? N.surfaceHover : .clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -621,8 +619,8 @@ private struct IconButtonStyle: ButtonStyle {
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(N.body)
             .frame(width: 26, height: 26)
-            .background(N.control, in: Circle())
-            .brightness(configuration.isPressed ? 0.08 : 0)
-            .contentShape(Circle())
+            .background(N.surfacePill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }

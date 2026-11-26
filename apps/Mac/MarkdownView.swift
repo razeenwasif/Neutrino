@@ -1,14 +1,12 @@
 import NeutrinoKit
 import SwiftUI
 
-/// READMEs and Markdown files, rendered. SwiftUI's Markdown support is inline
-/// only, so blocks are split here: headings, paragraphs, lists, quotes, fenced
-/// code, tables and rules. Inline styling and links go through AttributedString.
+/// READMEs and Markdown files, rendered with editorial typography on pitch-black surfaces.
 struct MarkdownView: View {
     var text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(Markdown.blocks(text).enumerated()), id: \.offset) { _, block in
                 view(block)
             }
@@ -24,58 +22,88 @@ struct MarkdownView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(Markdown.inline(text))
                     .font(.system(size: [0, 24, 19, 16, 14, 13, 13][min(level, 6)], weight: .semibold))
+                    .tracking(level <= 2 ? -0.3 : 0)
                     .foregroundStyle(N.text)
-                    .padding(.top, level <= 2 ? 6 : 2)
-                if level <= 2 { Rectangle().fill(N.hairline).frame(height: 1) }
+                    .padding(.top, level <= 2 ? 8 : 3)
+                if level <= 2 {
+                    Rectangle().fill(N.hairline).frame(height: 1)
+                }
             }
         case let .paragraph(text):
-            Text(Markdown.inline(text)).font(.system(size: 13.5)).foregroundStyle(N.body).lineSpacing(3)
+            Text(Markdown.inline(text))
+                .font(.system(size: 13.5))
+                .foregroundStyle(N.body)
+                .lineSpacing(4)
         case let .list(items, ordered):
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { i, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(item.task.map { $0 ? "☑︎" : "☐" } ?? (ordered ? "\(i + 1)." : "•"))
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(N.faint)
+                            .font(.system(size: 13))
+                            .foregroundStyle(item.task == true ? N.mint : N.faint)
                             .frame(minWidth: 14, alignment: .trailing)
-                        Text(Markdown.inline(item.text)).font(.system(size: 13.5)).foregroundStyle(N.body).lineSpacing(3)
+                        Text(Markdown.inline(item.text))
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(N.body)
+                            .lineSpacing(4)
                     }
                     .padding(.leading, CGFloat(item.depth) * 18)
                 }
             }
         case let .quote(text):
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 2).fill(N.accent.opacity(0.5)).frame(width: 3)
-                Text(Markdown.inline(text)).font(.system(size: 13.5)).foregroundStyle(N.muted).lineSpacing(3)
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 2).fill(N.indigo.opacity(0.65)).frame(width: 2.5)
+                Text(Markdown.inline(text))
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(N.muted)
+                    .lineSpacing(4)
             }
+            .padding(.vertical, 2)
             .fixedSize(horizontal: false, vertical: true)
-        case let .code(text, _):
-            ScrollView(.horizontal) {
-                Text(text).font(N.mono(12)).foregroundStyle(N.body).padding(12)
+        case let .code(text, language):
+            VStack(alignment: .leading, spacing: 0) {
+                if !language.isEmpty {
+                    Text(language)
+                        .font(N.mono(10, weight: .semibold))
+                        .foregroundStyle(N.faint)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 9)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(text)
+                        .font(N.mono(12))
+                        .foregroundStyle(N.body)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, language.isEmpty ? 12 : 8)
+                }
             }
-            .scrollIndicators(.never)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .well(radius: 10)
+            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case let .table(header, rows):
-            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
                 GridRow {
                     ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
-                        Text(Markdown.inline(cell)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(N.text)
+                        Text(Markdown.inline(cell))
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(N.text)
                     }
                 }
-                Divider().gridCellUnsizedAxes(.horizontal)
+                Rectangle().fill(N.hairline).frame(height: 1).gridCellUnsizedAxes(.horizontal)
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            Text(Markdown.inline(cell)).font(.system(size: 12.5)).foregroundStyle(N.body)
+                            Text(Markdown.inline(cell))
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(N.body)
                         }
                     }
                 }
             }
-            .padding(12)
-            .well(radius: 10)
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case .rule:
-            Rectangle().fill(N.hairline).frame(height: 1).padding(.vertical, 4)
+            Rectangle().fill(N.hairline).frame(height: 1).padding(.vertical, 6)
         }
     }
 }
@@ -105,11 +133,12 @@ enum Markdown {
         var a = (try? AttributedString(markdown: t, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(t)
         for run in a.runs {
             if let intent = run.inlinePresentationIntent, intent.contains(.code) {
-                a[run.range].font = N.mono(12.5)
-                a[run.range].backgroundColor = N.control
+                a[run.range].font = N.mono(12)
+                a[run.range].backgroundColor = N.surfacePill
+                a[run.range].foregroundColor = N.text
             }
             if run.link != nil {
-                a[run.range].foregroundColor = N.accent
+                a[run.range].foregroundColor = N.sky
             }
         }
         return a
@@ -133,7 +162,7 @@ enum Markdown {
                 let fence = String(trimmed.prefix(3))
                 var body: [String] = []
                 while let l = lines.popFirst(), !l.trimmingCharacters(in: .whitespaces).hasPrefix(fence) { body.append(l) }
-                out.append(.code(body.joined(separator: "\n"), language: String(trimmed.dropFirst(3))))
+                out.append(.code(body.joined(separator: "\n"), language: String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)))
             } else if trimmed.isEmpty {
                 flush()
             } else if let h = heading(trimmed) {

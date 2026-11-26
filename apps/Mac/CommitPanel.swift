@@ -9,18 +9,17 @@ struct CommitPanel: View {
             if let d = model.detail {
                 if !model.wideDiff {
                     CommitHeader(detail: d)
-                    // Tall enough for the files, at most about seven rows; the diff gets the rest.
                     FileList(detail: d)
-                        .frame(height: min(240, CGFloat(d.files.count) * 31 + 36))
+                        .frame(height: min(220, CGFloat(d.files.count) * 31 + 38))
                 }
                 DiffPane()
             } else if let error = model.detailError {
-                EmptyState(title: "Can't read this commit", message: error)
+                EmptyState(icon: "exclamationmark.triangle", title: "Can't read this commit", message: error)
             } else {
-                EmptyState(title: "No commit selected", message: "Pick a commit to see what it changed.")
+                EmptyState(icon: "clock.arrow.circlepath", title: "No commit selected", message: "Pick a commit to see what it changed.")
             }
         }
-        .island()
+        .background(N.inspector)
     }
 }
 
@@ -31,71 +30,120 @@ struct CommitHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(detail.subject)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(N.text)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+
             if !detail.body.isEmpty {
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     Text(detail.body)
                         .font(.system(size: 12.5))
                         .foregroundStyle(N.muted)
+                        .lineSpacing(3)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 110)
+                .frame(maxHeight: 96)
                 .fixedSize(horizontal: false, vertical: true)
             }
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                GridRow {
-                    label("Commit")
-                    HStack(spacing: 6) {
-                        Text(detail.sha).font(N.mono(12)).foregroundStyle(N.body).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                        Button {
-                            model.copy(detail.sha)
-                        } label: {
-                            Image(systemName: "doc.on.doc").font(.system(size: 10))
-                        }
-                        .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("Commit")
+                        .font(.system(size: 11.5))
                         .foregroundStyle(N.faint)
-                        .help("Copy the full hash")
-                        .accessibilityLabel("Copy hash")
+                        .frame(width: 56, alignment: .leading)
+                    Text(detail.sha)
+                        .font(N.mono(11.5))
+                        .foregroundStyle(N.text)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button {
+                        model.copy(detail.sha, label: "commit SHA")
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(N.sky)
                     }
+                    .buttonStyle(.plain)
+                    .help("Copy the full hash")
+                    .accessibilityLabel("Copy hash")
                 }
-                GridRow {
-                    label(detail.parents.count > 1 ? "Parents" : "Parent")
-                    HStack(spacing: 8) {
-                        if detail.parents.isEmpty { Text("None, this is the first commit").foregroundStyle(N.muted) }
+
+                HStack(spacing: 8) {
+                    Text(detail.parents.count > 1 ? "Parents" : "Parent")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(N.faint)
+                        .frame(width: 56, alignment: .leading)
+                    if detail.parents.isEmpty {
+                        Text("Root commit")
+                            .font(.system(size: 12))
+                            .foregroundStyle(N.muted)
+                    } else {
                         ForEach(detail.parents, id: \.self) { p in
                             Button(String(p.prefix(7))) { Task { await model.select(commit: p) } }
                                 .buttonStyle(.plain)
-                                .font(N.mono(12))
-                                .foregroundStyle(N.accent)
+                                .font(N.mono(11.5, weight: .medium))
+                                .foregroundStyle(N.sky)
                                 .help("Go to \(p)")
                         }
                         if detail.parents.count > 1 {
-                            Text("files compared with the first").font(.system(size: 11.5)).foregroundStyle(N.faint)
+                            Text("vs first parent")
+                                .font(.system(size: 11))
+                                .foregroundStyle(N.faint)
                         }
                     }
+                    Spacer()
                 }
-                GridRow {
-                    label("Author")
-                    Text("\(detail.author.name)  \(detail.author.email)").foregroundStyle(N.body).lineLimit(1).textSelection(.enabled)
+
+                HStack(spacing: 8) {
+                    Text("Author")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(N.faint)
+                        .frame(width: 56, alignment: .leading)
+                    Text("\(detail.author.name) · \(detail.author.email)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.body)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer()
                 }
-                GridRow {
-                    label("Date")
-                    Text(Format.full(detail.author.time)).foregroundStyle(N.body)
+
+                HStack(spacing: 8) {
+                    Text("Date")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(N.faint)
+                        .frame(width: 56, alignment: .leading)
+                    Text(Format.full(detail.author.time))
+                        .font(N.mono(11.5))
+                        .foregroundStyle(N.body)
+                    Spacer()
                 }
+
                 if !detail.refs.isEmpty {
-                    GridRow {
-                        label("Refs")
-                        HStack(spacing: 6) { ForEach(detail.refs, id: \.name) { RefChip(label: $0) } }
+                    HStack(spacing: 8) {
+                        Text("Refs")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(N.faint)
+                            .frame(width: 56, alignment: .leading)
+                        HStack(spacing: 6) {
+                            ForEach(detail.refs, id: \.name) { RefChip(label: $0) }
+                        }
+                        Spacer()
                     }
                 }
+
                 let checks = model.checkRuns(for: detail.sha)
                 if !checks.isEmpty {
-                    GridRow(alignment: .top) {
-                        label("Checks")
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("Checks")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(N.faint)
+                            .frame(width: 56, alignment: .leading)
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(checks) { r in
                                 Button {
@@ -103,8 +151,12 @@ struct CommitHeader: View {
                                 } label: {
                                     HStack(spacing: 6) {
                                         RunStateIcon(state: r.state, size: 11)
-                                        Text(r.name).foregroundStyle(N.body)
-                                        Text("\(r.state.label) · run \(r.number)").foregroundStyle(N.faint)
+                                        Text(r.name)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(N.text)
+                                        Text("\(r.state.label) · #\(r.number)")
+                                            .font(N.mono(11))
+                                            .foregroundStyle(N.faint)
                                     }
                                     .contentShape(Rectangle())
                                 }
@@ -112,19 +164,17 @@ struct CommitHeader: View {
                                 .help("Open run \(r.number)")
                             }
                         }
+                        Spacer()
                     }
                 }
             }
-            .font(.system(size: 12.5))
+            .padding(12)
+            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
+        .padding(.horizontal, 18)
+        .padding(.top, 18)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func label(_ text: String) -> some View {
-        Text(text).foregroundStyle(N.faint).gridColumnAlignment(.leading)
     }
 }
 
@@ -133,7 +183,7 @@ struct FileList: View {
     var detail: CommitDetail
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 SectionLabel("Files changed · \(detail.files.count)\(detail.truncated ? "+" : "")")
                 Spacer()
@@ -141,9 +191,9 @@ struct FileList: View {
                 let del = detail.files.reduce(UInt32(0)) { $0 + $1.deletions }
                 StatCounts(additions: add, deletions: del)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 6)
-            ScrollView {
+            .padding(.horizontal, 18)
+
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 1) {
                     ForEach(detail.files) { f in
                         FileRow(file: f, selected: f.path == model.selectedPath)
@@ -153,7 +203,6 @@ struct FileList: View {
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
             }
-            .scrollIndicators(.automatic)
         }
     }
 }
@@ -172,9 +221,9 @@ struct FileRow: View {
                 .help(file.status.label)
             Group {
                 if let old = file.oldPath {
-                    Text(old).foregroundStyle(N.faint) + Text("  →  ").foregroundStyle(N.faint) + Text(file.path).foregroundStyle(N.body)
+                    Text(old).foregroundStyle(N.faint) + Text("  →  ").foregroundStyle(N.faint) + Text(file.path).foregroundStyle(N.text)
                 } else {
-                    Text(dirname(file.path)).foregroundStyle(N.faint) + Text(basename(file.path)).foregroundStyle(N.body)
+                    Text(dirname(file.path)).foregroundStyle(N.faint) + Text(basename(file.path)).foregroundStyle(N.text)
                 }
             }
             .font(N.mono(12))
@@ -182,15 +231,20 @@ struct FileRow: View {
             .truncationMode(.head)
             Spacer(minLength: 8)
             if file.binary {
-                Text("binary").font(.system(size: 11)).foregroundStyle(N.faint)
+                Text("binary")
+                    .font(N.mono(10.5))
+                    .foregroundStyle(N.faint)
             } else {
                 StatCounts(additions: file.additions, deletions: file.deletions)
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .frame(height: 30)
-        .background(selected ? N.selected : (hovering ? Color.white.opacity(0.035) : .clear), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .contentShape(Rectangle())
+        .background(
+            selected ? N.surfaceActive : (hovering ? N.surfaceHover : Color.clear),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { hovering = $0 }
         .help(file.oldPath.map { "\($0) → \(file.path)" } ?? file.path)
     }

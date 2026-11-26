@@ -5,44 +5,96 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        VStack(spacing: 10) {
-            HeaderBar()
-            HStack(alignment: .top, spacing: 10) {
-                Sidebar().frame(width: 228)
-                Group {
-                    if model.repos.isEmpty, model.hostedRepos.isEmpty, model.connection != .connecting {
-                        NoRepositories().island()
-                    } else {
-                        switch model.section {
-                        case .code: CodeScreen()
-                        case .changes: ChangesScreen()
-                        case .history: HistoryScreen()
-                        case .branches: BranchesScreen()
-                        case .pulls: PullsScreen()
-                        case .runs: RunsScreen()
-                        case .secrets: SecretsScreen()
+        ZStack {
+            N.ground.ignoresSafeArea()
+            WindowAccessor()
+
+            HStack(spacing: 0) {
+                if !model.sidebarCollapsed {
+                    Sidebar()
+                        .frame(width: 232)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+
+                VStack(spacing: 0) {
+                    WorkspaceTopBar()
+
+                    Group {
+                        if model.repos.isEmpty, model.hostedRepos.isEmpty, model.connection != .connecting {
+                            NoRepositories()
+                        } else {
+                            switch model.section {
+                            case .code: CodeScreen()
+                            case .changes: ChangesScreen()
+                            case .history: HistoryScreen()
+                            case .branches: BranchesScreen()
+                            case .pulls: PullsScreen()
+                            case .runs: RunsScreen()
+                            case .secrets: SecretsScreen()
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(N.ground)
+            }
+            .ignoresSafeArea(.container, edges: .top)
+
+            if model.paletteOpen {
+                Color.black.opacity(0.58)
+                    .ignoresSafeArea()
+                    .onTapGesture { model.paletteOpen = false }
+
+                VStack {
+                    CommandPalette()
+                        .padding(.top, 96)
+                    Spacer()
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
+
+            if let notice = model.notice {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        ToastBanner(message: notice, isError: true) {
+                            model.notice = nil
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            StatusBar()
-        }
-        .padding(.horizontal, 10)
-        .padding(.bottom, 8)
-        .ignoresSafeArea(.container, edges: .top)
-        .background(N.ground.ignoresSafeArea())
-        .foregroundStyle(N.body)
-        .overlay(alignment: .top) {
-            if model.paletteOpen {
-                ZStack(alignment: .top) {
-                    Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { model.paletteOpen = false }
-                    CommandPalette().padding(.top, 96)
+                .padding(24)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            } else if let toast = model.toastMessage {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        ToastBanner(message: toast, isError: model.toastIsError)
+                    }
                 }
-                .transition(.opacity)
+                .padding(24)
+                .allowsHitTesting(false)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .animation(.easeOut(duration: 0.12), value: model.paletteOpen)
+        .foregroundStyle(N.body)
+        .animation(.easeOut(duration: 0.16), value: model.paletteOpen)
+        .animation(.easeOut(duration: 0.16), value: model.toastMessage)
+        .animation(.easeOut(duration: 0.16), value: model.notice)
+        .animation(.easeInOut(duration: 0.18), value: model.sidebarCollapsed)
+        .onKeyPress(.escape) {
+            if model.paletteOpen {
+                model.paletteOpen = false
+                return .handled
+            }
+            if model.notice != nil {
+                model.notice = nil
+                return .handled
+            }
+            return .ignored
+        }
         .task { model.start() }
     }
 }
@@ -53,12 +105,17 @@ struct NoRepositories: View {
     var body: some View {
         if model.isLive {
             EmptyState(
+                icon: "folder.badge.plus",
                 title: "No repositories yet",
                 message: "Add a folder inside a git repository. Neutrino reads it in place and changes nothing.",
                 action: ("Add repository…", add)
             )
         } else {
-            EmptyState(title: "No repositories", message: "neutrinod isn't running.")
+            EmptyState(
+                icon: "bolt.slash",
+                title: "No repositories",
+                message: "neutrinod isn't running. Start it with scripts/dev-neutrinod.sh to inspect local repositories."
+            )
         }
     }
 
@@ -67,122 +124,144 @@ struct NoRepositories: View {
     }
 }
 
-// MARK: - Header
+// MARK: - Workspace Top Bar
 
-struct HeaderBar: View {
+struct WorkspaceTopBar: View {
     @Environment(AppModel.self) private var model
+    @State private var toggleHovered = false
+    @State private var reloadHovered = false
 
     var body: some View {
-        @Bindable var model = model
         HStack(spacing: 10) {
-            // Room for the traffic lights.
-            Color.clear.frame(width: 66, height: 1)
-            if let repo = model.repo {
-                Menu {
-                    ForEach(model.repos) { r in
-                        Button(r.name) { Task { await model.select(repo: r.id) } }.disabled(r.error != nil)
-                    }
-                    Divider()
-                    Button("Add repository…") { Task { await model.addRepository() } }.disabled(!model.isLive)
-                } label: {
-                    HStack(spacing: 7) {
-                        Text(repo.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(N.text)
-                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(N.muted)
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 30)
-                    .background(N.island, in: Capsule())
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .fixedSize()
+            if model.sidebarCollapsed {
+                // Room for macOS window traffic lights when sidebar is hidden.
+                Color.clear.frame(width: 72, height: 1)
+            }
 
-                if let head = repo.head {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.triangle.branch").font(.system(size: 11))
-                        Text(head.label).font(N.mono(12, weight: .medium))
-                    }
-                    .foregroundStyle(N.body)
-                    .padding(.horizontal, 12)
-                    .frame(height: 30)
-                    .background(N.island, in: Capsule())
-                    .help("Checked out")
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    model.sidebarCollapsed.toggle()
                 }
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(toggleHovered ? N.text : N.muted)
+                    .frame(width: 28, height: 28)
+                    .background(toggleHovered ? N.surfaceHover : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
-            Spacer(minLength: 12)
-            if let notice = model.notice {
+            .buttonStyle(.plain)
+            .onHover { toggleHovered = $0 }
+            .help("Toggle Sidebar (⌘\\)")
+            .accessibilityLabel("Toggle Sidebar")
+
+            if let repo = model.repo {
                 HStack(spacing: 8) {
-                    Text(notice).lineLimit(1).truncationMode(.middle)
-                    Button {
-                        model.notice = nil
-                    } label: {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    Text(repo.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(N.text)
+                        .lineLimit(1)
+
+                    TagPill(
+                        text: model.source == .server ? (model.serverLink?.name ?? "server") : "local",
+                        color: model.source == .server ? N.violet : N.mint,
+                        textColor: model.source == .server ? N.violet : N.muted
+                    )
+
+                    if let head = repo.head {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(N.indigo)
+                            Text(head.label)
+                                .font(N.mono(11.5, weight: .medium))
+                                .foregroundStyle(N.text)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(N.surfacePill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .help("Checked out")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dismiss")
+
+                    if model.source == .local, let s = model.status {
+                        telemetryPills(s)
+                    }
                 }
-                .font(.system(size: 12))
-                .foregroundStyle(N.danger)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(N.danger.opacity(0.1), in: Capsule())
-                .frame(maxWidth: 420)
             }
+
+            Spacer(minLength: 12)
+
             if model.source == .local, model.isLive, model.repo?.bare == false {
-                Button {
+                ActionPillButton(
+                    title: model.syncing == "Fetching" ? "Fetching…" : "Fetch",
+                    systemImage: "arrow.down.circle",
+                    tint: N.text,
+                    background: N.surfacePill,
+                    isLoading: model.syncing == "Fetching"
+                ) {
                     Task { await model.fetch() }
-                } label: {
-                    Text(model.syncing == "Fetching" ? "Fetching…" : "Fetch")
                 }
-                .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
                 .disabled(model.syncing != nil)
                 .help("Fetch every remote")
-                Button {
+
+                let ahead = model.status?.ahead ?? 0
+                ActionPillButton(
+                    title: model.syncing == "Pushing" ? "Pushing…" : (ahead > 0 ? "Push ↑\(ahead)" : "Push"),
+                    systemImage: "arrow.up.circle",
+                    tint: ahead > 0 ? N.onAccent : N.text,
+                    background: ahead > 0 ? N.indigo : N.surfacePill,
+                    isLoading: model.syncing == "Pushing"
+                ) {
                     Task { await model.push() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(model.syncing == "Pushing" ? "Pushing…" : "Push")
-                        if let a = model.status?.ahead, a > 0 { Text("↑\(a)").font(N.mono(11, weight: .semibold)) }
-                    }
                 }
-                .buttonStyle(PillButtonStyle(kind: (model.status?.ahead ?? 0) > 0 ? .primary : .secondary, height: 30))
                 .disabled(model.syncing != nil)
                 .help(model.status?.upstream.map { "Push to \($0)" } ?? "Push this branch and track it")
             }
+
             Button {
                 Task { await model.reload() }
             } label: {
-                Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .semibold))
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(reloadHovered ? N.text : N.muted)
+                    .frame(width: 28, height: 28)
+                    .background(reloadHovered ? N.surfaceHover : N.surfacePill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
-            .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+            .buttonStyle(.plain)
+            .onHover { reloadHovered = $0 }
             .help("Reload (⌘R)")
             .accessibilityLabel("Reload")
-            ConnectionPill()
         }
-        // Sits in the title bar, centred on the traffic lights.
-        .frame(height: 30)
+        .padding(.horizontal, 18)
+        .frame(height: 46)
+        .background(N.ground)
         .contentShape(Rectangle())
         .gesture(WindowDragGesture())
     }
-}
 
-struct ConnectionPill: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let (color, title, detail): (Color, String, String) = switch model.connection {
-        case .connecting: (N.faint, "Connecting", "Looking for neutrinod")
-        case let .live(info): (N.ok, "neutrinod", "\(info.role) \(info.version), protocol \(info.protocol)")
-        case let .demo(reason): (N.warn, "Demo data", "neutrinod isn't running: \(reason)\nStart it with scripts/dev-neutrinod.sh. Neutrino connects on its own once it's up.")
+    @ViewBuilder
+    private func telemetryPills(_ s: WorkingStatus) -> some View {
+        HStack(spacing: 6) {
+            if let a = s.ahead, let b = s.behind, (a > 0 || b > 0) {
+                Text("↑\(a) ↓\(b)")
+                    .font(N.mono(11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(a > 0 ? N.indigo : N.sky)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .help(s.upstream.map { "Against \($0)" } ?? "Ahead / behind upstream")
+            }
+            if !s.isClean {
+                TagPill(
+                    text: "\(s.changeCount) changed",
+                    color: N.coral,
+                    textColor: N.body,
+                    monospaced: true
+                )
+            }
         }
-        HStack(spacing: 8) {
-            Dot(color: color, glow: model.isLive)
-            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(N.text)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 30)
-        .background(N.island, in: Capsule())
-        .help(detail)
     }
 }
 
@@ -191,94 +270,255 @@ struct ConnectionPill: View {
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
     @FocusState private var filterFocused: Bool
+    @State private var paletteHovered = false
+    @State private var addHovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            SectionLabel("This Mac").padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 8)
-            NavRow(title: "Code", icon: "chevron.left.forwardslash.chevron.right", selected: model.section == .code) { model.section = .code }
-            NavRow(title: "Changes", icon: "doc.badge.plus", selected: model.section == .changes, enabled: model.source == .local,
-                   count: model.status?.changeCount, help: model.source == .server ? "A hosted repository has no working copy." : nil) {
-                model.section = .changes
-            }
-            NavRow(title: "History", icon: "clock.arrow.circlepath", selected: model.section == .history) { model.section = .history }
-            NavRow(title: "Branches", icon: "arrow.triangle.branch", selected: model.section == .branches, count: model.branches.filter { $0.kind == .local }.count) {
-                model.section = .branches
-            }
-            NavRow(title: "Pull requests", icon: "arrow.triangle.pull", selected: model.section == .pulls,
-                   count: model.pullList.filter { $0.state == .open }.count,
-                   help: model.serverLink == nil ? "Pull requests live on your server. Pair with it first." : nil) {
-                model.section = .pulls
-            }
-            NavRow(title: "Runs", icon: "play.circle", selected: model.section == .runs,
-                   count: model.runList.filter { !$0.state.finished }.count,
-                   help: model.serverLink == nil ? "CI runs on your server. Pair with it first." : nil) {
-                model.section = .runs
-            }
-            NavRow(title: "Secrets", icon: "key", selected: model.section == .secrets,
-                   help: model.serverLink == nil ? "Secrets live on your server. Pair with it first." : nil) {
-                model.section = .secrets
-            }
+        @Bindable var model = model
 
-            @Bindable var model = model
-            SearchField(text: $model.repoFilter, focused: $filterFocused, prompt: "Filter repositories", width: nil)
-                .padding(.top, 14)
-                .help("Filter repositories (⌘⇧F)")
-                .background {
-                    Button("") { filterFocused = true }.keyboardShortcut("f", modifiers: [.command, .shift]).hidden()
+        VStack(alignment: .leading, spacing: 0) {
+            // Breathing room under macOS window traffic lights.
+            Spacer().frame(height: 36)
+
+            repoSwitcher
+                .padding(.horizontal, 14)
+
+            // Quick Command Palette Trigger (⌘K)
+            Button {
+                model.paletteOpen = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(N.faint)
+                    Text("Jump to repo, branch...")
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.faint)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("⌘K")
+                        .font(N.mono(10, weight: .medium))
+                        .foregroundStyle(N.faint)
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(paletteHovered ? N.surfaceHover : N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .onHover { paletteHovered = $0 }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 16)
 
-            // The server's repos and this Mac's share one scroll area, so a long
-            // list scrolls instead of pushing the window's header off the top.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    let recents = model.repoFilter.isEmpty ? model.recentEntries() : []
-                    if !recents.isEmpty {
-                        SectionLabel("Recent").padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 8)
-                        ForEach(recents, id: \.repo.id) { entry in
-                            if entry.source == .server { HostedRow(repo: entry.repo) } else { RepoRow(repo: entry.repo, compact: true) }
+            // Navigation Groups + Repositories in one clean scroll area.
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(Section.Group.allCases, id: \.rawValue) { group in
+                        let items = Section.allCases.filter { $0.group == group }
+                        VStack(alignment: .leading, spacing: 3) {
+                            SectionLabel(group.rawValue)
+                                .padding(.horizontal, 10)
+                                .padding(.bottom, 3)
+
+                            ForEach(items) { section in
+                                navItem(section)
+                            }
                         }
                     }
 
-                    ServerSection()
+                    VStack(alignment: .leading, spacing: 6) {
+                        BorderlessSearchField(
+                            text: $model.repoFilter,
+                            placeholder: "Filter repositories",
+                            focused: $filterFocused
+                        )
+                        .help("Filter repositories (⌘⇧F)")
+                        .background {
+                            Button("") { filterFocused = true }.keyboardShortcut("f", modifiers: [.command, .shift]).hidden()
+                        }
 
-                    SectionLabel("Repositories").padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 8)
-                    let local = model.repos.filter(model.matchesFilter)
-                    if local.isEmpty, !model.repos.isEmpty {
-                        Text("None match.").font(.system(size: 12)).foregroundStyle(N.faint).padding(.horizontal, 10)
-                    }
-                    ForEach(local) { repo in
-                        RepoRow(repo: repo)
-                    }
-                    Button {
-                        Task { await model.addRepository() }
-                    } label: {
-                        Label("Add repository…", systemImage: "plus")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(model.isLive ? N.muted : N.faint)
+                        let recents = model.repoFilter.isEmpty ? model.recentEntries() : []
+                        if !recents.isEmpty {
+                            SectionLabel("Recent")
+                                .padding(.horizontal, 10)
+                                .padding(.top, 8)
+                                .padding(.bottom, 2)
+                            VStack(spacing: 2) {
+                                ForEach(recents, id: \.repo.id) { entry in
+                                    if entry.source == .server {
+                                        HostedRow(repo: entry.repo)
+                                    } else {
+                                        RepoRow(repo: entry.repo, compact: true)
+                                    }
+                                }
+                            }
+                        }
+
+                        ServerSection()
+
+                        SectionLabel("Repositories")
                             .padding(.horizontal, 10)
-                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                            .contentShape(Rectangle())
+                            .padding(.top, 10)
+                            .padding(.bottom, 2)
+
+                        let local = model.repos.filter(model.matchesFilter)
+                        if local.isEmpty, !model.repos.isEmpty {
+                            Text("None match.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(N.faint)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                        }
+                        VStack(spacing: 2) {
+                            ForEach(local) { repo in
+                                RepoRow(repo: repo)
+                            }
+                        }
+
+                        Button {
+                            Task { await model.addRepository() }
+                        } label: {
+                            Label("Add repository…", systemImage: "plus")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(model.isLive ? (addHovered ? N.text : N.muted) : N.faint)
+                                .padding(.horizontal, 10)
+                                .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                                .background(addHovered && model.isLive ? N.surfaceHover : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { addHovered = $0 }
+                        .disabled(!model.isLive)
+                        .help(model.isLive ? "Register a working copy" : "Start neutrinod to add your own repositories")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!model.isLive)
-                    .help(model.isLive ? "Register a working copy" : "Start neutrinod to add your own repositories")
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+            }
+
+            MachineCard()
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 14)
+        }
+        .frame(maxHeight: .infinity)
+        .background(N.sidebar)
+    }
+
+    private var repoSwitcher: some View {
+        Menu {
+            if !model.repos.isEmpty {
+                SwiftUI.Section("This Mac") {
+                    ForEach(model.repos) { r in
+                        Button {
+                            Task { await model.select(repo: r.id) }
+                        } label: {
+                            HStack {
+                                Text(r.name)
+                                if model.source == .local && r.id == model.repoID {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                        .disabled(r.error != nil)
+                    }
                 }
             }
-            .scrollIndicators(.automatic)
-            .frame(maxHeight: .infinity)
+            if !model.hostedRepos.isEmpty {
+                SwiftUI.Section(model.serverLink?.name ?? "Server") {
+                    ForEach(model.hostedRepos) { r in
+                        Button {
+                            Task { await model.selectHosted(r.id) }
+                        } label: {
+                            HStack {
+                                Text(r.name)
+                                if model.source == .server && r.id == model.repoID {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("Add repository…") { Task { await model.addRepository() } }.disabled(!model.isLive)
+        } label: {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(N.surfaceActive)
+                        .frame(width: 26, height: 26)
+                    Image(systemName: model.source == .server ? "server.rack" : "arrow.triangle.branch")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(model.source == .server ? N.violet : N.indigo)
+                }
 
-            MachineCard().padding(.top, 12)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.repo?.name ?? "Select Repository")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(N.text)
+                        .lineLimit(1)
+                    Text(switcherSubtitle)
+                        .font(N.mono(10))
+                        .foregroundStyle(N.faint)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(N.faint)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 12)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .island()
+        .menuStyle(.borderlessButton)
+    }
+
+    private var switcherSubtitle: String {
+        if let head = model.repo?.head?.label {
+            return model.source == .server ? "\(model.serverLink?.name ?? "server") · \(head)" : head
+        }
+        return model.source == .server ? (model.serverLink?.name ?? "server") : "no repository"
+    }
+
+    private func navItem(_ section: Section) -> some View {
+        let enabled = section != .changes || model.source == .local
+        let count: Int? = switch section {
+        case .changes: model.status?.changeCount
+        case .branches: model.branches.filter { $0.kind == .local }.count
+        case .pulls: model.pullList.filter { $0.state == .open }.count
+        case .runs: model.runList.filter { !$0.state.finished }.count
+        default: nil
+        }
+        let helpText: String? = switch section {
+        case .changes: model.source == .server ? "A hosted repository has no working copy." : nil
+        case .pulls: model.serverLink == nil ? "Pull requests live on your server. Pair with it first." : nil
+        case .runs: model.serverLink == nil ? "CI runs on your server. Pair with it first." : nil
+        case .secrets: model.serverLink == nil ? "Secrets live on your server. Pair with it first." : nil
+        default: nil
+        }
+        return NavRow(
+            title: section.title,
+            icon: section.icon,
+            accent: section.accentColor,
+            selected: model.section == section,
+            enabled: enabled,
+            count: count,
+            help: helpText
+        ) {
+            model.section = section
+        }
     }
 }
 
 struct NavRow: View {
     var title: String
     var icon: String
+    var accent: Color = N.indigo
     var selected = false
     var enabled = true
     var count: Int? = nil
@@ -291,21 +531,35 @@ struct NavRow: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 13))
-                    .frame(width: 18)
-                    .foregroundStyle(selected ? N.accent : (enabled ? N.muted : N.faint.opacity(0.7)))
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? accent : (enabled ? N.muted : N.faint.opacity(0.6)))
+                    .frame(width: 16)
+
                 Text(title)
                     .font(.system(size: 13, weight: selected ? .medium : .regular))
-                    .foregroundStyle(selected ? N.text : (enabled ? N.muted : N.faint.opacity(0.7)))
+                    .foregroundStyle(selected ? N.text : (enabled ? N.muted : N.faint.opacity(0.6)))
+
                 Spacer()
+
                 if let count, count > 0 {
-                    Text("\(count)").font(N.mono(11, weight: .medium)).foregroundStyle(N.faint)
+                    Text("\(count)")
+                        .font(N.mono(10.5, weight: .medium))
+                        .foregroundStyle(selected ? N.body : N.faint)
+                }
+
+                if selected {
+                    Circle()
+                        .fill(accent)
+                        .frame(width: 5, height: 5)
                 }
             }
             .padding(.horizontal, 10)
-            .frame(height: 34)
-            .background(selected ? N.selected : (hovering && enabled ? Color.white.opacity(0.04) : .clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .contentShape(Rectangle())
+            .padding(.vertical, 7)
+            .background(
+                selected ? N.surfaceActive : (hovering && enabled ? N.surfaceHover : Color.clear),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -329,15 +583,24 @@ struct RepoRow: View {
                 Task { await model.select(repo: repo.id) }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "laptopcomputer").font(.system(size: 11)).foregroundStyle(N.faint).frame(width: 18)
-                    Text(repo.name).font(.system(size: 12.5)).foregroundStyle(N.body).lineLimit(1)
+                    Image(systemName: "laptopcomputer")
+                        .font(.system(size: 11))
+                        .foregroundStyle(selected ? N.indigo : N.faint)
+                        .frame(width: 16)
+                    Text(repo.name)
+                        .font(.system(size: 12.5, weight: selected ? .medium : .regular))
+                        .foregroundStyle(selected ? N.text : N.body)
+                        .lineLimit(1)
                     Spacer()
-                    Text(repo.head?.label ?? "").font(N.mono(11)).foregroundStyle(N.faint).lineLimit(1)
+                    Text(repo.head?.label ?? "")
+                        .font(N.mono(10.5))
+                        .foregroundStyle(N.faint)
+                        .lineLimit(1)
                 }
                 .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background(hovering ? Color.white.opacity(0.04) : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .contentShape(Rectangle())
+                .frame(height: 29)
+                .background(selected ? N.surfaceActive : (hovering ? N.surfaceHover : Color.clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
@@ -351,22 +614,30 @@ struct RepoRow: View {
         Button {
             Task { await model.select(repo: repo.id) }
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(repo.name)
-                    .font(.system(size: 12.5, weight: selected ? .medium : .regular))
-                    .foregroundStyle(repo.error != nil ? N.faint : (selected ? N.text : N.body))
-                    .lineLimit(1)
-                Text(repo.error ?? repo.head?.label ?? "")
-                    .font(repo.error != nil ? .system(size: 11) : N.mono(11))
-                    .foregroundStyle(repo.error != nil ? N.danger : N.faint)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(repo.name)
+                        .font(.system(size: 12.5, weight: selected ? .medium : .regular))
+                        .foregroundStyle(repo.error != nil ? N.faint : (selected ? N.text : N.body))
+                        .lineLimit(1)
+                    Text(repo.error ?? repo.head?.label ?? "")
+                        .font(repo.error != nil ? .system(size: 10.5) : N.mono(10.5))
+                        .foregroundStyle(repo.error != nil ? N.rose : N.faint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+                if selected {
+                    Circle()
+                        .fill(N.indigo)
+                        .frame(width: 5, height: 5)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? N.selected : (hovering ? Color.white.opacity(0.04) : .clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .contentShape(Rectangle())
+            .background(selected ? N.surfaceActive : (hovering ? N.surfaceHover : Color.clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(repo.error != nil && !model.isLive)
@@ -374,7 +645,7 @@ struct RepoRow: View {
         .help(repo.path)
         .contextMenu {
             Button("Reveal in Finder") { model.reveal(repo) }
-            Button("Copy path") { model.copy(repo.path) }
+            Button("Copy path") { model.copy(repo.path, label: "path") }
             Divider()
             Button("Remove from Neutrino") { Task { await model.remove(repo: repo.id) } }.disabled(!model.isLive)
         }
@@ -384,11 +655,27 @@ struct RepoRow: View {
 struct MachineCard: View {
     @Environment(AppModel.self) private var model
 
+    private var daemonLabel: String {
+        switch model.connection {
+        case let .live(info): "neutrinod \(info.version)"
+        case .demo: "Demo data"
+        case .connecting: "Connecting…"
+        }
+    }
+
+    private var daemonSublabel: String {
+        switch model.connection {
+        case let .live(info): "\(info.repos) repos · workstation"
+        case .demo: "start neutrinod to sync"
+        case .connecting: "looking for socket"
+        }
+    }
+
     private var serverText: String {
         switch model.serverState {
         case .unpaired: "not paired"
         case .connecting: "connecting"
-        case .online: "server"
+        case let .online(info): "\(info.repos) hosted"
         case .offline: "offline"
         }
     }
@@ -404,56 +691,44 @@ struct MachineCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Dot(color: model.isLive ? N.ok : N.warn, glow: model.isLive)
-                Text("This Mac").foregroundStyle(N.text)
+            HStack(spacing: 9) {
+                StatusDot(
+                    color: model.isLive ? N.mint : (model.connection == .connecting ? N.faint : N.amber),
+                    size: 6,
+                    pulse: model.isLive
+                )
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(daemonLabel)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(N.text)
+                        .lineLimit(1)
+                    Text(daemonSublabel)
+                        .font(N.mono(10))
+                        .foregroundStyle(N.faint)
+                        .lineLimit(1)
+                }
                 Spacer()
-                Text(model.isLive ? "workstation" : "demo").foregroundStyle(N.muted)
             }
-            HStack(spacing: 8) {
-                Dot(color: N.atlas, glow: model.isServerOnline).opacity(model.isServerOnline ? 1 : 0.45)
-                Text(model.serverLink?.name ?? "atlas").foregroundStyle(N.text).lineLimit(1)
+
+            HStack(spacing: 9) {
+                StatusDot(
+                    color: model.isServerOnline ? N.violet : N.slate,
+                    size: 5,
+                    pulse: model.isServerOnline
+                )
+                Text(model.serverLink?.name ?? "atlas")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(model.isServerOnline ? N.body : N.muted)
+                    .lineLimit(1)
                 Spacer()
-                Text(serverText).foregroundStyle(model.isServerOnline ? N.muted : N.faint)
+                Text(serverText)
+                    .font(N.mono(10))
+                    .foregroundStyle(N.faint)
             }
             .help(serverHelp)
         }
-        .font(.system(size: 12))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .well()
-    }
-}
-
-// MARK: - Status bar
-
-struct StatusBar: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        HStack(spacing: 18) {
-            if let repo = model.repo {
-                Text(repo.head?.label ?? "").foregroundStyle(N.muted)
-                Text(repo.path).lineLimit(1).truncationMode(.middle)
-            }
-            if model.section == .changes, let s = model.status {
-                if let up = s.upstream, let a = s.ahead, let b = s.behind { Text("↑\(a) ↓\(b) against \(up)") }
-                Text(s.isClean ? "clean" : "\(s.changeCount) changed")
-            }
-            if model.section == .history, !model.commits.isEmpty {
-                Text("\(model.commits.count)\(model.hasMore ? "+" : "") commits")
-                if let ms = model.historyMillis { Text(ms < 1 ? "first page in under 1 ms" : "first page in \(ms) ms") }
-            }
-            Spacer()
-            switch model.connection {
-            case let .live(info): Text("neutrinod \(info.version) · \(info.repos) repos")
-            case .demo: Text("demo data · start neutrinod to read your repos")
-            case .connecting: Text("connecting")
-            }
-        }
-        .font(N.mono(11))
-        .foregroundStyle(N.faint)
-        .padding(.horizontal, 8)
-        .frame(height: 16)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }

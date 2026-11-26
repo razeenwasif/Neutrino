@@ -3,8 +3,70 @@ import NeutrinoKit
 import Observation
 import SwiftUI
 
-enum Section: String, CaseIterable {
+enum Section: String, CaseIterable, Identifiable {
     case code, changes, history, branches, pulls, runs, secrets
+
+    enum Group: String, CaseIterable {
+        case workspace = "Workspace"
+        case forge = "Forge"
+    }
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .code: "Code"
+        case .changes: "Changes"
+        case .history: "History"
+        case .branches: "Branches"
+        case .pulls: "Pull requests"
+        case .runs: "Runs"
+        case .secrets: "Secrets"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .code: "chevron.left.forwardslash.chevron.right"
+        case .changes: "doc.badge.plus"
+        case .history: "clock.arrow.circlepath"
+        case .branches: "arrow.triangle.branch"
+        case .pulls: "arrow.triangle.pull"
+        case .runs: "play.circle"
+        case .secrets: "key"
+        }
+    }
+
+    var accentColor: Color {
+        switch self {
+        case .code: N.indigo
+        case .changes: N.coral
+        case .history: N.sky
+        case .branches: N.violet
+        case .pulls: N.mint
+        case .runs: N.amber
+        case .secrets: N.rose
+        }
+    }
+
+    var group: Group {
+        switch self {
+        case .code, .changes, .history, .branches: .workspace
+        case .pulls, .runs, .secrets: .forge
+        }
+    }
+
+    var shortcutDigit: String {
+        switch self {
+        case .code: "0"
+        case .changes: "1"
+        case .history: "2"
+        case .branches: "3"
+        case .pulls: "4"
+        case .runs: "5"
+        case .secrets: "6"
+        }
+    }
 }
 
 /// Which secrets and variables the Secrets screen shows.
@@ -58,8 +120,14 @@ final class AppModel {
 
     /// What the sidebar's filter field holds.
     var repoFilter = ""
+    /// Whether the left sidebar is collapsed (⌘\).
+    var sidebarCollapsed = false
     /// The ⌘K palette is showing.
     var paletteOpen = false
+    /// Transient Stratus-style toast banner.
+    var toastMessage: String?
+    var toastIsError = false
+    private var toastTask: Task<Void, Never>?
     /// A sheet a screen should open when it appears (asked for from the palette).
     enum SheetRequest { case newPull, runWorkflow }
     var sheetRequest: SheetRequest?
@@ -560,9 +628,21 @@ final class AppModel {
         if let list = try? await service.repos() { repos = list }
     }
 
-    func copy(_ text: String) {
+    func showToast(_ message: String, isError: Bool = false) {
+        toastTask?.cancel()
+        toastMessage = message
+        toastIsError = isError
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.6))
+            guard let self, !Task.isCancelled else { return }
+            self.toastMessage = nil
+        }
+    }
+
+    func copy(_ text: String, label: String? = nil) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        showToast(label.map { "Copied \($0)" } ?? "Copied to clipboard")
     }
 
     func reveal(_ repo: Repo) {

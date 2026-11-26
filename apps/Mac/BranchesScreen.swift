@@ -5,9 +5,12 @@ struct BranchesScreen: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            BranchList().frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
-            BranchPanel().frame(minWidth: 320, idealWidth: 380, maxWidth: 420, maxHeight: .infinity)
+        HStack(spacing: 0) {
+            BranchList()
+                .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+            BranchPanel()
+                .frame(width: 360)
+                .frame(maxHeight: .infinity)
         }
     }
 }
@@ -22,43 +25,67 @@ struct BranchList: View {
     }
 
     var body: some View {
+        let local = model.branches.filter { $0.kind == .local }
+        let remote = model.branches.filter { $0.kind == .remote }
+        let scale = max(1, model.branches.compactMap { max($0.ahead ?? 0, $0.behind ?? 0) }.max() ?? 1)
+
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Text("Branches").font(.system(size: 14, weight: .semibold)).foregroundStyle(N.text)
-                if model.source == .local {
-                    Text("ahead and behind their upstream").font(.system(size: 12)).foregroundStyle(N.muted)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Branches")
+                        .font(N.pageTitle())
+                        .foregroundStyle(N.text)
+                    Text(model.source == .local ? "Local & remote refs with upstream divergence" : "Branches hosted on \(model.serverLink?.name ?? "the server")")
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.muted)
                 }
                 Spacer()
                 if !mergedLocal.isEmpty {
-                    Button("Delete merged (\(mergedLocal.count))…") { pruning = true }
-                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
-                        .disabled(model.writing || !model.isLive)
-                        .help("Delete the local branches whose work is already in the default branch")
+                    ActionPillButton(
+                        title: "Delete merged (\(mergedLocal.count))…",
+                        systemImage: "trash",
+                        tint: N.rose,
+                        background: N.surfacePill
+                    ) {
+                        pruning = true
+                    }
+                    .disabled(model.writing || !model.isLive)
+                    .help("Delete the local branches whose work is already in the default branch")
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
+
+            if !model.branches.isEmpty {
+                HStack(spacing: 28) {
+                    MetricStatColumn(label: "Local", value: "\(local.count)")
+                    MetricStatColumn(label: "Remote", value: "\(remote.count)")
+                    MetricStatColumn(label: "Merged", value: "\(mergedLocal.count)")
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 20)
+            }
 
             if let error = model.branchesError {
-                EmptyState(title: "Can't read the branches", message: error)
+                EmptyState(icon: "exclamationmark.triangle", title: "Can't read the branches", message: error)
             } else if model.branches.isEmpty {
-                EmptyState(title: "No branches yet", message: "Make a first commit to create one.")
+                EmptyState(icon: "arrow.triangle.branch", title: "No branches yet", message: "Make a first commit to create one.")
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        let local = model.branches.filter { $0.kind == .local }
-                        let remote = model.branches.filter { $0.kind == .remote }
-                        let scale = max(1, model.branches.compactMap { max($0.ahead ?? 0, $0.behind ?? 0) }.max() ?? 1)
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 2) {
                         group(model.source == .server ? "On \(model.serverLink?.name ?? "the server")" : "On this Mac", local, scale: scale)
-                        if !remote.isEmpty { group("Remote", remote, scale: scale) }
+                        if !remote.isEmpty {
+                            group("Remote", remote, scale: scale)
+                                .padding(.top, 14)
+                        }
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.bottom, 8)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 28)
                 }
             }
         }
-        .island()
+        .background(N.ground)
         .task(id: "\(model.source.rawValue):\(model.repoID ?? ""):\(model.isServerOnline)") {
             await model.loadRunList()
             await model.refreshGlancePulls()
@@ -80,7 +107,10 @@ struct BranchList: View {
 
     @ViewBuilder
     private func group(_ title: String, _ list: [Branch], scale: UInt32) -> some View {
-        Text(title).font(.system(size: 12)).foregroundStyle(N.muted).padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 4)
+        SectionLabel(title)
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 6)
         ForEach(list) { b in
             BranchRow(branch: b, scale: scale, selected: b.id == model.selectedBranch, hosted: model.source == .server)
                 .onTapGesture { model.selectedBranch = b.id }
@@ -99,43 +129,63 @@ struct BranchRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Dot(color: branch.isHead ? N.accent : .clear, glow: false, size: 7)
-                .help(branch.isHead ? "Checked out" : "")
-            HStack(spacing: 6) {
+            StatusDot(
+                color: branch.isHead ? N.indigo : (branch.kind == .remote ? N.sky.opacity(0.45) : N.slate.opacity(0.45)),
+                size: 5.5,
+                pulse: branch.isHead
+            )
+            .help(branch.isHead ? "Checked out" : "")
+
+            HStack(spacing: 7) {
                 Text(branch.name)
-                    .font(N.mono(12.5, weight: .medium))
-                    .foregroundStyle(branch.kind == .remote ? N.second : N.text)
+                    .font(N.mono(12.5, weight: branch.isHead ? .semibold : .medium))
+                    .foregroundStyle(branch.kind == .remote ? N.sky : N.text)
                     .lineLimit(1)
                 if branch.merged == true {
-                    Text("merged").font(.system(size: 10.5, weight: .medium)).foregroundStyle(N.muted)
-                        .padding(.horizontal, 6).frame(height: 17)
-                        .background(Color.white.opacity(0.06), in: Capsule())
+                    TagPill(text: "merged", textColor: N.muted)
                         .fixedSize()
                         .help("Its tip is already in the default branch")
                 }
             }
             .frame(width: 220, alignment: .leading)
+
             CheckMark(sha: branch.sha).frame(width: 14)
-            Text(branch.subject).font(.system(size: 12.5)).foregroundStyle(N.muted).lineLimit(1)
+
+            Text(branch.subject)
+                .font(.system(size: 12.5))
+                .foregroundStyle(N.muted)
+                .lineLimit(1)
+
             Spacer(minLength: 8)
+
             if !hosted {
-            Group {
-                if branch.kind == .remote {
-                    Color.clear
-                } else if branch.ahead == 0, branch.behind == 0 {
-                    Text("up to date").font(.system(size: 12)).foregroundStyle(N.faint).frame(maxWidth: .infinity)
-                } else {
-                    AheadBehind(ahead: branch.ahead, behind: branch.behind, scale: scale)
+                Group {
+                    if branch.kind == .remote {
+                        Color.clear
+                    } else if branch.ahead == 0, branch.behind == 0 {
+                        Text("up to date")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(N.faint)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        AheadBehind(ahead: branch.ahead, behind: branch.behind, scale: scale)
+                    }
                 }
+                .frame(width: 146)
             }
-            .frame(width: 150)
-            }
-            Text(Format.ago(branch.time)).font(.system(size: 12)).foregroundStyle(N.faint).frame(width: 80, alignment: .trailing)
+
+            Text(Format.ago(branch.time))
+                .font(N.mono(11))
+                .foregroundStyle(N.faint)
+                .frame(width: 78, alignment: .trailing)
         }
-        .padding(.horizontal, 10)
-        .frame(height: 40)
-        .background(selected ? N.selected : (hovering ? Color.white.opacity(0.035) : .clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .contentShape(Rectangle())
+        .padding(.horizontal, 12)
+        .frame(height: 42)
+        .background(
+            selected ? N.surfaceActive : (hovering ? N.surfaceHover : Color.clear),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .onHover { hovering = $0 }
         .help("Double-click to show its history")
     }
@@ -150,26 +200,35 @@ struct AheadBehind: View {
     var body: some View {
         if let ahead, let behind {
             HStack(spacing: 5) {
-                Text("\(behind)").frame(width: 24, alignment: .trailing).foregroundStyle(N.muted)
+                Text("\(behind)")
+                    .frame(width: 24, alignment: .trailing)
+                    .foregroundStyle(N.muted)
                 GeometryReader { g in
-                    Capsule().fill(Color(hex: 0x6F6880))
-                        .frame(width: max(behind > 0 ? 5 : 0, g.size.width * CGFloat(behind) / CGFloat(scale)), height: 6)
+                    Capsule()
+                        .fill(N.slate)
+                        .frame(width: max(behind > 0 ? 5 : 0, g.size.width * CGFloat(behind) / CGFloat(scale)), height: 5)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 }
-                Rectangle().fill(Color(hex: 0x4A4458)).frame(width: 1, height: 14)
+                Rectangle().fill(N.surfaceActive).frame(width: 1, height: 12)
                 GeometryReader { g in
-                    Capsule().fill(N.accent)
-                        .frame(width: max(ahead > 0 ? 5 : 0, g.size.width * CGFloat(ahead) / CGFloat(scale)), height: 6)
+                    Capsule()
+                        .fill(N.indigo)
+                        .frame(width: max(ahead > 0 ? 5 : 0, g.size.width * CGFloat(ahead) / CGFloat(scale)), height: 5)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 }
-                Text("\(ahead)").frame(width: 24, alignment: .leading).foregroundStyle(N.text)
+                Text("\(ahead)")
+                    .frame(width: 24, alignment: .leading)
+                    .foregroundStyle(N.text)
             }
-            .font(N.mono(11))
+            .font(N.mono(11).monospacedDigit())
             .frame(height: 16)
             .accessibilityElement()
             .accessibilityLabel("\(ahead) ahead, \(behind) behind")
         } else {
-            Text("no upstream").font(.system(size: 12)).foregroundStyle(N.faint).frame(maxWidth: .infinity)
+            Text("no upstream")
+                .font(.system(size: 11.5))
+                .foregroundStyle(N.faint)
+                .frame(maxWidth: .infinity)
         }
     }
 }
@@ -182,78 +241,89 @@ struct BranchPanel: View {
     @State private var unmerged: (branch: Branch, message: String)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let b = model.branches.first(where: { $0.id == model.selectedBranch }) {
-                HStack(spacing: 8) {
-                    Text(b.name).font(N.mono(15, weight: .semibold)).foregroundStyle(N.text).textSelection(.enabled)
-                    if b.isHead {
-                        Text("checked out").font(.system(size: 11, weight: .medium)).foregroundStyle(N.text)
-                            .padding(.horizontal, 9).frame(height: 20).background(Color.white.opacity(0.07), in: Capsule())
-                    }
-                }
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                    GridRow {
-                        Text("Tip").foregroundStyle(N.faint)
-                        (Text(String(b.sha.prefix(7))).font(N.mono(12)).foregroundStyle(N.muted) + Text("  \(b.subject)"))
-                            .foregroundStyle(N.body).lineLimit(2)
-                    }
-                    GridRow {
-                        Text("Updated").foregroundStyle(N.faint)
-                        Text(Format.full(b.time))
-                    }
-                    if b.kind == .local, model.source == .local {
-                        GridRow {
-                            Text("Upstream").foregroundStyle(N.faint)
-                            if let up = b.upstream {
-                                if let a = b.ahead, let behind = b.behind {
-                                    Text("\(up): \(a) to push, \(behind) to pull")
-                                } else {
-                                    Text("\(up), which no longer exists")
-                                }
-                            } else {
-                                Text("None. This branch is only on this Mac.").foregroundStyle(N.muted)
-                            }
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                if let b = model.branches.first(where: { $0.id == model.selectedBranch }) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            StatusDot(color: b.isHead ? N.indigo : N.violet, size: 6, pulse: b.isHead)
+                            Text(b.name)
+                                .font(N.mono(16, weight: .semibold))
+                                .foregroundStyle(N.text)
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                        }
+                        if b.isHead {
+                            TagPill(text: "checked out", color: N.indigo, textColor: N.indigo, background: N.indigo.opacity(0.14))
                         }
                     }
-                }
-                .font(.system(size: 12.5))
-                .foregroundStyle(N.body)
-                HStack(spacing: 6) {
-                    // A hosted repo has no working copy here to switch.
-                    if !b.isHead, model.source == .local {
-                        Button(b.kind == .remote ? "Check out as local" : "Check out") { Task { await model.checkout(b) } }
-                            .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
+
+                    var pairs: [(String, String)] {
+                        var p: [(String, String)] = [
+                            ("Tip", "\(String(b.sha.prefix(7))) · \(b.subject)"),
+                            ("Updated", Format.full(b.time)),
+                        ]
+                        if b.kind == .local, model.source == .local {
+                            if let up = b.upstream {
+                                if let a = b.ahead, let behind = b.behind {
+                                    p.append(("Upstream", "\(up) (↑\(a) ↓\(behind))"))
+                                } else {
+                                    p.append(("Upstream", "\(up) (missing)"))
+                                }
+                            } else {
+                                p.append(("Upstream", "Local only"))
+                            }
+                        }
+                        return p
+                    }
+
+                    KeyValueCard(pairs: pairs)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel("Actions")
+                        HStack(spacing: 8) {
+                            if !b.isHead, model.source == .local {
+                                Button(b.kind == .remote ? "Check out as local" : "Check out") {
+                                    Task { await model.checkout(b) }
+                                }
+                                .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
+                                .disabled(model.writing || !model.isLive)
+                                .help("Switches with git, which refuses if it would overwrite your uncommitted changes.")
+                            }
+                            Button("Show history") { Task { await model.showHistory(of: b) } }
+                                .buttonStyle(PillButtonStyle(kind: b.isHead ? .primary : .secondary, height: 30))
+                        }
+                        pullActions(for: b)
+                    }
+
+                    if model.source == .local {
+                        VStack(alignment: .leading, spacing: 8) {
+                            SectionLabel("Manage")
+                            FlowWrapLayout(horizontalSpacing: 8, verticalSpacing: 8) {
+                                Button("New branch…") { naming = .create(start: b.name) }
+                                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                                if b.kind == .local {
+                                    Button("Rename…") { naming = .rename(b.name) }
+                                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                                }
+                                if b.kind == .local, !b.isHead {
+                                    ActionPillButton(title: "Delete…", systemImage: "trash", tint: N.rose) {
+                                        deleting = b
+                                    }
+                                }
+                            }
                             .disabled(model.writing || !model.isLive)
-                            .help("Switches with git, which refuses if it would overwrite your uncommitted changes.")
+                        }
                     }
-                    Button("Show history") { Task { await model.showHistory(of: b) } }
-                        .buttonStyle(PillButtonStyle(kind: b.isHead ? .primary : .secondary, height: 30))
+                } else {
+                    EmptyState(icon: "arrow.triangle.branch", title: "No branch selected", message: "Pick a branch to see where it stands.")
                 }
-                pullActions(for: b)
-                if model.source == .local {
-                HStack(spacing: 6) {
-                    Button("New branch from here…") { naming = .create(start: b.name) }
-                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
-                    if b.kind == .local {
-                        Button("Rename…") { naming = .rename(b.name) }
-                            .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
-                    }
-                    if b.kind == .local, !b.isHead {
-                        Button("Delete…") { deleting = b }
-                            .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
-                            .foregroundStyle(N.danger)
-                    }
-                }
-                .disabled(model.writing || !model.isLive)
-                }
-                Spacer()
-            } else {
-                EmptyState(title: "No branch selected", message: "Pick a branch to see where it stands.")
             }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .island()
+        .frame(maxHeight: .infinity)
+        .background(N.inspector)
         .sheet(item: $naming) { purpose in NameSheet(purpose: purpose) }
         .sheet(item: Binding(get: { opening.map(IdentifiedName.init) }, set: { opening = $0?.name })) { n in NewPullSheet(preferredSource: n.name) }
         .confirmationDialog(deleting.map { "Delete \($0.name)?" } ?? "", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { b in
@@ -304,7 +374,9 @@ extension BranchPanel {
                 .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
                 .help(pr.title)
             } else if b.merged == true {
-                Text("Merged: its work is already in the default branch.").font(.system(size: 12)).foregroundStyle(N.muted)
+                Text("Merged: its work is already in the default branch.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
             } else {
                 Button("Open pull request…") { if let name { opening = name } }
                     .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
@@ -337,33 +409,42 @@ struct NameSheet: View {
     @State private var working = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(N.text)
             VStack(alignment: .leading, spacing: 5) {
-                Text("Name").font(.system(size: 11)).foregroundStyle(N.muted)
-                TextField("feature/thing", text: $name)
+                Text("Name")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(N.muted)
+                TextField("", text: $name, prompt: Text("feature/thing").foregroundStyle(N.faint))
                     .textFieldStyle(.plain)
                     .font(N.mono(13))
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .foregroundStyle(N.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 34)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .onSubmit(save)
             }
             if case .create = purpose {
-                Toggle("Switch to it", isOn: $switchTo).toggleStyle(.checkbox).font(.system(size: 12.5))
+                Toggle("Switch to it", isOn: $switchTo)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 12.5))
             }
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button(action: save) { Text(working ? "Working…" : (isRename ? "Rename" : "Create")) }
                     .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || working)
             }
         }
-        .padding(20)
-        .frame(width: 380)
-        .background(N.island)
+        .padding(24)
+        .frame(width: 400)
+        .background(N.sheet)
         .onAppear { if case let .rename(old) = purpose { name = old } }
     }
 

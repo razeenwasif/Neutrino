@@ -7,11 +7,15 @@ struct RunsScreen: View {
     var body: some View {
         Group {
             if let problem = model.pullRepoProblem {
-                EmptyState(title: "No runs here", message: problem).island()
+                EmptyState(icon: "play.circle", title: "No runs here", message: problem)
+                    .background(N.ground)
             } else {
-                HStack(alignment: .top, spacing: 10) {
-                    RunList().frame(width: 340).frame(maxHeight: .infinity)
-                    RunDetailPanel().frame(maxWidth: .infinity, maxHeight: .infinity)
+                HStack(spacing: 0) {
+                    RunList()
+                        .frame(width: 340)
+                        .frame(maxHeight: .infinity)
+                    RunDetailPanel()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
@@ -27,12 +31,12 @@ struct RunStateIcon: View {
     var body: some View {
         let (symbol, color): (String, Color) = switch state {
         case .queued: ("circle.dashed", N.faint)
-        case .running: ("circle.dotted.circle", N.warn)
-        case .success: ("checkmark.circle.fill", N.ok)
-        case .failure: ("xmark.circle.fill", N.danger)
-        case .cancelled: ("slash.circle", N.faint)
-        case .skipped: ("minus.circle", N.faint)
-        case .waiting: ("hand.raised.circle", N.warn)
+        case .running: ("circle.dotted.circle", N.amber)
+        case .success: ("checkmark.circle.fill", N.mint)
+        case .failure: ("xmark.circle.fill", N.rose)
+        case .cancelled: ("slash.circle", N.slate)
+        case .skipped: ("minus.circle", N.slate)
+        case .waiting: ("hand.raised.circle", N.amber)
         }
         Image(systemName: symbol)
             .font(.system(size: size, weight: .semibold))
@@ -78,34 +82,38 @@ struct RunList: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("Runs").font(.system(size: 14, weight: .semibold)).foregroundStyle(N.text)
+                Text("Runs")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(N.text)
                 Spacer(minLength: 6)
-                Button("Run workflow…") { starting = true }
-                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
-                    .help("Start a workflow that has workflow_dispatch")
+                ActionPillButton(title: "Run workflow…", systemImage: "play.fill", tint: N.amber, background: N.surfacePill) {
+                    starting = true
+                }
+                .help("Start a workflow that has workflow_dispatch")
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
 
             if let error = model.runError, model.runList.isEmpty {
-                EmptyState(title: "Can't load runs", message: error)
+                EmptyState(icon: "exclamationmark.triangle", title: "Can't load runs", message: error)
             } else if model.runList.isEmpty {
-                EmptyState(title: "No runs yet", message: "Push a workflow file to .neutrino/workflows/ and its runs show up here.")
+                EmptyState(icon: "play.circle", title: "No runs yet", message: "Push a workflow file to .neutrino/workflows/ and its runs show up here.")
             } else {
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 2) {
                         ForEach(model.runList) { r in
                             RunRow(run: r, selected: r.id == model.runID)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 12)
                 }
             }
+
             CiFooter()
         }
-        .island()
+        .background(N.inspector)
         .sheet(isPresented: $starting) { DispatchSheet() }
         .onAppear { takeSheetRequest() }
         .onChange(of: model.sheetRequest) { takeSheetRequest() }
@@ -118,16 +126,24 @@ struct CiFooter: View {
     var body: some View {
         if let info = model.ciInfo {
             HStack(spacing: 8) {
-                Dot(color: info.graviton ? N.ok : N.danger, glow: info.graviton, size: 6)
+                StatusDot(color: info.graviton ? N.mint : N.rose, size: 5.5, pulse: info.graviton)
                 Text(info.graviton ? "Graviton" : "Graviton unreachable")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(info.graviton ? N.text : N.rose)
                 Spacer()
                 Text("\(info.usedCpus)/\(info.budgetCpus) CPUs · \(info.usedMemoryMib / 1024)/\(info.budgetMemoryMib / 1024) GB")
-                if info.queued > 0 { Text("· \(info.queued) waiting") }
+                    .font(N.mono(10.5))
+                    .foregroundStyle(N.faint)
+                if info.queued > 0 {
+                    Text("· \(info.queued)q")
+                        .font(N.mono(10.5))
+                        .foregroundStyle(N.amber)
+                }
             }
-            .font(.system(size: 11))
-            .foregroundStyle(N.faint)
-            .padding(.horizontal, 14)
-            .frame(height: 30)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .padding(12)
             .help(info.gravitonError ?? "CI's budget on the server, and what running jobs use of it")
         }
     }
@@ -147,29 +163,37 @@ struct RunRow: View {
                 RunStateIcon(state: run.state).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(run.name).font(.system(size: 13, weight: .medium)).foregroundStyle(N.text).lineLimit(1)
-                        Text("\(run.number)").font(N.mono(11)).foregroundStyle(N.faint)
+                        Text(run.name)
+                            .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                            .foregroundStyle(N.text)
+                            .lineLimit(1)
+                        Text("#\(run.number)")
+                            .font(N.mono(11))
+                            .foregroundStyle(N.faint)
                         Spacer(minLength: 0)
                     }
                     HStack(spacing: 8) {
                         if let n = run.pull {
-                            Text("#\(n)").foregroundStyle(N.accent)
+                            Text("#\(n)").foregroundStyle(N.indigo)
                         } else if let b = run.branch {
-                            Text(b).foregroundStyle(N.accent).lineLimit(1)
+                            Text(b).foregroundStyle(N.indigo).lineLimit(1)
                         }
                         Text(run.shortSHA).foregroundStyle(N.faint)
                         Spacer(minLength: 4)
-                        Text(formatDuration(run.duration())).foregroundStyle(N.faint)
-                        Text(Format.ago(run.createdAt)).font(.system(size: 11)).foregroundStyle(N.faint)
+                        Text(formatDuration(run.duration())).foregroundStyle(N.muted)
+                        Text(Format.ago(run.createdAt)).font(N.mono(10.5)).foregroundStyle(N.faint)
                     }
                     .font(N.mono(11))
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? N.selected : (hovering ? Color.white.opacity(0.04) : .clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .contentShape(Rectangle())
+            .background(
+                selected ? N.surfaceActive : (hovering ? N.surfaceHover : Color.clear),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -188,24 +212,22 @@ struct RunDetailPanel: View {
             if let d = model.runDetail {
                 VStack(spacing: 0) {
                     RunHeader(detail: d)
-                    Rectangle().fill(N.hairline).frame(height: 1)
                     if d.jobs.isEmpty {
-                        EmptyState(title: d.run.error != nil ? "The workflow file has a problem" : "No jobs", message: d.run.error ?? "Nothing in this run.")
+                        EmptyState(icon: "exclamationmark.triangle", title: d.run.error != nil ? "The workflow file has a problem" : "No jobs", message: d.run.error ?? "Nothing in this run.")
                     } else {
                         HStack(spacing: 0) {
-                            JobList(detail: d).frame(width: 230)
-                            Rectangle().fill(N.hairline).frame(width: 1)
+                            JobList(detail: d).frame(width: 232)
                             JobLogView()
                         }
                     }
                 }
             } else if let error = model.runError {
-                EmptyState(title: "Can't show this run", message: error)
+                EmptyState(icon: "exclamationmark.triangle", title: "Can't show this run", message: error)
             } else {
-                EmptyState(title: "No run selected", message: "Pick one from the list.")
+                EmptyState(icon: "play.circle", title: "No run selected", message: "Pick one from the list.")
             }
         }
-        .island()
+        .background(N.ground)
     }
 }
 
@@ -215,55 +237,82 @@ struct RunHeader: View {
 
     var body: some View {
         let r = detail.run
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 RunStateIcon(state: r.state, size: 16)
-                Text(r.name).font(.system(size: 18, weight: .semibold)).foregroundStyle(N.text)
-                Text("Run \(r.number)").font(N.mono(14)).foregroundStyle(N.faint)
+                Text(r.name)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(N.text)
+                Text("#\(r.number)")
+                    .font(N.mono(15))
+                    .foregroundStyle(N.faint)
                 Spacer(minLength: 8)
                 if !r.state.finished {
-                    Button(model.runBusy == "Cancelling" ? "Cancelling…" : "Cancel") { Task { await model.cancelRun() } }
-                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
-                        .disabled(model.runBusy != nil)
+                    ActionPillButton(
+                        title: model.runBusy == "Cancelling" ? "Cancelling…" : "Cancel",
+                        systemImage: "stop.fill",
+                        tint: N.rose,
+                        background: N.surfacePill,
+                        isLoading: model.runBusy == "Cancelling"
+                    ) {
+                        Task { await model.cancelRun() }
+                    }
+                    .disabled(model.runBusy != nil)
                 } else if r.error == nil {
-                    Button(model.runBusy == "Starting" ? "Starting…" : "Run again") { Task { await model.rerun() } }
-                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
-                        .disabled(model.runBusy != nil)
-                        .help("The same workflow on the same commit")
+                    ActionPillButton(
+                        title: model.runBusy == "Starting" ? "Starting…" : "Run again",
+                        systemImage: "arrow.clockwise",
+                        tint: N.text,
+                        background: N.surfacePill,
+                        isLoading: model.runBusy == "Starting"
+                    ) {
+                        Task { await model.rerun() }
+                    }
+                    .disabled(model.runBusy != nil)
+                    .help("The same workflow on the same commit")
                 }
             }
             HStack(spacing: 10) {
-                Text(r.state.label).foregroundStyle(r.state == .failure ? N.danger : (r.state == .success ? N.ok : N.muted))
+                Text(r.state.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(r.state == .failure ? N.rose : (r.state == .success ? N.mint : N.muted))
                 Text("·").foregroundStyle(N.faint)
                 Text(r.eventLabel)
                 if let n = r.pull {
-                    Text("#\(n)").font(N.mono(12)).foregroundStyle(N.accent)
+                    TagPill(text: "#\(n)", textColor: N.indigo, monospaced: true)
                 } else if let b = r.branch {
-                    Text(b).font(N.mono(12)).foregroundStyle(N.accent)
+                    TagPill(text: b, textColor: N.indigo, monospaced: true)
                 }
-                Text(r.shortSHA).font(N.mono(12)).foregroundStyle(N.faint).textSelection(.enabled)
+                Text(r.shortSHA).font(N.mono(12)).foregroundStyle(N.sky).textSelection(.enabled)
                 Text("·").foregroundStyle(N.faint)
                 Text(r.workflow).font(N.mono(12)).foregroundStyle(N.faint)
                 if let took = r.duration() {
                     Text("·").foregroundStyle(N.faint)
                     Text(r.state.finished ? "took \(formatDuration(took))" : "running for \(formatDuration(took))")
+                        .font(N.mono(11.5))
                 }
             }
             .font(.system(size: 12))
             .foregroundStyle(N.muted)
+
             ForEach(detail.warnings, id: \.self) { w in
-                Label(w, systemImage: "exclamationmark.triangle").font(.system(size: 11.5)).foregroundStyle(N.warn)
+                Label(w, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(N.amber)
             }
+
             if !model.artifactList.isEmpty {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Image(systemName: "shippingbox").font(.system(size: 11)).foregroundStyle(N.faint)
                     ForEach(model.artifactList.prefix(6)) { a in
-                        Button {
+                        ActionPillButton(
+                            title: (a.path as NSString).lastPathComponent,
+                            systemImage: "arrow.down.circle",
+                            tint: N.sky,
+                            background: N.surfacePill
+                        ) {
                             Task { await model.save(a) }
-                        } label: {
-                            Text((a.path as NSString).lastPathComponent).font(N.mono(11.5))
                         }
-                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 22))
                         .help("Save \(a.job)/\(a.path) (\(a.size.formatted(.byteCount(style: .file))))")
                     }
                     if model.artifactList.count > 6 {
@@ -276,9 +325,10 @@ struct RunHeader: View {
             }
         }
         .task(id: "\(r.id):\(r.state.rawValue)") { await model.loadArtifacts() }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(N.ground)
     }
 }
 
@@ -287,34 +337,49 @@ struct JobList: View {
     var detail: RunDetail
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 2) {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 3) {
+                SectionLabel("Jobs")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 4)
+
                 ForEach(detail.jobs) { j in
+                    let isSelected = model.runJobID == j.id
                     Button {
                         model.select(job: j.id)
                     } label: {
                         HStack(spacing: 9) {
                             RunStateIcon(state: j.state)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(j.name).font(.system(size: 12.5, weight: .medium)).foregroundStyle(N.text).lineLimit(1)
+                                Text(j.name)
+                                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
+                                    .foregroundStyle(N.text)
+                                    .lineLimit(1)
                                 if !j.needs.isEmpty {
-                                    Text("after \(j.needs.joined(separator: ", "))").font(.system(size: 10.5)).foregroundStyle(N.faint).lineLimit(1)
+                                    Text("after \(j.needs.joined(separator: ", "))")
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(N.faint)
+                                        .lineLimit(1)
                                 }
                             }
                             Spacer(minLength: 4)
-                            Text(formatDuration(j.startedAt.map { (j.finishedAt ?? Int64(Date().timeIntervalSince1970)) - $0 })).font(N.mono(10.5)).foregroundStyle(N.faint)
+                            Text(formatDuration(j.startedAt.map { (j.finishedAt ?? Int64(Date().timeIntervalSince1970)) - $0 }))
+                                .font(N.mono(10.5))
+                                .foregroundStyle(N.faint)
                         }
                         .padding(.horizontal, 10)
                         .frame(minHeight: 38)
-                        .background(model.runJobID == j.id ? N.selected : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
+                        .background(isSelected ? N.surfaceActive : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .help(j.error ?? j.state.label)
                 }
             }
-            .padding(8)
+            .padding(12)
         }
+        .background(N.sidebar)
     }
 }
 
@@ -327,26 +392,44 @@ struct JobLogView: View {
         if let job = model.selectedJob {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    Text(job.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(N.text)
-                    if let image = job.image { Text(image).font(N.mono(11.5)).foregroundStyle(N.faint) }
-                    Text(job.executor).font(N.mono(11.5)).foregroundStyle(N.faint)
-                    if job.attempt > 1 { Text("attempt \(job.attempt)").font(.system(size: 11)).foregroundStyle(N.warn) }
+                    Text(job.name)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(N.text)
+                    if let image = job.image {
+                        TagPill(text: image, textColor: N.sky, monospaced: true)
+                    }
+                    TagPill(text: job.executor, monospaced: true)
+                    if job.attempt > 1 {
+                        TagPill(text: "attempt \(job.attempt)", textColor: N.amber)
+                    }
                     Spacer()
-                    if let e = job.error { Text(e).font(.system(size: 11.5)).foregroundStyle(N.danger).lineLimit(1).truncationMode(.tail) }
+                    if let e = job.error {
+                        Text(e)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(N.rose)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
-                .padding(.horizontal, 14)
-                .frame(height: 40)
+                .padding(.horizontal, 20)
+                .frame(height: 44)
+                .background(N.surfaceSubtle)
+
                 if job.state == .waiting {
                     ApprovalBanner(job: job)
+                        .padding(.top, 10)
                 } else if let by = job.approvedBy, let env = job.environment {
                     Label("Deployed to \(env), approved by \(by)", systemImage: "checkmark.seal")
-                        .font(.system(size: 11.5)).foregroundStyle(N.muted)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(N.mint)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14).padding(.bottom, 8)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
                 }
+
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 4) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(alignment: .leading, spacing: 6) {
                             let setup = prelude(job)
                             if !setup.isEmpty { LogBlock(text: setup) }
                             ForEach(job.steps) { step in
@@ -356,22 +439,25 @@ struct JobLogView: View {
                             if !model.jobLogDone, job.state == .running {
                                 HStack(spacing: 6) {
                                     ProgressView().controlSize(.mini)
-                                    Text("Following the log…").font(.system(size: 11)).foregroundStyle(N.faint)
+                                    Text("Following the log…")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(N.faint)
                                 }
                                 .padding(.horizontal, 6)
                                 .id("tail")
                             }
                         }
-                        .padding(12)
+                        .padding(16)
                     }
                     .onChange(of: model.jobLogNext) {
                         if job.state == .running { proxy.scrollTo("tail", anchor: .bottom) }
                     }
                 }
-                .background(N.well)
+                .background(N.ground)
             }
         } else {
-            EmptyState(title: "No job selected", message: "Pick a job to see its steps and output.")
+            EmptyState(icon: "terminal", title: "No job selected", message: "Pick a job to see its steps and output.")
+                .background(N.ground)
         }
     }
 
@@ -415,25 +501,36 @@ struct StepSection: View {
                         .foregroundStyle(N.faint)
                         .rotationEffect(.degrees(open ? 90 : 0))
                     RunStateIcon(state: step.state, size: 12)
-                    Text(step.name).font(.system(size: 12.5, weight: .medium)).foregroundStyle(step.state == .skipped ? N.faint : N.text).lineLimit(1)
+                    Text(step.name)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(step.state == .skipped ? N.faint : N.text)
+                        .lineLimit(1)
                     if let code = step.exitCode, code != 0 {
-                        Text("exit \(code)").font(N.mono(11)).foregroundStyle(N.danger)
+                        TagPill(text: "exit \(code)", textColor: N.rose, background: N.rose.opacity(0.14), monospaced: true)
                     }
                     Spacer()
-                    Text(formatDuration(step.startedAt.map { (step.finishedAt ?? Int64(Date().timeIntervalSince1970)) - $0 })).font(N.mono(10.5)).foregroundStyle(N.faint)
+                    Text(formatDuration(step.startedAt.map { (step.finishedAt ?? Int64(Date().timeIntervalSince1970)) - $0 }))
+                        .font(N.mono(10.5))
+                        .foregroundStyle(N.faint)
                 }
-                .padding(.horizontal, 6)
-                .frame(height: 28)
-                .contentShape(Rectangle())
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(open ? N.surfaceSubtle : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(step.name), \(step.state.label)")
             .accessibilityValue(open ? "expanded" : "collapsed")
+
             if open {
                 if text.isEmpty {
-                    Text(step.state == .skipped ? "Skipped." : "No output.").font(.system(size: 11.5)).foregroundStyle(N.faint).padding(.leading, 40).padding(.vertical, 4)
+                    Text(step.state == .skipped ? "Skipped." : "No output.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(N.faint)
+                        .padding(.leading, 38)
+                        .padding(.vertical, 6)
                 } else {
-                    LogBlock(text: text).padding(.leading, 26)
+                    LogBlock(text: text).padding(.leading, 22)
                 }
             }
         }
@@ -449,13 +546,12 @@ struct LogBlock: View {
             .font(N.mono(11.5))
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
     }
 
     private var styled: AttributedString {
         var out = AttributedString()
-        // Drop the colour codes tools print; the log is shown plain.
         let clean = text.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
         let lines = clean.split(separator: "\n", omittingEmptySubsequences: false)
         for (i, line) in lines.enumerated() {
@@ -482,31 +578,39 @@ struct DispatchSheet: View {
     private var startable: [WorkflowFile] { files.filter { $0.triggers.contains("workflow_dispatch") } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Run a workflow").font(.system(size: 15, weight: .semibold)).foregroundStyle(N.text)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Run a workflow")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(N.text)
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Branch").font(.system(size: 11)).foregroundStyle(N.muted)
+                    Text("Branch").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
                     Picker("", selection: $branch) { ForEach(branches) { Text($0.name).tag($0.name) } }.labelsHidden().frame(width: 180)
                 }
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Workflow").font(.system(size: 11)).foregroundStyle(N.muted)
+                    Text("Workflow").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
                     Picker("", selection: $workflow) { ForEach(startable) { Text($0.name ?? $0.file).tag($0.file) } }.labelsHidden().frame(width: 220)
                         .disabled(startable.isEmpty)
                 }
             }
             if startable.isEmpty, !files.isEmpty || !branch.isEmpty {
                 Text("No workflow on \(branch) can be started by hand. Add workflow_dispatch to one's on:.")
-                    .font(.system(size: 12)).foregroundStyle(N.muted).fixedSize(horizontal: false, vertical: true)
-            }
-            ForEach(files.filter { $0.error != nil }) { f in
-                Label("\(f.file): \(f.error ?? "")", systemImage: "exclamationmark.triangle").font(.system(size: 11.5)).foregroundStyle(N.warn)
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.danger) }
+            ForEach(files.filter { $0.error != nil }) { f in
+                Label("\(f.file): \(f.error ?? "")", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(N.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.rose) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.buttonStyle(PillButtonStyle(kind: .secondary, height: 30)).keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                    .keyboardShortcut(.cancelAction)
                 Button(working ? "Starting…" : "Run") {
                     working = true
                     Task {
@@ -524,9 +628,9 @@ struct DispatchSheet: View {
                 .disabled(working || workflow.isEmpty || branch.isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
         .frame(width: 480)
-        .background(N.island)
+        .background(N.sheet)
         .task {
             branches = await model.hostedBranches()
             branch = branches.first { $0.name == model.hostedDefaultBranch }?.name ?? branches.first?.name ?? ""
@@ -545,24 +649,40 @@ struct ApprovalBanner: View {
     var job: RunJob
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "hand.raised.fill").foregroundStyle(N.warn)
+        HStack(spacing: 12) {
+            Image(systemName: "hand.raised.fill").foregroundStyle(N.amber)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Waiting to deploy to \(job.environment ?? "its environment")").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(N.text)
-                Text("It runs with that environment's secrets once you approve it.").font(.system(size: 11.5)).foregroundStyle(N.muted)
+                Text("Waiting to deploy to \(job.environment ?? "its environment")")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(N.text)
+                Text("It runs with that environment's secrets once you approve it.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(N.muted)
             }
             Spacer()
-            Button(model.runBusy == "Turning down" ? "Turning down…" : "Turn down") { Task { await model.decide(job: job, approve: false) } }
-                .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
-                .disabled(model.runBusy != nil)
-            Button(model.runBusy == "Approving" ? "Approving…" : "Approve") { Task { await model.decide(job: job, approve: true) } }
-                .buttonStyle(PillButtonStyle(kind: .primary, height: 28))
-                .disabled(model.runBusy != nil)
+            ActionPillButton(
+                title: model.runBusy == "Turning down" ? "Turning down…" : "Turn down",
+                tint: N.rose,
+                background: N.surfacePill
+            ) {
+                Task { await model.decide(job: job, approve: false) }
+            }
+            .disabled(model.runBusy != nil)
+
+            ActionPillButton(
+                title: model.runBusy == "Approving" ? "Approving…" : "Approve",
+                systemImage: "checkmark",
+                tint: N.onAccent,
+                background: N.mint
+            ) {
+                Task { await model.decide(job: job, approve: true) }
+            }
+            .disabled(model.runBusy != nil)
         }
         .padding(12)
-        .background(N.warn.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .background(N.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
     }
 }
 

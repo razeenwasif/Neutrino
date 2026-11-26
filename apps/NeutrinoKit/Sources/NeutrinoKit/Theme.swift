@@ -1,46 +1,82 @@
 import SwiftUI
 
-/// Design tokens from the Neutrino prototype: Velvet surfaces (near-black with
-/// a violet cast, depth from tone and soft light rather than outlines), one
-/// lavender accent, pastel status colours that only ever mean status.
+/// Stratus-aligned pitch-black T3 design tokens.
+/// Zero borders, zero pane dividers, pure typographic hierarchy and subtle tonal elevation.
 public enum N {
-    // Surfaces, back to front.
-    public static let ground = Color(hex: 0x0B0A10)
-    public static let island = Color(hex: 0x15131C)
-    public static let well = Color(hex: 0x0F0E15)
-    public static let raised = Color(hex: 0x1D1A26)
-    public static let control = Color(hex: 0x221F2C)
-    public static let selected = Color(hex: 0x262231)
-    public static let sheen = Color.white.opacity(0.05)
-    public static let hairline = Color.white.opacity(0.05)
+    // Surfaces, back to front (T3 pitch-black elevation).
+    public static let ground = Color(hex: 0x000000)
+    public static let sidebar = Color(hex: 0x030304)
+    public static let inspector = Color(hex: 0x060608)
+    public static let palette = Color(hex: 0x0B0B0F)
+    public static let sheet = Color(hex: 0x050507)
+    public static let surfaceSubtle = Color(hex: 0x0B0B0E)
+    public static let surfaceHover = Color(hex: 0x111114)
+    public static let surfaceActive = Color(hex: 0x16161B)
+    public static let surfacePill = Color(hex: 0x151519)
 
-    // Text.
-    public static let text = Color(hex: 0xEEEAF6)
-    public static let body = Color(hex: 0xD6D0E0)
-    public static let muted = Color(hex: 0xA39CB4)
-    public static let faint = Color(hex: 0x8E879E)
+    // Backwards-compatible semantic surface aliases used across Mac and iOS.
+    public static let island = inspector
+    public static let well = surfaceSubtle
+    public static let raised = surfaceHover
+    public static let control = surfacePill
+    public static let selected = surfaceActive
+    public static let sheen = Color.white.opacity(0.04)
+    public static let hairline = Color.white.opacity(0.06)
 
-    // Accent and status.
-    public static let accent = Color(hex: 0xB9A6F5)
-    public static let onAccent = Color(hex: 0x120E1C)
+    // Text hierarchy.
+    public static let text = Color(hex: 0xF4F4F6)
+    public static let body = Color(hex: 0xD4D4DC)
+    public static let muted = Color(hex: 0x8E8E99)
+    public static let subtle = Color(hex: 0x6E6E77)
+    public static let faint = Color(hex: 0x585862)
+
+    // Stratus semantic accent palette.
+    public static let indigo = Color(hex: 0x7A89FF)
+    public static let sky = Color(hex: 0x4BC3F7)
+    public static let mint = Color(hex: 0x34D399)
+    public static let amber = Color(hex: 0xFBBF24)
+    public static let rose = Color(hex: 0xF87171)
+    public static let coral = Color(hex: 0xE88255)
+    public static let violet = Color(hex: 0xA78BFA)
+    public static let slate = Color(hex: 0x71717A)
+
+    // Backwards-compatible accent and status aliases.
+    public static let accent = indigo
+    public static let onAccent = Color(hex: 0x050507)
     /// Second marker colour, for things that must differ from the accent (remote refs).
-    public static let second = Color(hex: 0x8EC5FF)
-    public static let ok = Color(hex: 0x8FD8B5)
-    public static let warn = Color(hex: 0xEAC58A)
-    public static let danger = Color(hex: 0xEE9A9A)
+    public static let second = sky
+    public static let ok = mint
+    public static let warn = amber
+    public static let danger = rose
     /// Machine colours shared with Nexus.
-    public static let atlas = Color(hex: 0xA99AF5)
-    public static let forge = Color(hex: 0xE9A15B)
+    public static let atlas = violet
+    public static let forge = coral
 
-    /// Colours for graph lanes, picked by the lane's colour index.
+    /// Colours for graph lanes and language segments, picked by index.
     public static let lanes: [Color] = [
-        Color(hex: 0xB9A6F5), Color(hex: 0x8EC5FF), Color(hex: 0x7FD3D0), Color(hex: 0xE8A5C6),
-        Color(hex: 0xD9C08F), Color(hex: 0x9BD9B0), Color(hex: 0xE9A15B), Color(hex: 0xA8B4F0),
+        indigo, sky, mint, coral, violet, amber, rose, Color(hex: 0x38BDF8),
     ]
 
     public static func lane(_ index: UInt16) -> Color { lanes[Int(index) % lanes.count] }
 
-    public static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+    // Typography helpers.
+    public static func heroKPI() -> Font {
+        .system(size: 36, weight: .bold, design: .default).monospacedDigit()
+    }
+
+    public static func pageTitle() -> Font {
+        .system(size: 22, weight: .semibold, design: .default)
+    }
+
+    public static func sectionTitle() -> Font {
+        .system(size: 13, weight: .semibold, design: .default)
+    }
+
+    public static func statValue() -> Font {
+        .system(size: 20, weight: .semibold, design: .default).monospacedDigit()
+    }
+
+    public static func mono(_ size: CGFloat = 12, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
 

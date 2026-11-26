@@ -9,6 +9,7 @@ struct PaletteItem: Identifiable {
     var title: String
     var detail: String = ""
     var icon: String
+    var tint: Color = N.indigo
     var run: @MainActor () async -> Void
 }
 
@@ -17,52 +18,67 @@ extension AppModel {
     /// before anything is typed.
     func paletteItems() -> [PaletteItem] {
         var items: [PaletteItem] = []
-        let screens: [(Section, String, String, Bool)] = [
-            (.code, "Code", "chevron.left.forwardslash.chevron.right", true),
-            (.changes, "Changes", "doc.badge.plus", source == .local),
-            (.history, "History", "clock.arrow.circlepath", true),
-            (.branches, "Branches", "arrow.triangle.branch", true),
-            (.pulls, "Pull requests", "arrow.triangle.pull", serverLink != nil),
-            (.runs, "Runs", "play.circle", serverLink != nil),
-            (.secrets, "Secrets", "key", serverLink != nil),
+        let screens: [(Section, Bool)] = [
+            (.code, true),
+            (.changes, source == .local),
+            (.history, true),
+            (.branches, true),
+            (.pulls, serverLink != nil),
+            (.runs, serverLink != nil),
+            (.secrets, serverLink != nil),
         ]
-        for (section, title, icon, available) in screens where available {
-            items.append(PaletteItem(id: "screen:\(title)", group: "Screens", title: title, detail: repo?.name ?? "", icon: icon) { self.section = section })
+        for (section, available) in screens where available {
+            items.append(PaletteItem(
+                id: "screen:\(section.title)",
+                group: "Screens",
+                title: section.title,
+                detail: repo?.name ?? "",
+                icon: section.icon,
+                tint: section.accentColor
+            ) {
+                self.section = section
+            })
         }
 
         if source == .local, isLive {
-            items.append(PaletteItem(id: "act:fetch", group: "Actions", title: "Fetch", detail: "from origin", icon: "arrow.down.circle") { await self.fetch() })
-            items.append(PaletteItem(id: "act:push", group: "Actions", title: "Push", detail: repo?.head?.label ?? "", icon: "arrow.up.circle") { await self.push() })
-            items.append(PaletteItem(id: "act:stage", group: "Actions", title: "Stage all", icon: "plus.square.on.square") {
+            items.append(PaletteItem(id: "act:fetch", group: "Actions", title: "Fetch", detail: "from origin", icon: "arrow.down.circle", tint: N.sky) {
+                await self.fetch()
+            })
+            items.append(PaletteItem(id: "act:push", group: "Actions", title: "Push", detail: repo?.head?.label ?? "", icon: "arrow.up.circle", tint: N.indigo) {
+                await self.push()
+            })
+            items.append(PaletteItem(id: "act:stage", group: "Actions", title: "Stage all", icon: "plus.square.on.square", tint: N.mint) {
                 self.section = .changes
                 await self.stageAll()
             })
         }
-        items.append(PaletteItem(id: "act:reload", group: "Actions", title: "Reload", icon: "arrow.clockwise") { await self.reload() })
+        items.append(PaletteItem(id: "act:reload", group: "Actions", title: "Reload", icon: "arrow.clockwise", tint: N.muted) {
+            await self.reload()
+        })
         if isServerOnline {
-            items.append(PaletteItem(id: "act:pull", group: "Actions", title: "New pull request…", icon: "arrow.triangle.pull") {
+            items.append(PaletteItem(id: "act:pull", group: "Actions", title: "New pull request…", icon: "arrow.triangle.pull", tint: N.mint) {
                 self.section = .pulls
                 self.sheetRequest = .newPull
             })
-            items.append(PaletteItem(id: "act:dispatch", group: "Actions", title: "Run workflow…", icon: "play.circle") {
+            items.append(PaletteItem(id: "act:dispatch", group: "Actions", title: "Run workflow…", icon: "play.circle", tint: N.amber) {
                 self.section = .runs
                 self.sheetRequest = .runWorkflow
             })
         }
 
         for p in glancePulls {
-            items.append(PaletteItem(id: "pull:\(p.number)", group: "Pull requests", title: "#\(p.number) \(p.title)", detail: "\(p.source) → \(p.target)", icon: "arrow.triangle.pull") {
+            items.append(PaletteItem(id: "pull:\(p.number)", group: "Pull requests", title: "#\(p.number) \(p.title)", detail: "\(p.source) → \(p.target)", icon: "arrow.triangle.pull", tint: N.mint) {
                 self.section = .pulls
                 await self.select(pull: p.number)
             })
         }
         for r in runList.prefix(15) {
-            items.append(PaletteItem(id: "run:\(r.id)", group: "Runs", title: "Run \(r.number) \(r.name)", detail: "\(r.state.label) · \(r.branch ?? r.shortSHA)", icon: "play.circle") {
+            items.append(PaletteItem(id: "run:\(r.id)", group: "Runs", title: "Run \(r.number) \(r.name)", detail: "\(r.state.label) · \(r.branch ?? r.shortSHA)", icon: "play.circle", tint: N.amber) {
                 await self.openRun(r.id)
             })
         }
         for b in branches {
-            items.append(PaletteItem(id: "branch:\(b.id)", group: "Branches", title: b.name, detail: b.subject, icon: "arrow.triangle.branch") {
+            items.append(PaletteItem(id: "branch:\(b.id)", group: "Branches", title: b.name, detail: b.subject, icon: "arrow.triangle.branch", tint: N.violet) {
                 self.section = .branches
                 self.selectedBranch = b.id
             })
@@ -70,12 +86,12 @@ extension AppModel {
 
         let server = serverLink?.name ?? "the server"
         for r in repos where r.error == nil {
-            items.append(PaletteItem(id: "local:\(r.id)", group: "Repositories", title: r.name, detail: "This Mac · \(r.head?.label ?? "")", icon: "laptopcomputer") {
+            items.append(PaletteItem(id: "local:\(r.id)", group: "Repositories", title: r.name, detail: "This Mac · \(r.head?.label ?? "")", icon: "laptopcomputer", tint: N.indigo) {
                 await self.select(repo: r.id)
             })
         }
         for r in hostedRepos {
-            items.append(PaletteItem(id: "server:\(r.id)", group: "Repositories", title: r.name, detail: "\(server) · \(r.head?.label ?? "")", icon: "server.rack") {
+            items.append(PaletteItem(id: "server:\(r.id)", group: "Repositories", title: r.name, detail: "\(server) · \(r.head?.label ?? "")", icon: "server.rack", tint: N.violet) {
                 await self.selectHosted(r.id)
             })
         }
@@ -94,7 +110,6 @@ func paletteScore(_ query: String, _ text: String) -> Int? {
         let wordStart = at == 0 || !t[t.index(before: r.lowerBound)].isLetter
         return 1000 - at * 4 + (wordStart ? 200 : 0) + (t.count == q.count ? 300 : 0)
     }
-    // Letters in order, with gaps.
     var score = 400
     var i = t.startIndex
     for ch in q {
@@ -109,18 +124,17 @@ struct CommandPalette: View {
     @Environment(AppModel.self) private var model
     @State private var query = ""
     @State private var index = 0
+    @State private var hoveredID: String?
     @FocusState private var focused: Bool
 
     private var results: [PaletteItem] {
         let all = model.paletteItems()
         if query.trimmingCharacters(in: .whitespaces).isEmpty {
-            // Before typing: screens and actions, then the rest, short.
             return Array(all.prefix(40))
         }
         return all.enumerated()
             .compactMap { pair -> (Int, Int, PaletteItem)? in
                 let item = pair.element
-                // A match in the title counts fully, in the detail a third.
                 let s = max(paletteScore(query, item.title) ?? -1, (paletteScore(query, item.detail) ?? -1) / 3)
                 guard s > 0 else { return nil }
                 return (s, pair.offset, item)
@@ -133,74 +147,102 @@ struct CommandPalette: View {
     var body: some View {
         let items = results
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").font(.system(size: 14)).foregroundStyle(N.faint)
-                TextField("Go to a screen, repository, branch, pull request or run…", text: $query)
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(N.indigo)
+                TextField("", text: $query, prompt: Text("Go to a screen, repository, branch, pull request or run…").foregroundStyle(N.faint))
                     .textFieldStyle(.plain)
-                    .font(.system(size: 15))
+                    .font(.system(size: 14))
+                    .foregroundStyle(N.text)
                     .focused($focused)
                     .onSubmit { run(items) }
                     .onKeyPress(.downArrow) { move(1, in: items); return .handled }
                     .onKeyPress(.upArrow) { move(-1, in: items); return .handled }
                     .onKeyPress(.escape) { close(); return .handled }
-                Text("esc").font(N.mono(11)).foregroundStyle(N.faint)
+                TagPill(text: "ESC", textColor: N.faint, background: N.surfacePill, monospaced: true)
             }
             .padding(.horizontal, 16)
             .frame(height: 50)
-            Divider().overlay(Color.white.opacity(0.06))
+
             if items.isEmpty {
-                Text("Nothing matches \"\(query)\".").font(.system(size: 12.5)).foregroundStyle(N.muted).padding(20)
+                Text("Nothing matches \"\(query)\".")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(N.muted)
+                    .padding(24)
             } else {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 1) {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
                                 if i == 0 || items[i - 1].group != item.group {
-                                    SectionLabel(item.group).padding(.horizontal, 12).padding(.top, i == 0 ? 8 : 12).padding(.bottom, 4)
+                                    SectionLabel(item.group)
+                                        .padding(.horizontal, 12)
+                                        .padding(.top, i == 0 ? 6 : 12)
+                                        .padding(.bottom, 4)
                                 }
                                 row(item, selected: i == index)
                                     .id(item.id)
+                                    .onHover { hoveredID = $0 ? item.id : nil }
                                     .onTapGesture {
                                         index = i
                                         run(items)
                                     }
                             }
                         }
-                        .padding(6)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 8)
                     }
-                    // As tall as the results, up to 420: rows of 33, group labels of ~30.
-                    .frame(height: min(420, CGFloat(items.count) * 33 + CGFloat(groupCount(items)) * 30 + 14))
+                    .frame(height: min(400, CGFloat(items.count) * 34 + CGFloat(groupCount(items)) * 28 + 16))
                     .onChange(of: index) { _, i in
                         if items.indices.contains(i) { proxy.scrollTo(items[i].id) }
                     }
                 }
             }
         }
-        .frame(width: 640)
-        .background(N.island, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.08)))
-        .shadow(color: .black.opacity(0.5), radius: 30, y: 12)
+        .frame(width: 580)
+        .background(N.palette, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: .black.opacity(0.75), radius: 40, y: 16)
         .onAppear { focused = true }
         .onChange(of: query) { index = 0 }
         .task {
-            // So pull requests and runs are there to find.
             await model.refreshGlancePulls()
             await model.loadRunList()
         }
     }
 
     private func row(_ item: PaletteItem, selected: Bool) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: item.icon).font(.system(size: 12)).foregroundStyle(selected ? N.accent : N.faint).frame(width: 18)
-            Text(item.title).font(.system(size: 13)).foregroundStyle(N.text).lineLimit(1)
-            Text(item.detail).font(.system(size: 12)).foregroundStyle(N.faint).lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 0)
-            if selected { Image(systemName: "return").font(.system(size: 11)).foregroundStyle(N.faint) }
+        let hovered = hoveredID == item.id
+        return HStack(spacing: 10) {
+            Image(systemName: item.icon)
+                .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? item.tint : N.muted)
+                .frame(width: 18)
+            Text(item.title)
+                .font(.system(size: 13, weight: selected ? .medium : .regular))
+                .foregroundStyle(N.text)
+                .lineLimit(1)
+            if !item.detail.isEmpty {
+                Text(item.detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.faint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 8)
+            if selected {
+                Image(systemName: "return")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(N.muted)
+            }
         }
         .padding(.horizontal, 10)
         .frame(height: 32)
-        .background(selected ? N.selected : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .contentShape(Rectangle())
+        .background(
+            selected ? N.surfaceActive : (hovered ? N.surfaceHover : Color.clear),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func groupCount(_ items: [PaletteItem]) -> Int {

@@ -19,9 +19,9 @@ struct NeutrinoMacApp: App {
         WindowGroup("Neutrino", id: Self.mainWindow) {
             RootView()
                 .environment(model)
-                .frame(minWidth: 1180, minHeight: 720)
+                .frame(minWidth: 1080, minHeight: 700)
                 .preferredColorScheme(.dark)
-                .tint(N.accent)
+                .tint(N.indigo)
         }
         .windowStyle(.hiddenTitleBar)
         // The header shares the title bar's row; empty space still drags the window.
@@ -38,6 +38,12 @@ struct NeutrinoMacApp: App {
             }
             CommandMenu("Repository") {
                 Button("Go to…") { model.paletteOpen.toggle() }.keyboardShortcut("k")
+                Button("Toggle Sidebar") {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        model.sidebarCollapsed.toggle()
+                    }
+                }
+                .keyboardShortcut("\\", modifiers: .command)
                 Button("Reload") { Task { await model.reload() } }.keyboardShortcut("r")
                 Divider()
                 Button("Code") { model.section = .code }.keyboardShortcut("0")

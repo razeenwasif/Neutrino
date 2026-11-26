@@ -5,9 +5,13 @@ struct ChangesScreen: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            ChangeList().frame(width: 360).frame(maxHeight: .infinity)
-            WorkDiffPanel().frame(maxWidth: .infinity, maxHeight: .infinity)
+        HStack(spacing: 0) {
+            ChangeList()
+                .frame(width: 340)
+                .frame(maxHeight: .infinity)
+
+            WorkDiffPanel()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
@@ -20,48 +24,63 @@ struct ChangeList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Changes").font(.system(size: 14, weight: .semibold)).foregroundStyle(N.text)
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Changes")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(N.text)
+                    if let s = model.status {
+                        Text(s.isClean ? "Working tree clean" : "\(s.changeCount) \(s.changeCount == 1 ? "file" : "files") modified")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(N.muted)
+                    }
+                }
                 Spacer()
                 if !model.notStaged.isEmpty || !(model.status?.conflicted.isEmpty ?? true) {
-                    Button("Stage all") { Task { await model.stageAll() } }
-                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
-                        .disabled(model.writing)
+                    ActionPillButton(title: "Stage all", systemImage: "plus", tint: N.text, background: N.surfacePill) {
+                        Task { await model.stageAll() }
+                    }
+                    .disabled(model.writing)
                 } else if !(model.status?.staged.isEmpty ?? true) {
-                    Button("Unstage all") { Task { await model.unstageAll() } }
-                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
-                        .disabled(model.writing)
+                    ActionPillButton(title: "Unstage all", systemImage: "minus", tint: N.muted, background: N.surfacePill) {
+                        Task { await model.unstageAll() }
+                    }
+                    .disabled(model.writing)
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
 
             if let op = model.status?.operation {
-                Text("A \(op) is in progress. Resolve conflicts, stage the files, then commit (or finish it in a terminal).")
-                    .font(.system(size: 12))
-                    .foregroundStyle(N.warn)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(N.warn.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 6)
+                HStack(alignment: .top, spacing: 8) {
+                    StatusDot(color: N.amber, size: 5.5)
+                        .padding(.top, 3)
+                    Text("A \(op) is in progress. Resolve conflicts, stage the files, then commit.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.amber)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(N.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
             }
 
             if let error = model.statusError {
-                EmptyState(title: "Can't read the working copy", message: error)
+                EmptyState(icon: "exclamationmark.triangle", title: "Can't read the working copy", message: error)
             } else if model.repo?.bare == true {
-                EmptyState(title: "No working copy", message: "This is a bare repository, so there's nothing to stage.")
+                EmptyState(icon: "folder", title: "No working copy", message: "This is a bare repository, so there's nothing to stage.")
             } else if let s = model.status {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 2) {
                         if !s.conflicted.isEmpty {
                             group("Conflicted · \(s.conflicted.count)")
                             ForEach(s.conflicted) { f in row(f, staged: false) }
                         }
                         group("Staged · \(s.staged.count)")
                         if s.staged.isEmpty {
-                            hint(s.isClean ? "Nothing to commit." : "Nothing staged. Tick a file, or stage lines from its diff.")
+                            hint(s.isClean ? "Nothing to commit." : "Nothing staged. Tick a file, or pick lines from its diff.")
                         }
                         ForEach(s.staged) { f in row(f, staged: true) }
                         group("Not staged · \(model.notStaged.count)")
@@ -70,15 +89,16 @@ struct ChangeList: View {
                         }
                         ForEach(model.notStaged) { f in row(f, staged: false) }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 8)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
                 }
             } else {
                 Spacer()
             }
+
             CommitBox()
         }
-        .island()
+        .background(N.inspector)
         .confirmationDialog(
             discarding.map { "Discard changes to \(($0.path as NSString).lastPathComponent)?" } ?? "",
             isPresented: Binding(get: { discarding != nil }, set: { if !$0 { discarding = nil } }),
@@ -95,11 +115,18 @@ struct ChangeList: View {
     }
 
     private func group(_ title: String) -> some View {
-        SectionLabel(title).padding(.horizontal, 8).padding(.top, 12).padding(.bottom, 6)
+        SectionLabel(title)
+            .padding(.horizontal, 8)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
     }
 
     private func hint(_ text: String) -> some View {
-        Text(text).font(.system(size: 12)).foregroundStyle(N.muted).padding(.horizontal, 8).padding(.bottom, 6)
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(N.faint)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 6)
     }
 
     private func row(_ f: StatusFile, staged: Bool) -> some View {
@@ -112,7 +139,7 @@ struct ChangeList: View {
                     Button(f.status == .untracked ? "Move to Trash…" : "Discard changes…") { discarding = f }
                 }
                 Divider()
-                Button("Copy path") { model.copy(f.path) }
+                Button("Copy path") { model.copy(f.path, label: "path") }
                 if let root = model.repo?.path {
                     Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: root).appendingPathComponent(f.path)])
@@ -135,17 +162,22 @@ struct ChangeRow: View {
                 Task { await model.toggle(file, staged: staged) }
             } label: {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(staged ? N.accent : .clear)
+                    RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                        .fill(staged ? N.indigo : N.surfaceHover)
                         .overlay {
-                            if !staged { RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Color(hex: 0x6F6880), lineWidth: 1.5) }
+                            if !staged {
+                                RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                                    .strokeBorder(N.faint.opacity(0.6), lineWidth: 1)
+                            }
                         }
                     if staged {
-                        Image(systemName: "checkmark").font(.system(size: 9, weight: .heavy)).foregroundStyle(N.onAccent)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(N.onAccent)
                     }
                 }
                 .frame(width: 15, height: 15)
-                .frame(width: 26, height: 30)
+                .frame(width: 24, height: 28)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -157,30 +189,38 @@ struct ChangeRow: View {
                 .foregroundStyle(color)
                 .frame(width: 10)
                 .help(file.status.label)
-            (Text(name).foregroundStyle(N.text) + Text("  " + dir).foregroundStyle(N.faint).font(.system(size: 11.5)))
+
+            (Text(name).foregroundStyle(N.text) + Text(dir.isEmpty ? "" : "  " + dir).foregroundStyle(N.faint).font(.system(size: 11)))
                 .font(.system(size: 12.5))
                 .lineLimit(1)
                 .truncationMode(.middle)
+
             Spacer(minLength: 4)
+
             if file.binary {
-                Text("binary").font(.system(size: 11)).foregroundStyle(N.faint)
+                Text("binary")
+                    .font(N.mono(10.5))
+                    .foregroundStyle(N.faint)
             } else if file.status != .conflicted {
                 StatCounts(additions: file.additions, deletions: file.deletions)
             }
         }
-        .padding(.trailing, 8)
+        .padding(.horizontal, 6)
         .frame(height: 32)
-        .background(selected ? N.selected : (hovering ? Color.white.opacity(0.035) : .clear), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .contentShape(Rectangle())
+        .background(
+            selected ? N.surfaceActive : (hovering ? N.surfaceHover : Color.clear),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { hovering = $0 }
         .help(file.oldPath.map { "\($0) → \(file.path)" } ?? file.path)
     }
 
     private var color: Color {
         switch file.status {
-        case .added, .untracked: N.ok
-        case .deleted, .conflicted: N.danger
-        default: N.warn
+        case .added, .untracked: N.mint
+        case .deleted, .conflicted: N.rose
+        default: N.amber
         }
     }
 
@@ -201,74 +241,97 @@ struct CommitBox: View {
 
     var body: some View {
         @Bindable var model = model
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             if let last = model.lastCommit {
                 HStack(spacing: 8) {
-                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
+                    StatusDot(color: N.mint, size: 5)
                     Text("Committed \(String(last.sha.prefix(7)))")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(N.mint)
                     Spacer()
                     if !last.output.isEmpty {
-                        Button(showOutput ? "Hide output" : "Hooks said…") { showOutput.toggle() }.buttonStyle(.plain).foregroundStyle(N.muted)
+                        Button(showOutput ? "Hide output" : "Hooks") { showOutput.toggle() }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(N.muted)
                     }
                     Button {
                         model.lastCommit = nil
                     } label: {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(N.muted)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Dismiss")
                 }
-                .font(.system(size: 12))
-                .foregroundStyle(N.ok)
                 .padding(.horizontal, 10)
                 .frame(height: 30)
-                .background(N.ok.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(N.mint.opacity(0.09), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
                 if showOutput {
                     ScrollView {
-                        Text(last.output).font(N.mono(11)).foregroundStyle(N.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(last.output)
+                            .font(N.mono(11))
+                            .foregroundStyle(N.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 110)
-                    .padding(8)
-                    .well(radius: 9)
+                    .padding(9)
+                    .background(N.inspector, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Summary").font(.system(size: 11)).foregroundStyle(N.muted)
-                TextField("What changed", text: $model.commitSummary)
+                Text("Summary")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(N.muted)
+                TextField("", text: $model.commitSummary, prompt: Text("What changed").foregroundStyle(N.faint))
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
+                    .foregroundStyle(N.text)
                     .padding(.horizontal, 10)
                     .frame(height: 32)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .focused($summaryFocused)
                     .onSubmit { Task { await model.commit() } }
             }
+
             VStack(alignment: .leading, spacing: 4) {
-                Text("Description").font(.system(size: 11)).foregroundStyle(N.muted)
+                Text("Description")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(N.muted)
                 TextEditor(text: $model.commitBody)
                     .font(.system(size: 12.5))
+                    .foregroundStyle(N.text)
                     .scrollContentBackground(.hidden)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 5)
-                    .frame(height: 64)
-                    .background(N.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .frame(height: 60)
+                    .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
+
             HStack(spacing: 8) {
                 Toggle(isOn: Binding(get: { model.amend }, set: { $0 ? model.startAmend() : (model.amend = false) })) {
-                    Text("Amend last commit").font(.system(size: 12)).foregroundStyle(N.muted)
+                    Text("Amend last commit")
+                        .font(.system(size: 12))
+                        .foregroundStyle(N.muted)
                 }
                 .toggleStyle(.checkbox)
                 .disabled(model.repo?.head?.sha == nil)
                 Spacer()
             }
+
             Button {
                 Task { await model.commit() }
             } label: {
                 HStack(spacing: 6) {
                     if model.committing { ProgressView().controlSize(.small) }
                     Text(commitTitle)
-                    if let branch = branchName { Text(branch).font(N.mono(12, weight: .semibold)) }
+                    if let branch = branchName {
+                        Text(branch).font(N.mono(12, weight: .semibold))
+                    }
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -277,9 +340,9 @@ struct CommitBox: View {
             .keyboardShortcut(.return, modifiers: .command)
             .help("Commit (⌘↩). Runs git, so your hooks and signing apply.")
         }
+        .padding(14)
+        .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .padding(12)
-        .well()
-        .padding(10)
     }
 
     private var commitTitle: String {
@@ -308,31 +371,51 @@ struct WorkDiffPanel: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 if let d = model.workDiff, let c = model.change {
-                    Text(d.status.label)
-                        .font(N.mono(10.5, weight: .semibold))
-                        .foregroundStyle(N.status(d.status == .untracked ? .added : d.status))
-                        .padding(.horizontal, 7)
-                        .frame(height: 20)
-                        .background(N.status(d.status == .untracked ? .added : d.status).opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-                    Text(d.path).font(N.mono(12.5, weight: .medium)).foregroundStyle(N.text).lineLimit(1).truncationMode(.head).layoutPriority(-1)
+                    let statusColor = N.status(d.status == .untracked ? .added : d.status)
+                    TagPill(
+                        text: d.status.label,
+                        textColor: statusColor,
+                        background: statusColor.opacity(0.14),
+                        monospaced: true
+                    )
+                    Text(d.path)
+                        .font(N.mono(12.5, weight: .medium))
+                        .foregroundStyle(N.text)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .layoutPriority(-1)
                     StatCounts(additions: d.additions, deletions: d.deletions)
-                    Text(c.area == .staged ? "staged" : "not staged").font(.system(size: 11.5)).foregroundStyle(N.faint)
+                    TagPill(
+                        text: c.area == .staged ? "staged" : "unstaged",
+                        textColor: c.area == .staged ? N.mint : N.muted
+                    )
                 }
                 Spacer(minLength: 8)
                 actions
-                Segmented(options: [(DiffLayout.unified, "Unified"), (.split, "Split")], selection: $model.layout).fixedSize()
+                HStack(spacing: 2) {
+                    FilterPillButton(title: "Unified", isSelected: model.layout == .unified) {
+                        model.layout = .unified
+                    }
+                    FilterPillButton(title: "Split", isSelected: model.layout == .split) {
+                        model.layout = .split
+                    }
+                }
+                .padding(2)
+                .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .fixedSize()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .background(N.ground)
 
             Group {
                 if let d = model.workDiff {
                     if d.binary {
-                        EmptyState(title: "Binary file", message: "Stage or discard it whole.")
+                        EmptyState(icon: "doc.zipper", title: "Binary file", message: "Stage or discard it whole.")
                     } else if d.tooLarge {
-                        EmptyState(title: "Too large to show", message: "One side of this file is over 8 MB. Stage or discard it whole.")
+                        EmptyState(icon: "doc.text.magnifyingglass", title: "Too large to show", message: "One side of this file is over 8 MB. Stage or discard it whole.")
                     } else if d.hunks.isEmpty {
-                        EmptyState(title: "No line changes", message: "Only the file's mode changed, or it's empty.")
+                        EmptyState(icon: "doc.text", title: "No line changes", message: "Only the file's mode changed, or it's empty.")
                     } else {
                         DiffBody(
                             diff: d,
@@ -344,17 +427,17 @@ struct WorkDiffPanel: View {
                         )
                     }
                 } else if let error = model.workDiffError {
-                    EmptyState(title: "Can't show this file", message: error)
+                    EmptyState(icon: "exclamationmark.triangle", title: "Can't show this file", message: error)
                 } else if model.status?.isClean == true {
-                    EmptyState(title: "Working tree clean", message: "Everything is committed.")
+                    EmptyState(icon: "checkmark.circle", title: "Working tree clean", message: "Everything is committed.")
                 } else {
-                    EmptyState(title: "No file selected", message: "Pick a file to see its changes. Click lines to pick them, then stage, unstage or discard just those.")
+                    EmptyState(icon: "doc.text.magnifyingglass", title: "No file selected", message: "Pick a file to see its changes. Click lines to pick them, then stage, unstage or discard just those.")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(N.well)
+            .background(N.ground)
         }
-        .island()
+        .background(N.ground)
         .confirmationDialog("Discard \(model.picks.count) picked lines?", isPresented: $confirmDiscardLines) {
             Button("Discard lines", role: .destructive) { Task { await model.discardPicks() } }
         } message: {
@@ -374,7 +457,8 @@ struct WorkDiffPanel: View {
         if let c = model.change, let d = model.workDiff {
             let editable = !d.binary && !d.tooLarge && d.status != .conflicted
             if !model.picks.isEmpty {
-                Button("Clear") { model.picks = [] }.buttonStyle(PillButtonStyle(kind: .quiet, height: 28))
+                Button("Clear") { model.picks = [] }
+                    .buttonStyle(PillButtonStyle(kind: .quiet, height: 28))
                 if c.area == .unstaged, d.status != .untracked {
                     Button("Discard \(model.picks.count)…") { confirmDiscardLines = true }
                         .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
