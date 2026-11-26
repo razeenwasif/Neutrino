@@ -38,10 +38,11 @@ crates/
 apps/
   project.yml      XcodeGen spec → Neutrino.xcodeproj (generated, not committed)
   NeutrinoKit/     Swift package: wire mirror, socket client, demo data, theme
-  Mac/             macOS app: Changes, History, commit panel, diff view, Branches, Pull requests,
-                   Runs, Secrets
-  iOS/             iPhone app: Inbox, pull requests with diffs, runs with logs, approvals
+  Mac/             macOS app (Stratus pitch-black UI): Code browser (collapsible root file tree), Changes, History,
+                   commit panel, diff view, Branches, Pull requests, Runs, Secrets, Command Palette (⌘K)
+  iOS/             iPhone app: Inbox, pull requests with diffs, runs with logs, approvals, deep links
   iOSNotify/       Notification service extension: swaps a push's placeholder for the real text
+  Widget/          macOS & iOS WidgetKit extension: workspace metrics, Inbox approvals/PRs/CI runs, Lock Screen widgets
 design/            App icon sources; make-icons.sh renders them into the asset catalog
 scripts/
   dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
@@ -395,6 +396,14 @@ needs you" with an id; the notification extension asks the server for the
 words, so repo names and branches never pass through Apple. Phones choose
 which kinds they take in Settings.
 
+The iOS app also bundles Home Screen (`small`, `medium`, `large`) and Lock
+Screen (`circular`, `rectangular`, `inline`) Inbox widgets. Using App Group
+`group.dev.neutrino` and the shared Keychain access group, the widget refreshes
+waiting deploy approvals, open pull requests, and CI runs in the background via
+`ServerService.inbox()` and deep-links straight to items via
+`neutrino://pull/<repo>/<number>`, `neutrino://run/<repo>/<id>`, and
+`neutrino://inbox`.
+
 ### Working copies
 
 Writes go through the `git` binary (Homebrew's, else Xcode's; `NEUTRINO_GIT`
@@ -419,6 +428,9 @@ cd apps && xcodegen generate && open Neutrino.xcodeproj
 
 It connects to neutrinod when it's running and shows the prototype's demo
 repository otherwise; it notices the daemon starting or stopping on its own.
+The Stratus pitch-black UI includes a Command Palette (⌘K), a collapsible root
+file tree in the Code view (collapsed by default so READMEs stay front and
+center), and macOS Desktop/Notification Center widgets.
 ⌘O adds a repository, ⌘R reloads, ⌘1 to ⌘6 switch between Changes, History,
 Branches, Pull requests, Runs and Secrets, ⌘F searches, ↑ and ↓ move through commits, ⌘⇧D gives the diff
 the full width. In Changes, tick a file to stage it, or click lines in its
