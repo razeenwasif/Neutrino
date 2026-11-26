@@ -27,6 +27,7 @@ extension AppModel {
         glance = statuses
         await refreshRepoList()
         await refreshGlancePulls()
+        publishWidgetSnapshot()
     }
 
     func refreshGlancePulls() async {

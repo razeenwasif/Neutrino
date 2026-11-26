@@ -272,55 +272,90 @@ private struct CrumbStyle: ButtonStyle {
 
 private struct FileTable: View {
     @Environment(AppModel.self) private var model
+    @State private var expanded = false
+
+    private var isExpanded: Bool {
+        expanded || !model.code.path.isEmpty || !model.code.filter.isEmpty
+    }
 
     var body: some View {
         let code = model.code
+        let shown = isExpanded
         VStack(alignment: .leading, spacing: 8) {
-            LatestCommitBar()
-
-            if let error = code.listingError {
-                EmptyState(icon: "exclamationmark.triangle", title: "Can't list these files", message: error)
-                    .frame(minHeight: 180)
-            } else if code.listing == nil {
-                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-                    .frame(height: 120)
-            } else {
-                LazyVStack(spacing: 2) {
-                    if !code.path.isEmpty, code.filter.isEmpty {
-                        EntryRowButton(action: { code.up() }) {
-                            Image(systemName: "arrow.turn.left.up")
-                                .font(.system(size: 12))
-                                .foregroundStyle(N.faint)
-                                .frame(width: 18)
-                            Text("..")
-                                .font(N.mono(13))
-                                .foregroundStyle(N.muted)
-                            Spacer()
-                        }
-                        .accessibilityLabel("Parent directory")
-                    }
-                    let entries = code.visibleEntries
-                    if entries.isEmpty {
-                        Text(code.filter.isEmpty ? "This directory is empty." : "No file here matches “\(code.filter)”.")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(N.faint)
-                            .frame(maxWidth: .infinity, minHeight: 64)
-                    }
-                    ForEach(entries) { entry in
-                        EntryRow(entry: entry, commit: code.entryCommits[entry.name])
-                    }
+            LatestCommitBar(
+                isExpanded: shown,
+                itemCount: code.listing?.entries.count,
+                canCollapse: code.path.isEmpty && code.filter.isEmpty
+            ) {
+                withAnimation(.snappy(duration: 0.2)) {
+                    expanded.toggle()
                 }
             }
+
+            if shown {
+                if let error = code.listingError {
+                    EmptyState(icon: "exclamationmark.triangle", title: "Can't list these files", message: error)
+                        .frame(minHeight: 180)
+                } else if code.listing == nil {
+                    HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                        .frame(height: 120)
+                } else {
+                    LazyVStack(spacing: 2) {
+                        if !code.path.isEmpty, code.filter.isEmpty {
+                            EntryRowButton(action: { code.up() }) {
+                                Image(systemName: "arrow.turn.left.up")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(N.faint)
+                                    .frame(width: 18)
+                                Text("..")
+                                    .font(N.mono(13))
+                                    .foregroundStyle(N.muted)
+                                Spacer()
+                            }
+                            .accessibilityLabel("Parent directory")
+                        }
+                        let entries = code.visibleEntries
+                        if entries.isEmpty {
+                            Text(code.filter.isEmpty ? "This directory is empty." : "No file here matches “\(code.filter)”.")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(N.faint)
+                                .frame(maxWidth: .infinity, minHeight: 64)
+                        }
+                        ForEach(entries) { entry in
+                            EntryRow(entry: entry, commit: code.entryCommits[entry.name])
+                        }
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+        .onChange(of: "\(model.source.rawValue):\(model.repoID ?? "")") {
+            expanded = false
         }
     }
 }
 
 private struct LatestCommitBar: View {
     @Environment(AppModel.self) private var model
+    var isExpanded: Bool
+    var itemCount: Int?
+    var canCollapse: Bool
+    var onToggle: () -> Void
 
     var body: some View {
         let code = model.code
         HStack(spacing: 10) {
+            Button(action: onToggle) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(N.muted)
+                    .frame(width: 16, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canCollapse)
+            .help(isExpanded ? "Collapse files & folders" : "Expand files & folders")
+
             if let c = code.latest {
                 Avatar(name: c.author.name, size: 22)
                 Text(c.author.name)
@@ -351,6 +386,19 @@ private struct LatestCommitBar: View {
                     .foregroundStyle(N.faint)
                 Spacer()
             }
+
+            if canCollapse {
+                ActionPillButton(
+                    title: itemCount.map { isExpanded ? "Hide \($0)" : "\($0) files" } ?? (isExpanded ? "Hide" : "Files"),
+                    systemImage: isExpanded ? "chevron.up" : "folder",
+                    tint: N.muted,
+                    background: N.surfacePill,
+                    action: onToggle
+                )
+                .help(isExpanded ? "Collapse file list" : "Expand file list")
+                .fixedSize()
+            }
+
             if let o = code.overview {
                 ActionPillButton(
                     title: "\(o.commits.formatted())\(o.commitsCapped ? "+" : "")",
@@ -370,6 +418,10 @@ private struct LatestCommitBar: View {
         .padding(.horizontal, 14)
         .frame(height: 46)
         .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if canCollapse { onToggle() }
+        }
     }
 
     private func showCommit(_ sha: String) {

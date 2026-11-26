@@ -27,11 +27,16 @@ targets:
     sources: [Mac]
     dependencies:
       - package: NeutrinoKit
+      - target: NeutrinoWidgetMac
+        embed: true
     info:
       path: Mac/Info.plist
       properties:
         NSLocalNetworkUsageDescription: Neutrino looks for your Neutrino server on the local network so you can pair with it.
         NSBonjourServices: [_neutrino._tcp]
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.neutrino.url
+            CFBundleURLSchemes: [neutrino]
     settings:
       base:
         PRODUCT_NAME: Neutrino
@@ -52,6 +57,30 @@ targets:
           CODE_SIGN_IDENTITY: "Apple Development"
           DEVELOPMENT_TEAM: YOUR_TEAM_ID
 
+  NeutrinoWidgetMac:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Widget/NeutrinoWidget.swift
+    dependencies:
+      - package: NeutrinoKit
+    info:
+      path: Widget/Info-macOS.plist
+      properties:
+        CFBundleDisplayName: Neutrino Widget
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: NeutrinoWidgetMac
+        PRODUCT_BUNDLE_IDENTIFIER: dev.neutrino.mac.widget
+        CODE_SIGN_ENTITLEMENTS: Widget/NeutrinoWidgetMac.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: YOUR_TEAM_ID
+
   NeutrinoIOS:
     type: application
     platform: iOS
@@ -60,6 +89,8 @@ targets:
     dependencies:
       - package: NeutrinoKit
       - target: NeutrinoNotify
+      - target: NeutrinoWidgetIOS
+        embed: true
     info:
       path: iOS/Info.plist
       properties:
@@ -112,14 +143,42 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: ""
 
+  NeutrinoWidgetIOS:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Widget/NeutrinoWidget.swift
+    dependencies:
+      - package: NeutrinoKit
+    info:
+      path: Widget/Info-iOS.plist
+      properties:
+        CFBundleDisplayName: Neutrino Widget
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: NeutrinoWidgetIOS
+        PRODUCT_BUNDLE_IDENTIFIER: dev.neutrino.ios.widget
+        CODE_SIGN_ENTITLEMENTS: Widget/NeutrinoWidgetIOS.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+        DEVELOPMENT_TEAM: YOUR_TEAM_ID
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+
 schemes:
   NeutrinoIOS:
     build:
-      targets: { NeutrinoIOS: all }
+      targets:
+        NeutrinoIOS: all
+        NeutrinoWidgetIOS: all
     run:
       config: Debug
   NeutrinoMac:
     build:
-      targets: { NeutrinoMac: all }
+      targets:
+        NeutrinoMac: all
+        NeutrinoWidgetMac: all
     run:
       config: Debug

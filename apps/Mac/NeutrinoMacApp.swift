@@ -15,6 +15,30 @@ struct NeutrinoMacApp: App {
         model.start()
     }
 
+    @MainActor
+    private func handleWidgetURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "neutrino" else { return }
+        let host = url.host?.lowercased() ?? ""
+        let segments = url.pathComponents.filter { $0 != "/" }
+        switch host {
+        case "repo":
+            if let id = segments.first, !id.isEmpty {
+                Task {
+                    await model.select(repo: id)
+                    model.section = .code
+                }
+            }
+        case "code": model.section = .code
+        case "changes": model.section = .changes
+        case "history": model.section = .history
+        case "branches": model.section = .branches
+        case "pulls": model.section = .pulls
+        case "runs": model.section = .runs
+        case "secrets": model.section = .secrets
+        default: break
+        }
+    }
+
     var body: some Scene {
         WindowGroup("Neutrino", id: Self.mainWindow) {
             RootView()
@@ -22,6 +46,9 @@ struct NeutrinoMacApp: App {
                 .frame(minWidth: 1080, minHeight: 700)
                 .preferredColorScheme(.dark)
                 .tint(N.indigo)
+                .onOpenURL { url in
+                    handleWidgetURL(url)
+                }
         }
         .windowStyle(.hiddenTitleBar)
         // The header shares the title bar's row; empty space still drags the window.

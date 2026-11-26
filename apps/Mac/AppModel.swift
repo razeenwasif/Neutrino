@@ -469,6 +469,7 @@ final class AppModel {
         if source == .local, let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
             repos[i] = updated
         }
+        publishWidgetSnapshot()
     }
 
     // MARK: History
@@ -647,5 +648,60 @@ final class AppModel {
 
     func reveal(_ repo: Repo) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: repo.path)])
+    }
+
+    func publishWidgetSnapshot() {
+        let localWorking = repos.filter { !$0.bare && $0.error == nil }
+        let items: [WidgetRepoItem] = localWorking.prefix(8).map { r in
+            let st = (r.id == repoID && source == .local) ? status : glance[r.id]
+            return WidgetRepoItem(
+                id: r.id,
+                name: r.name,
+                branch: st?.head?.label ?? r.head?.label ?? "HEAD",
+                dirtyCount: st?.changeCount ?? 0,
+                ahead: Int(st?.ahead ?? 0),
+                behind: Int(st?.behind ?? 0),
+                isHosted: false
+            )
+        }
+        let dirtyRepos = items.filter { $0.dirtyCount > 0 }.count
+        let pullsSource = pullList.isEmpty ? glancePulls : pullList.filter { $0.state == .open }
+        let pulls: [WidgetPullItem] = pullsSource.prefix(4).map { pr in
+            WidgetPullItem(
+                id: pr.id,
+                number: pr.number,
+                title: pr.title,
+                repoName: pr.repo,
+                source: pr.source,
+                target: pr.target
+            )
+        }
+        let runs: [WidgetRunItem] = runList.prefix(4).map { run in
+            WidgetRunItem(
+                id: run.id,
+                workflow: run.workflow,
+                branch: run.branch ?? "HEAD",
+                state: run.state,
+                number: run.number
+            )
+        }
+        let serverUp: Bool = if case .online = serverState { true } else { false }
+        let snap = NeutrinoWidgetSnapshot(
+            serverName: serverLink?.name,
+            serverOnline: serverUp,
+            daemonOnline: isLive,
+            localRepoCount: localWorking.count,
+            hostedRepoCount: hostedRepos.count,
+            dirtyRepoCount: dirtyRepos,
+            openPullCount: pullsSource.count,
+            activeRepoID: repoID,
+            activeRepoName: repo?.name,
+            activeBranch: status?.head?.label ?? repo?.head?.label,
+            activeDirtyFiles: status?.changeCount ?? 0,
+            repos: items,
+            openPulls: pulls,
+            recentRuns: runs
+        )
+        NeutrinoWidgetStore.save(snap)
     }
 }
