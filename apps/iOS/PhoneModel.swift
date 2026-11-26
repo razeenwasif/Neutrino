@@ -68,6 +68,7 @@ final class PhoneModel {
     func refresh() async {
         guard let service else {
             status = .unpaired
+            publishWidgetSnapshot()
             return
         }
         do {
@@ -75,6 +76,33 @@ final class PhoneModel {
             status = .online
         } catch {
             status = .offline(error.localizedDescription)
+        }
+        publishWidgetSnapshot()
+    }
+
+    private func publishWidgetSnapshot() {
+        NeutrinoWidgetStore.save(
+            NeutrinoWidgetSnapshot.fromInbox(inbox, serverName: link?.name, online: status == .online)
+        )
+    }
+
+    func handleURL(_ url: URL) {
+        guard url.scheme == "neutrino" else { return }
+        let host = url.host ?? ""
+        let segments = url.pathComponents.dropFirst().map { $0 }
+        switch host {
+        case "pull":
+            if segments.count >= 2, let number = UInt32(segments[1]) {
+                openPull = PullRef(repo: segments[0], number: number)
+            }
+        case "run":
+            if segments.count >= 2, let id = Int64(segments[1]) {
+                openRun = RunRef(repo: segments[0], id: id)
+            }
+        case "inbox", "pulls", "runs", "changes":
+            Task { await refresh() }
+        default:
+            break
         }
     }
 
@@ -101,6 +129,7 @@ final class PhoneModel {
         link = nil
         inbox = Inbox()
         status = .unpaired
+        publishWidgetSnapshot()
     }
 
     // MARK: Actions (signed)

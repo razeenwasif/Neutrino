@@ -32,6 +32,38 @@ public struct WidgetRepoItem: Codable, Sendable, Identifiable, Hashable {
     }
 }
 
+/// Waiting deploy approval metadata for Neutrino's iOS widgets.
+public struct WidgetWaitingItem: Codable, Sendable, Identifiable, Hashable {
+    public let id: Int64
+    public let repo: String
+    public let runID: Int64
+    public let number: UInt32
+    public let runName: String
+    public let jobName: String
+    public let environment: String?
+    public let branch: String?
+
+    public init(
+        id: Int64,
+        repo: String,
+        runID: Int64,
+        number: UInt32,
+        runName: String,
+        jobName: String,
+        environment: String? = nil,
+        branch: String? = nil
+    ) {
+        self.id = id
+        self.repo = repo
+        self.runID = runID
+        self.number = number
+        self.runName = runName
+        self.jobName = jobName
+        self.environment = environment
+        self.branch = branch
+    }
+}
+
 /// Open pull request metadata for Neutrino's widgets.
 public struct WidgetPullItem: Codable, Sendable, Identifiable, Hashable {
     public let id: String
@@ -58,13 +90,15 @@ public struct WidgetRunItem: Codable, Sendable, Identifiable, Hashable {
     public let branch: String
     public let state: RunState
     public let number: UInt32
+    public let repoName: String?
 
-    public init(id: Int64, workflow: String, branch: String, state: RunState, number: UInt32) {
+    public init(id: Int64, workflow: String, branch: String, state: RunState, number: UInt32, repoName: String? = nil) {
         self.id = id
         self.workflow = workflow
         self.branch = branch
         self.state = state
         self.number = number
+        self.repoName = repoName
     }
 }
 
@@ -82,7 +116,12 @@ public struct NeutrinoWidgetSnapshot: Codable, Sendable, Equatable {
     public let activeRepoName: String?
     public let activeBranch: String?
     public let activeDirtyFiles: Int
+    public let waitingApprovalCount: Int
+    public let readyPullCount: Int
+    public let failingRunCount: Int
+    public let isPhoneInbox: Bool
     public let repos: [WidgetRepoItem]
+    public let waitingApprovals: [WidgetWaitingItem]
     public let openPulls: [WidgetPullItem]
     public let recentRuns: [WidgetRunItem]
 
@@ -99,7 +138,12 @@ public struct NeutrinoWidgetSnapshot: Codable, Sendable, Equatable {
         activeRepoName: String? = nil,
         activeBranch: String? = nil,
         activeDirtyFiles: Int = 0,
+        waitingApprovalCount: Int = 0,
+        readyPullCount: Int = 0,
+        failingRunCount: Int = 0,
+        isPhoneInbox: Bool = false,
         repos: [WidgetRepoItem] = [],
+        waitingApprovals: [WidgetWaitingItem] = [],
         openPulls: [WidgetPullItem] = [],
         recentRuns: [WidgetRunItem] = []
     ) {
@@ -115,9 +159,103 @@ public struct NeutrinoWidgetSnapshot: Codable, Sendable, Equatable {
         self.activeRepoName = activeRepoName
         self.activeBranch = activeBranch
         self.activeDirtyFiles = activeDirtyFiles
+        self.waitingApprovalCount = waitingApprovalCount
+        self.readyPullCount = readyPullCount
+        self.failingRunCount = failingRunCount
+        self.isPhoneInbox = isPhoneInbox
         self.repos = repos
+        self.waitingApprovals = waitingApprovals
         self.openPulls = openPulls
         self.recentRuns = recentRuns
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        updatedMs = try c.decode(UInt64.self, forKey: .updatedMs)
+        serverName = try c.decodeIfPresent(String.self, forKey: .serverName)
+        serverOnline = try c.decode(Bool.self, forKey: .serverOnline)
+        daemonOnline = try c.decode(Bool.self, forKey: .daemonOnline)
+        localRepoCount = try c.decode(Int.self, forKey: .localRepoCount)
+        hostedRepoCount = try c.decode(Int.self, forKey: .hostedRepoCount)
+        dirtyRepoCount = try c.decode(Int.self, forKey: .dirtyRepoCount)
+        openPullCount = try c.decode(Int.self, forKey: .openPullCount)
+        activeRepoID = try c.decodeIfPresent(String.self, forKey: .activeRepoID)
+        activeRepoName = try c.decodeIfPresent(String.self, forKey: .activeRepoName)
+        activeBranch = try c.decodeIfPresent(String.self, forKey: .activeBranch)
+        activeDirtyFiles = try c.decode(Int.self, forKey: .activeDirtyFiles)
+        waitingApprovalCount = try c.decodeIfPresent(Int.self, forKey: .waitingApprovalCount) ?? 0
+        readyPullCount = try c.decodeIfPresent(Int.self, forKey: .readyPullCount) ?? 0
+        failingRunCount = try c.decodeIfPresent(Int.self, forKey: .failingRunCount) ?? 0
+        isPhoneInbox = try c.decodeIfPresent(Bool.self, forKey: .isPhoneInbox) ?? false
+        repos = try c.decodeIfPresent([WidgetRepoItem].self, forKey: .repos) ?? []
+        waitingApprovals = try c.decodeIfPresent([WidgetWaitingItem].self, forKey: .waitingApprovals) ?? []
+        openPulls = try c.decodeIfPresent([WidgetPullItem].self, forKey: .openPulls) ?? []
+        recentRuns = try c.decodeIfPresent([WidgetRunItem].self, forKey: .recentRuns) ?? []
+    }
+
+    public static func fromInbox(_ inbox: Inbox, serverName: String?, online: Bool) -> NeutrinoWidgetSnapshot {
+        var seenPulls = Set<String>()
+        var mergedPulls: [PullRequest] = []
+        for pr in inbox.ready + inbox.open where seenPulls.insert(pr.id).inserted {
+            mergedPulls.append(pr)
+        }
+
+        let waitingItems = inbox.waiting.prefix(6).map { w in
+            WidgetWaitingItem(
+                id: w.job,
+                repo: w.repo,
+                runID: w.run,
+                number: w.number,
+                runName: w.runName,
+                jobName: w.jobName,
+                environment: w.environment,
+                branch: w.branch
+            )
+        }
+        let pullItems = mergedPulls.prefix(6).map { pr in
+            WidgetPullItem(
+                id: pr.id,
+                number: pr.number,
+                title: pr.title,
+                repoName: pr.repo,
+                source: pr.source,
+                target: pr.target
+            )
+        }
+        let runItems = inbox.runs.prefix(6).map { run in
+            WidgetRunItem(
+                id: run.id,
+                workflow: run.name,
+                branch: run.branch ?? run.shortSHA,
+                state: run.state,
+                number: run.number,
+                repoName: run.repo
+            )
+        }
+        let failingCount = inbox.runs.filter { $0.state == .failure }.count
+        let activeRepo = inbox.waiting.first?.repo ?? mergedPulls.first?.repo ?? inbox.runs.first?.repo
+
+        return NeutrinoWidgetSnapshot(
+            serverName: serverName,
+            serverOnline: online,
+            daemonOnline: false,
+            localRepoCount: 0,
+            hostedRepoCount: 0,
+            dirtyRepoCount: 0,
+            openPullCount: mergedPulls.count,
+            activeRepoID: activeRepo,
+            activeRepoName: activeRepo,
+            activeBranch: inbox.waiting.first?.branch ?? mergedPulls.first?.source,
+            activeDirtyFiles: 0,
+            waitingApprovalCount: inbox.waiting.count,
+            readyPullCount: inbox.ready.count,
+            failingRunCount: failingCount,
+            isPhoneInbox: true,
+            repos: [],
+            waitingApprovals: waitingItems,
+            openPulls: pullItems,
+            recentRuns: runItems
+        )
     }
 
     public static let placeholder = NeutrinoWidgetSnapshot(
@@ -147,6 +285,36 @@ public struct NeutrinoWidgetSnapshot: Codable, Sendable, Equatable {
             WidgetRunItem(id: 2, workflow: "rust-tests", branch: "feat/ui", state: .running, number: 129),
         ]
     )
+
+    public static let phonePlaceholder = NeutrinoWidgetSnapshot(
+        serverName: "mini",
+        serverOnline: true,
+        daemonOnline: false,
+        localRepoCount: 0,
+        hostedRepoCount: 0,
+        dirtyRepoCount: 0,
+        openPullCount: 2,
+        activeRepoID: "Neutrino",
+        activeRepoName: "Neutrino",
+        activeBranch: "main",
+        activeDirtyFiles: 0,
+        waitingApprovalCount: 1,
+        readyPullCount: 1,
+        failingRunCount: 0,
+        isPhoneInbox: true,
+        repos: [],
+        waitingApprovals: [
+            WidgetWaitingItem(id: 101, repo: "Neutrino", runID: 44, number: 128, runName: "Release", jobName: "deploy-prod", environment: "production", branch: "main"),
+        ],
+        openPulls: [
+            WidgetPullItem(id: "Neutrino#42", number: 42, title: "Stratus iOS widgets & deep links", repoName: "Neutrino", source: "feat/ios-widgets", target: "main"),
+            WidgetPullItem(id: "Graviton#19", number: 19, title: "Live App Group snapshots", repoName: "Graviton", source: "feat/widgets", target: "master"),
+        ],
+        recentRuns: [
+            WidgetRunItem(id: 1, workflow: "ci-ios", branch: "main", state: .running, number: 128, repoName: "Neutrino"),
+            WidgetRunItem(id: 2, workflow: "rust-tests", branch: "master", state: .success, number: 94, repoName: "Graviton"),
+        ]
+    )
 }
 
 public enum NeutrinoWidgetStore {
@@ -157,14 +325,16 @@ public enum NeutrinoWidgetStore {
     #endif
     private static let filename = "widget-snapshot.json"
 
-    public static func save(_ snapshot: NeutrinoWidgetSnapshot) {
+    public static func save(_ snapshot: NeutrinoWidgetSnapshot, reload: Bool = true) {
         guard let url = snapshotURL() else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(snapshot)
             try data.write(to: url, options: .atomic)
             #if canImport(WidgetKit)
-            WidgetCenter.shared.reloadAllTimelines()
+            if reload {
+                WidgetCenter.shared.reloadAllTimelines()
+            }
             #endif
         } catch {
             // Non-fatal: widget refreshes on next app cycle.

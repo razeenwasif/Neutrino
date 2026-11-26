@@ -53,6 +53,7 @@ struct NeutrinoPhoneApp: App {
                 .preferredColorScheme(.dark)
                 .tint(N.accent)
                 .onAppear { delegate.model = model }
+                .onOpenURL { model.handleURL($0) }
         }
     }
 }

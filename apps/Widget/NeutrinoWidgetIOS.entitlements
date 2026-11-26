@@ -6,5 +6,9 @@
 	<array>
 		<string>group.dev.neutrino</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)dev.neutrino.shared</string>
+	</array>
 </dict>
 </plist>

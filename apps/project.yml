@@ -94,10 +94,15 @@ targets:
     info:
       path: iOS/Info.plist
       properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSLocalNetworkUsageDescription: Neutrino looks for your Neutrino server on the local network so you can pair with it.
         NSBonjourServices: [_neutrino._tcp]
         NSFaceIDUsageDescription: Face ID confirms merges, approvals and cancels before they're signed and sent to your server.
         UIBackgroundModes: [remote-notification]
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.neutrino.url
+            CFBundleURLSchemes: [neutrino]
     entitlements:
       path: iOS/Neutrino.entitlements
       properties:
@@ -126,6 +131,8 @@ targets:
     info:
       path: iOSNotify/Info.plist
       properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleDisplayName: Neutrino Notifications
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
@@ -154,7 +161,11 @@ targets:
     info:
       path: Widget/Info-iOS.plist
       properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleDisplayName: Neutrino Widget
+        NSLocalNetworkUsageDescription: Neutrino Widget refreshes approvals, pull requests, and CI runs from your Neutrino server.
+        NSBonjourServices: [_neutrino._tcp]
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
