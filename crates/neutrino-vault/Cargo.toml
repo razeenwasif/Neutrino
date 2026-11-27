@@ -7,7 +7,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 chacha20poly1305 = { version = "0.10", features = ["std"] }
-getrandom = "0.2"
+getrandom = "0.4"
 base64 = "0.22"
 security-framework = "3"
 
