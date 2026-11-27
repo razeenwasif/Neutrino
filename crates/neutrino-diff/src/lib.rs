@@ -554,4 +554,15 @@ mod tests {
         assert!(pos("crates/app/src/core.rs") < pos("apps/Mac/TokenView.swift"));
         assert!(pos("apps/Mac/TokenView.swift") < pos("crates/app/tests/flow.rs"));
     }
+
+    #[test]
+    fn detects_public_symbol_deltas_and_signature_breaks() {
+        let old = b"pub fn alpha(x: i32) -> i32 { x }\npub fn legacy() {}\nfn internal() {}\n";
+        let new = b"pub fn alpha(x: i32, y: i32) -> i32 { x + y }\npub fn added() {}\nfn internal_two() {}\n";
+        let deltas = semantic::public_symbol_deltas("src/lib.rs", old, new);
+        assert_eq!(deltas.len(), 3, "{deltas:?}");
+        assert!(deltas.iter().any(|d| d.symbol == "added" && d.change == neutrino_proto::SymbolDeltaKind::Added));
+        assert!(deltas.iter().any(|d| d.symbol == "legacy" && d.change == neutrino_proto::SymbolDeltaKind::Removed));
+        assert!(deltas.iter().any(|d| d.symbol == "alpha" && d.change == neutrino_proto::SymbolDeltaKind::SignatureChanged));
+    }
 }

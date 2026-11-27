@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 
 use gix::ObjectId;
-use neutrino_proto::{FileChange, FileDiff, LogEntry, MergeStrategy, Mergeability, MoveBlock, Side, TourStep};
+use neutrino_proto::{FileChange, FileDiff, LogEntry, MergeStrategy, Mergeability, MoveBlock, Side, TourStep, VerificationReceipt};
 
 use crate::worktree::git_binary;
 use crate::{Change, Ctx, DiffCache, Error, Result, fail, root, signature, split_message, tree_changes};
@@ -538,4 +538,115 @@ pub fn checkout_into(repo: &gix::Repository, sha: &str, dest: &Path) -> Result<(
     ok(dest, &["fetch", "-q", "--no-tags", "--depth=1", &url, sha], &[], None)?;
     ok(dest, &["-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD"], &[], None)?;
     Ok(())
+}
+
+fn check_hex_sha(sha: &str) -> Result<()> {
+    if sha.len() < 7 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return fail(format!("{sha:?} is not a commit SHA"));
+    }
+    Ok(())
+}
+
+/// Write immutable JSON provenance attestations under `refs/neutrino/attestations/<sha>`.
+pub fn write_attestation_ref(repo: &gix::Repository, sha: &str, json_bytes: &[u8]) -> Result<String> {
+    check_hex_sha(sha)?;
+    let dir = root(repo);
+    let blob_oid = ok(dir, &["hash-object", "-w", "--stdin"], &[], Some(json_bytes))?;
+    let ref_name = format!("refs/neutrino/attestations/{sha}");
+    ok(dir, &["update-ref", &ref_name, blob_oid.trim()], &[], None)?;
+    Ok(ref_name)
+}
+
+/// Read stored JSON provenance attestations from `refs/neutrino/attestations/<sha>`, if any.
+pub fn read_attestation_ref(repo: &gix::Repository, sha: &str) -> Result<Option<Vec<u8>>> {
+    check_hex_sha(sha)?;
+    let ref_name = format!("refs/neutrino/attestations/{sha}");
+    let Some(mut r) = repo.try_find_reference(ref_name.as_str()).ctx("reading attestation ref")? else {
+        return Ok(None);
+    };
+    let obj = r.peel_to_id().ctx("peeling attestation ref")?.object().ctx("reading attestation blob")?;
+    Ok(Some(obj.detach().data))
+}
+
+const LOCKFILES: &[&str] = &[
+    "Cargo.lock",
+    "Cargo.toml",
+    "Package.resolved",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "go.sum",
+    "go.mod",
+    "requirements.txt",
+    "poetry.lock",
+];
+
+fn is_security_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".entitlements")
+        || lower.starts_with(".neutrino/workflows/")
+        || lower.contains("/vault")
+        || lower.starts_with("vault")
+        || lower.contains("/auth")
+        || lower.starts_with("auth")
+        || lower.contains("security")
+        || lower.contains("signing")
+        || lower.contains("keychain")
+        || lower.ends_with("dockerfile")
+}
+
+/// Compute a deterministic PR blast-radius receipt (exported symbol deltas, dependency files, security paths).
+pub fn compute_receipt(repo: &gix::Repository, base: &str, head: &str) -> Result<VerificationReceipt> {
+    let changes = compared(repo, base, head).unwrap_or_default();
+    let (base_id, head_id) = (object(repo, base)?, object(repo, head)?);
+    let from_id = merge_base(repo, base_id, head_id)?.unwrap_or(base_id);
+    let from_str = from_id.to_string();
+
+    let mut dependency_files = Vec::new();
+    let mut security_paths = Vec::new();
+    let mut public_symbol_deltas = Vec::new();
+
+    for c in changes {
+        let fname = Path::new(&c.path).file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if LOCKFILES.contains(&fname) {
+            dependency_files.push(c.path.clone());
+        }
+        if is_security_path(&c.path) {
+            security_paths.push(c.path.clone());
+        }
+        if public_symbol_deltas.len() < 64 {
+            let old_bytes = blob_at(repo, &from_str, &c.path).ok().flatten().unwrap_or_default();
+            let new_bytes = blob_at(repo, head, &c.path).ok().flatten().unwrap_or_default();
+            if old_bytes.len() <= 256 * 1024 && new_bytes.len() <= 256 * 1024 {
+                for delta in neutrino_diff::semantic::public_symbol_deltas(&c.path, &old_bytes, &new_bytes) {
+                    public_symbol_deltas.push(delta);
+                    if public_symbol_deltas.len() >= 64 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let has_breaking_api = public_symbol_deltas
+        .iter()
+        .any(|d| !matches!(d.change, neutrino_proto::SymbolDeltaKind::Added));
+    let risk_level = if !security_paths.is_empty() || has_breaking_api {
+        "high"
+    } else if !dependency_files.is_empty() || !public_symbol_deltas.is_empty() {
+        "medium"
+    } else {
+        "low"
+    }
+    .to_string();
+
+    Ok(VerificationReceipt {
+        public_symbol_deltas,
+        dependency_files,
+        security_paths,
+        verified_checks: Vec::new(),
+        provenance_count: 0,
+        device_signed_count: 0,
+        risk_level,
+    })
 }

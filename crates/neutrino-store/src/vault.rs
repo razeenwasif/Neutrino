@@ -2,10 +2,24 @@
 //! environments, each scoped to every repo, one repo, or one repo's environment.
 
 use anyhow::{Result, bail};
-use neutrino_proto::{Environment, SecretInfo, Variable, VaultScope};
-use rusqlite::params;
+use neutrino_proto::{Environment, SecretInfo, SecretKind, Variable, VaultScope};
+use rusqlite::{OptionalExtension, params};
 
 use crate::{Store, now};
+
+fn secret_kind_str(kind: SecretKind) -> &'static str {
+    match kind {
+        SecretKind::Standard => "standard",
+        SecretKind::JitToken => "jit_token",
+    }
+}
+
+fn parse_secret_kind(s: &str) -> SecretKind {
+    match s {
+        "jit_token" => SecretKind::JitToken,
+        _ => SecretKind::Standard,
+    }
+}
 
 /// A scope as stored: empty strings for "any".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,14 +68,49 @@ pub fn check_name(name: &str) -> Result<()> {
 
 impl Store {
     pub fn set_secret(&self, scope: &Scope, name: &str, sealed: &[u8]) -> Result<()> {
+        self.set_secret_with_meta(scope, name, sealed, SecretKind::Standard, None)
+    }
+
+    pub fn set_secret_with_meta(&self, scope: &Scope, name: &str, sealed: &[u8], kind: SecretKind, ttl_seconds: Option<u64>) -> Result<()> {
         check_name(name)?;
+        let ts = now();
+        let ttl = ttl_seconds.map(|t| t as i64);
+        let expires_at = ttl.map(|t| ts + t);
         let db = self.db.lock().unwrap();
         db.execute(
-            "INSERT INTO secrets (repo, environment, name, sealed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (repo, environment, name) DO UPDATE SET sealed = ?4, updated_at = ?5",
-            params![scope.repo, scope.environment, name, sealed, now()],
+            "INSERT INTO secrets (repo, environment, name, sealed, updated_at, kind, ttl_seconds, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT (repo, environment, name) DO UPDATE SET sealed = ?4, updated_at = ?5, kind = ?6, ttl_seconds = ?7, expires_at = ?8",
+            params![scope.repo, scope.environment, name, sealed, ts, secret_kind_str(kind), ttl, expires_at],
         )?;
         Ok(())
+    }
+
+    pub fn purge_expired_secrets(&self) -> Result<usize> {
+        let db = self.db.lock().unwrap();
+        let n = db.execute("DELETE FROM secrets WHERE expires_at IS NOT NULL AND expires_at <= ?1", params![now()])?;
+        Ok(n)
+    }
+
+    pub fn purge_jit_secrets_for(&self, repo: &str, environment: &str) -> Result<usize> {
+        let db = self.db.lock().unwrap();
+        let n = db.execute(
+            "DELETE FROM secrets WHERE repo = ?1 AND environment = ?2 AND kind = 'jit_token'",
+            params![repo, environment],
+        )?;
+        Ok(n)
+    }
+
+    pub fn sealed_secret(&self, scope: &Scope, name: &str) -> Result<Option<(Vec<u8>, SecretKind, Option<i64>)>> {
+        let _ = self.purge_expired_secrets();
+        let db = self.db.lock().unwrap();
+        let row = db
+            .prepare("SELECT sealed, kind, expires_at FROM secrets WHERE repo = ?1 AND environment = ?2 AND name = ?3")?
+            .query_row(params![scope.repo, scope.environment, name], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, parse_secret_kind(&r.get::<_, String>(1)?), r.get::<_, Option<i64>>(2)?))
+            })
+            .optional()?;
+        Ok(row)
     }
 
     pub fn delete_secret(&self, scope: &Scope, name: &str) -> Result<()> {
@@ -74,21 +123,43 @@ impl Store {
 
     /// Names only. With a repo, its own and every repo's; with an environment too, those as well.
     pub fn secrets(&self, scope: &Scope) -> Result<Vec<SecretInfo>> {
+        let _ = self.purge_expired_secrets();
         let db = self.db.lock().unwrap();
         let rows = db
             .prepare(
-                "SELECT repo, environment, name, updated_at FROM secrets
+                "SELECT repo, environment, name, updated_at, kind, ttl_seconds, expires_at FROM secrets
                  WHERE (repo = '' OR repo = ?1) AND (environment = '' OR environment = ?2)
                  ORDER BY repo, environment, name",
             )?
-            .query_map(params![scope.repo, scope.environment], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))?
+            .query_map(params![scope.repo, scope.environment], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    parse_secret_kind(&r.get::<_, String>(4)?),
+                    r.get::<_, Option<i64>>(5)?.map(|v| v.max(0) as u64),
+                    r.get::<_, Option<i64>>(6)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows.into_iter().map(|(repo, environment, name, at)| SecretInfo { scope: Scope { repo, environment }.to_proto(), name, updated_at: at }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(repo, environment, name, at, kind, ttl_seconds, expires_at)| SecretInfo {
+                scope: Scope { repo, environment }.to_proto(),
+                name,
+                updated_at: at,
+                kind,
+                ttl_seconds,
+                expires_at,
+            })
+            .collect())
     }
 
     /// The sealed secrets a job in `repo` deploying to `environment` gets, the
     /// most specific of each name winning, with the scope each was sealed under.
     pub fn sealed_secrets_for(&self, repo: &str, environment: &str) -> Result<Vec<(Scope, String, Vec<u8>)>> {
+        let _ = self.purge_expired_secrets();
         let db = self.db.lock().unwrap();
         let rows = db
             .prepare(
@@ -230,5 +301,23 @@ mod tests {
         assert_eq!(has(&get("app", "prod"), "TOKEN"), Some(b"repo".to_vec()), "deleting an environment takes its secrets with it");
         s.delete_secret(&scope("", ""), "OTHER").unwrap();
         assert!(s.delete_secret(&scope("", ""), "OTHER").is_err());
+    }
+
+    #[test]
+    fn jit_secrets_expire_and_purge() {
+        let s = Store::in_memory().unwrap();
+        let prod = scope("app", "prod");
+        s.set_secret_with_meta(&prod, "JIT_PASS", b"sealed", SecretKind::JitToken, Some(0)).unwrap();
+        assert_eq!(s.secrets(&prod).unwrap().len(), 0, "ttl=0 already expired on read");
+
+        s.set_secret_with_meta(&prod, "JIT_LIVE", b"sealed2", SecretKind::JitToken, Some(600)).unwrap();
+        s.set_secret_with_meta(&prod, "STATIC_KEY", b"sealed3", SecretKind::Standard, None).unwrap();
+        let list = s.secrets(&prod).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.iter().find(|i| i.name == "JIT_LIVE").unwrap().kind, SecretKind::JitToken);
+        assert_eq!(s.purge_jit_secrets_for("app", "prod").unwrap(), 1);
+        let after = s.secrets(&prod).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].name, "STATIC_KEY");
     }
 }

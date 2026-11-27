@@ -278,6 +278,23 @@ let runLine = #"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number"
     #expect(list.count == 1 && list[0].branch == "feat/auth" && list[0].hasCheckpoint && list[0].services == ["db", "api"])
 }
 
+@Test func wave5ProvenanceReceiptAndShadowWire() throws {
+    let req = try json(Wire.line(id: 11, .configureShadow(repo: "app", enabled: true, cmd: "cargo check", useGraviton: false, image: nil)))
+    #expect(req["method"] as? String == "configure_shadow")
+
+    let revealedJson = #"{"id":11,"type":"secret_revealed","data":{"scope":{"repo":"app","environment":"prod"},"name":"DEPLOY_KEY","value":"s3cr3t","ttl_seconds":30,"expires_at":1700000300}}"#
+    guard case let .secretRevealed(sr) = try Wire.decode(Data(revealedJson.utf8)).1 else {
+        Issue.record("expected secret_revealed"); return
+    }
+    #expect(sr.name == "DEPLOY_KEY" && sr.value == "s3cr3t" && sr.ttlSeconds == 30)
+
+    let shadowJson = #"{"id":12,"type":"shadow","data":{"repo":"app","enabled":true,"cmd":"cargo check","use_graviton":false,"state":"passed","exit_code":0,"duration_ms":210,"updated_at":1700000000,"log_tail":"ok"}}"#
+    guard case let .shadow(st) = try Wire.decode(Data(shadowJson.utf8)).1 else {
+        Issue.record("expected shadow"); return
+    }
+    #expect(st.state == .passed && st.exitCode == 0 && st.logTail == "ok")
+}
+
 @Test func vaultWire() throws {
     let set = try json(Wire.line(id: 1, .setSecret(scope: VaultScope(repo: "app", environment: "prod"), name: "TOKEN", value: "v")))
     #expect(set == ["id": 1, "method": "set_secret", "params": ["scope": ["repo": "app", "environment": "prod"], "name": "TOKEN", "value": "v"]] as NSDictionary)

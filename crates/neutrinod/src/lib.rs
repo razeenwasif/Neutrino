@@ -15,8 +15,10 @@ pub mod maintenance;
 mod mirror;
 mod phone;
 pub use neutrino_remote;
+mod provenance;
 mod pulls;
 mod registry;
+mod shadow;
 mod stacks;
 mod watch;
 
@@ -169,7 +171,10 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::VaultInfo
             | Request::ListSecrets { .. }
             | Request::SetSecret { .. }
+            | Request::RevealSecret { .. }
             | Request::DeleteSecret { .. }
+            | Request::Provenance { .. }
+            | Request::VerifyProvenance { .. }
             | Request::ListVariables { .. }
             | Request::SetVariable { .. }
             | Request::DeleteVariable { .. }
@@ -220,6 +225,8 @@ pub struct Daemon {
     mirrors: Arc<mirror::Mirrors>,
     /// Background and on-demand git maintenance (repack, prune, commit-graph).
     maintainer: Arc<maintenance::Maintainer>,
+    /// Speculative Shadow CI runner per workstation repo.
+    shadow: shadow::ShadowManager,
     /// The socket hooks call back on; set by `serve`.
     socket: Mutex<Option<PathBuf>>,
     /// The TLS port actually bound (the option may be 0 for "any").
@@ -266,6 +273,7 @@ impl Daemon {
             apns: phone::Apns::default(),
             mirrors: Arc::default(),
             maintainer: Arc::default(),
+            shadow: shadow::ShadowManager::load(state_dir),
             store,
             ci,
             vault,
@@ -401,6 +409,12 @@ impl Daemon {
                 }
                 return match self.discard_branch_stack(&repo, &branch).await {
                     Ok(status) => Response::BranchStackUpdated(status),
+                    Err(e) => Response::Error { message: format!("{e:#}") },
+                };
+            }
+            Request::RunShadowNow { repo } => {
+                return match self.run_shadow_now(&repo).await {
+                    Ok(status) => Response::Shadow(status),
                     Err(e) => Response::Error { message: format!("{e:#}") },
                 };
             }
@@ -683,7 +697,7 @@ impl Daemon {
             Request::AddNote { repo: id, number, path, side, line, text } => self.add_note(&id, number, &path, side, line, &text)?,
             Request::ResolveNote { repo: id, number, note, resolved } => self.resolve_note(&id, number, note, resolved)?,
             Request::MergePull { repo: id, number, strategy, message, delete_source } => {
-                self.merge_pull(&id, number, strategy, message, delete_source)?
+                self.merge_pull(&id, number, strategy, message, delete_source, None)?
             }
             Request::Compare { repo: id, base, head } => Response::Compare(neutrino_git::forge::compare(&repo(&id)?, &base, &head)?),
             Request::CompareDiff { repo: id, base, head, path, context } => {
@@ -738,7 +752,15 @@ impl Daemon {
                 Response::Vault(self.vault_info()?)
             }
             Request::ListSecrets { scope } => Response::Secrets(self.secrets(&scope)?),
-            Request::SetSecret { scope, name, value } => self.set_secret(&scope, &name, &value)?,
+            Request::SetSecret { scope, name, value, kind, ttl_seconds } => self.set_secret(&scope, &name, &value, kind, ttl_seconds)?,
+            Request::RevealSecret { scope, name, reason } => bail!("secret reveal is answered by the connection ({scope:?} {name} {reason:?})"),
+            Request::Provenance { repo, rev } => Response::Provenance(self.provenance(&repo, &rev)?),
+            Request::VerifyProvenance { repo, rev } => Response::ProvenanceVerified(self.verify_provenance(&repo, &rev)?),
+            Request::ShadowStatus { repo } => Response::Shadow(self.shadow_status(&repo)?),
+            Request::ConfigureShadow { repo, enabled, cmd, use_graviton, image } => {
+                Response::Shadow(self.configure_shadow(&repo, enabled, cmd, use_graviton, image)?)
+            }
+            Request::RunShadowNow { .. } => bail!("run_shadow_now is handled asynchronously"),
             Request::DeleteSecret { scope, name } => {
                 let s = neutrino_store::Scope::from(&scope)?;
                 self.store()?.delete_secret(&s, &name)?;
@@ -917,17 +939,18 @@ where
             }
         };
         let id = id.unwrap_or(0);
-        // A signed request: check it, then treat what's inside as the request.
-        let (request, signed) = match request {
+        // A signed request: check it, then treat what's inside as the request + capture hardware evidence.
+        let (request, evidence) = match request {
             Request::Signed { request: inner, at, nonce, signature } => match daemon.unwrap_signed(&scope, &inner, at, &nonce, &signature) {
-                Ok(r) => (r, true),
+                Ok((r, ev)) => (r, Some(ev)),
                 Err(e) => {
                     let _ = tx.send(encode_response(id, &Response::Error { message: format!("{e:#}") })).await;
                     continue;
                 }
             },
-            r => (r, false),
+            r => (r, None),
         };
+        let signed = evidence.is_some();
         if matches!(scope, Scope::Remote { .. }) && !allowed_remotely(&request) {
             let _ = tx.send(encode_response(id, &Response::Error { message: "only available on the server itself".into() })).await;
             continue;
@@ -937,10 +960,33 @@ where
             let _ = tx.send(encode_response(id, &response)).await;
             continue;
         }
-        // Approvals record who gave them, which only the connection knows.
+        // Approvals & merges capture hardware signature evidence when signed.
         if let Request::ApproveJob { repo, job, approve } = &request {
             let (d, who, (repo, job, approve)) = (Arc::clone(&daemon), scope.who(), (repo.clone(), *job, *approve));
-            let response = tokio::task::spawn_blocking(move || d.approve(&repo, job, approve, &who))
+            let response = tokio::task::spawn_blocking(move || d.approve(&repo, job, approve, &who, evidence))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .and_then(|r| r)
+                .unwrap_or_else(|e| Response::Error { message: format!("{e:#}") });
+            let _ = tx.send(encode_response(id, &response)).await;
+            continue;
+        }
+        if let Request::MergePull { repo, number, strategy, message, delete_source } = &request {
+            let (d, (repo, number, strategy, message, delete_source)) = (
+                Arc::clone(&daemon),
+                (repo.clone(), *number, *strategy, message.clone(), *delete_source),
+            );
+            let response = tokio::task::spawn_blocking(move || d.merge_pull(&repo, number, strategy, message, delete_source, evidence))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .and_then(|r| r)
+                .unwrap_or_else(|e| Response::Error { message: format!("{e:#}") });
+            let _ = tx.send(encode_response(id, &response)).await;
+            continue;
+        }
+        if let Request::RevealSecret { scope: vscope, name, reason } = &request {
+            let (d, who, (vscope, name, reason)) = (Arc::clone(&daemon), scope.who(), (vscope.clone(), name.clone(), reason.clone()));
+            let response = tokio::task::spawn_blocking(move || d.reveal_secret(&vscope, &name, &who, reason.as_deref()))
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))
                 .and_then(|r| r)
@@ -1060,6 +1106,7 @@ pub async fn serve(daemon: Arc<Daemon>, socket: &Path, shutdown: impl std::futur
     daemon.adopt_hosted();
     daemon.watch_all();
     daemon.start_ci();
+    daemon.start_shadow();
     start_backup_copy(&daemon);
     let remote_task = match daemon.remote.clone() {
         Some(remote) => {

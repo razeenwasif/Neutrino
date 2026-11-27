@@ -514,3 +514,131 @@ async fn warm_to_commit_template_hits_on_second_commit() {
 
     stop.send(()).ok();
 }
+
+#[tokio::test]
+async fn provenance_chain_and_jit_secret_lifecycle() {
+    unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let sock = root.join("s.sock");
+    let options = neutrinod::Options {
+        role: neutrinod::Role::Server,
+        remote_port: None,
+        advertise: false,
+        ci: neutrinod::ci::CiOptions {
+            runner: neutrinod::ci::Runner::Local(Default::default()),
+            cpus: 4,
+            memory_mib: 4096,
+            minute: Duration::from_millis(500),
+            ..Default::default()
+        },
+        vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
+        ..Default::default()
+    };
+    let daemon = neutrinod::Daemon::with(&root.join("server"), options).unwrap();
+    let (stop, stop_rx) = tokio::sync::oneshot::channel();
+    let d = Arc::clone(&daemon);
+    let s = sock.clone();
+    tokio::spawn(async move {
+        neutrinod::serve(d, &s, async {
+            let _ = stop_rx.await;
+        })
+        .await
+        .unwrap()
+    });
+    while !sock.exists() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let hosted = match call(&sock, Request::CreateHosted { name: "app".into(), description: None }).await {
+        Response::Repo(r) => r,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(call(&sock, Request::VaultSetup).await, Response::RecoveryCode { .. }));
+    let prod = neutrino_proto::VaultScope { repo: Some(hosted.id.clone()), environment: Some("prod".into()) };
+    let env = neutrino_proto::Environment { repo: hosted.id.clone(), name: "prod".into(), require_approval: false, branches: vec!["main".into()] };
+    assert!(matches!(call(&sock, Request::SetEnvironment { environment: env }).await, Response::Environments(_)));
+    assert!(matches!(
+        call(&sock, Request::SetSecret {
+            scope: prod.clone(),
+            name: "JIT_TOKEN".into(),
+            value: "ephemeral-secret-999".into(),
+            kind: neutrino_proto::SecretKind::JitToken,
+            ttl_seconds: Some(300),
+        })
+        .await,
+        Response::Secrets(_)
+    ));
+    match call(&sock, Request::RevealSecret { scope: prod.clone(), name: "JIT_TOKEN".into(), reason: Some("audit test".into()) }).await {
+        Response::SecretRevealed { value, ttl_seconds, .. } => {
+            assert_eq!(value, "ephemeral-secret-999");
+            assert_eq!(ttl_seconds, 30);
+        }
+        other => panic!("expected SecretRevealed, got {other:?}"),
+    }
+
+    let wc = root.join("wc");
+    std::fs::create_dir_all(wc.join(".neutrino/workflows")).unwrap();
+    std::fs::create_dir_all(wc.join("src")).unwrap();
+    git(&wc, &["init", "-q", "-b", "main"]);
+    std::fs::write(wc.join("src/lib.rs"), "pub fn base(a: i32) -> i32 { a }\n").unwrap();
+    std::fs::write(
+        wc.join(".neutrino/workflows/ci.yml"),
+        "on: push\njobs:\n  deploy:\n    environment: prod\n    image: alpine:3.20\n    steps:\n      - run: test \"$SECRET\" = \"ephemeral-secret-999\"\n        env:\n          SECRET: ${{ secrets.JIT_TOKEN }}\n",
+    )
+    .unwrap();
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "initial"]);
+    git(&wc, &["remote", "add", "origin", &hosted.path]);
+    assert!(push(&wc, &["push", "-q", "origin", "main"]).await.0);
+
+    let r1 = runs(&sock, &hosted.id).await[0].id;
+    let d1 = finished(&sock, &hosted.id, r1).await;
+    assert_eq!(d1.run.state, RunState::Success);
+
+    // JIT token must be purged once the prod job completes.
+    match call(&sock, Request::ListSecrets { scope: prod.clone() }).await {
+        Response::Secrets(list) => assert!(list.iter().all(|s| s.name != "JIT_TOKEN"), "JIT_TOKEN should auto-purge: {list:?}"),
+        other => panic!("{other:?}"),
+    }
+
+    // Provenance verification succeeds against stored key + Git attestation ref.
+    match call(&sock, Request::VerifyProvenance { repo: hosted.id.clone(), rev: "main".into() }).await {
+        Response::ProvenanceVerified(v) => {
+            assert!(v.valid, "{v:?}");
+            assert!(v.verified_count >= 1);
+            assert!(v.records.iter().any(|r| r.git_ref.as_deref().is_some_and(|g| g.starts_with("refs/neutrino/attestations/"))));
+        }
+        other => panic!("expected ProvenanceVerified, got {other:?}"),
+    }
+
+    // Pull request blast-radius receipt detects public symbol breaks & security paths.
+    git(&wc, &["switch", "-q", "-c", "feat/api"]);
+    std::fs::write(wc.join("src/lib.rs"), "pub fn base(a: i32, b: i32) -> i32 { a + b }\npub fn added() {}\n").unwrap();
+    std::fs::write(wc.join("Cargo.lock"), "v=2\n").unwrap();
+    std::fs::write(wc.join(".neutrino/workflows/extra.yml"), "on: workflow_dispatch\njobs:\n  ok:\n    image: alpine:3.20\n    steps:\n      - run: echo ok\n").unwrap();
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "api change"]);
+    assert!(push(&wc, &["push", "-q", "origin", "feat/api"]).await.0);
+    match call(&sock, neutrino_proto::Request::CreatePull {
+        repo: hosted.id.clone(),
+        title: "API update".into(),
+        body: String::new(),
+        source: "feat/api".into(),
+        target: "main".into(),
+        stack_id: None,
+        parent_pull: None,
+    })
+    .await
+    {
+        Response::Pull(pd) => {
+            let receipt = pd.receipt.expect("expected verification receipt");
+            assert_eq!(receipt.risk_level, "high");
+            assert!(receipt.dependency_files.contains(&"Cargo.lock".to_string()));
+            assert!(receipt.security_paths.iter().any(|p| p.contains(".neutrino/workflows/")));
+            assert!(receipt.public_symbol_deltas.iter().any(|d| d.symbol == "base"));
+        }
+        other => panic!("expected Pull, got {other:?}"),
+    }
+
+    stop.send(()).ok();
+}

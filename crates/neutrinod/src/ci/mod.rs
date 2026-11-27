@@ -24,7 +24,7 @@ use anyhow::{Context, Result, bail};
 use neutrino_ci::expr::{self, Status};
 use neutrino_ci::workflow::Service;
 use neutrino_ci::{Event, Executor, Step, Workflow};
-use neutrino_proto::{CiInfo, FrozenAttachment, LogChunk, Run, RunState, WorkflowFile};
+use neutrino_proto::{CiInfo, FrozenAttachment, LogChunk, ProvenanceKind, Run, RunState, WorkflowFile};
 use neutrino_store::{NewJob, NewRun, now};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -1289,15 +1289,22 @@ impl Daemon {
         }
 
         // Artifacts, whatever the steps did (a failed build's logs are worth keeping); not after a cancel.
+        let mut artifact_digests: Vec<Value> = Vec::new();
         if !def.artifacts.is_empty() && !was_cancelled {
             let dest = self.state_dir.join("artifacts").join(run.id.to_string()).join(&q.key);
             let (ws, patterns) = (workspace.clone(), def.artifacts.clone());
-            match tokio::task::spawn_blocking(move || workspace::collect(&ws, &patterns, &dest)).await? {
+            let collected = tokio::task::spawn_blocking(move || workspace::collect(&ws, &patterns, &dest)).await?;
+            match collected {
                 Ok(kept) if kept.is_empty() => log.note("no files matched the artifacts").await?,
                 Ok(kept) => {
+                    let dest_root = self.state_dir.join("artifacts").join(run.id.to_string()).join(&q.key);
                     let total: u64 = kept.iter().map(|(_, n)| n).sum();
                     for (path, size) in &kept {
                         store.add_artifact(run.id, &q.key, path, *size)?;
+                        let digest = std::fs::read(dest_root.join(path))
+                            .ok()
+                            .map(|b| Sha256::digest(&b).iter().map(|x| format!("{x:02x}")).collect::<String>());
+                        artifact_digests.push(json!({ "path": path, "size": size, "sha256": digest }));
                     }
                     log.note(&format!("kept {} artifact file{} ({} KB)", kept.len(), if kept.len() == 1 { "" } else { "s" }, total.div_ceil(1024))).await?;
                 }
@@ -1320,6 +1327,36 @@ impl Daemon {
                     Err(e) => log.note(&format!("couldn't save cache {key}: {e:#}")).await?,
                 }
             }
+        }
+
+        // SLSA L3 provenance attestation + automatic JIT deploy credential cleanup.
+        if !was_cancelled {
+            let mut wf_hash = Sha256::new();
+            wf_hash.update(run.workflow.as_bytes());
+            wf_hash.update(image.as_bytes());
+            let wf_digest: String = wf_hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+            if let Err(e) = self.record_provenance(
+                &run.repo,
+                &run.sha,
+                ProvenanceKind::Ci,
+                json!({
+                    "run_id": run.id,
+                    "run_number": run.number,
+                    "job_key": q.key,
+                    "workflow": run.workflow,
+                    "workflow_digest": wf_digest,
+                    "image": image,
+                    "executor": def.runs_on.name(),
+                    "state": state.name(),
+                    "artifacts": artifact_digests,
+                }),
+                None,
+            ) {
+                let _ = log.note(&format!("couldn't record CI provenance: {e:#}")).await;
+            }
+        }
+        if let Some(ref env_name) = q.environment {
+            let _ = store.purge_jit_secrets_for(&run.repo, env_name);
         }
 
         // Teardown runs whatever happened.

@@ -242,7 +242,7 @@ pub(crate) fn split_message(raw: &BStr) -> (String, String) {
     (subject, body.trim().to_string())
 }
 
-pub(crate) fn resolve(repo: &gix::Repository, rev: &str) -> Result<ObjectId> {
+pub fn resolve(repo: &gix::Repository, rev: &str) -> Result<ObjectId> {
     let id = repo.rev_parse_single(rev).ctx(format!("no commit named {rev:?}"))?;
     let commit = id.object().ctx("reading object")?.peel_to_commit().ctx(format!("{rev:?} is not a commit"))?;
     Ok(commit.id().detach())

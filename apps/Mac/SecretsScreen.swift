@@ -166,22 +166,29 @@ struct SecretList: View {
                                     .truncationMode(.middle)
                                     .help(s.name)
                                 if !model.isOwn(s.scope) { Inherited(scope: s.scope).fixedSize() }
+                                if s.kind == .jitToken {
+                                    TagPill(text: "JIT", color: N.amber, textColor: N.amber, background: N.amber.opacity(0.14))
+                                        .fixedSize()
+                                        .help("Auto-expiring deploy token cleared after run finishes")
+                                }
                                 Spacer()
                                 Text(Format.ago(s.updatedAt))
                                     .font(N.mono(10.5))
                                     .foregroundStyle(N.faint)
-                                if model.isOwn(s.scope) {
-                                    Menu {
+                                Menu {
+                                    Button("Reveal value (Touch ID)…") { Task { await model.revealSecret(s) } }
+                                    if model.isOwn(s.scope) {
+                                        Divider()
                                         Button("Replace value…") { editing = s.name }
                                         Button("Delete", role: .destructive) { Task { await model.deleteSecret(s) } }
-                                    } label: {
-                                        Image(systemName: "ellipsis")
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundStyle(N.muted)
                                     }
-                                    .menuStyle(.button).buttonStyle(.plain).fixedSize()
-                                    .accessibilityLabel("Actions for \(s.name)")
+                                } label: {
+                                    Image(systemName: "ellipsis")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(N.muted)
                                 }
+                                .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                                .accessibilityLabel("Actions for \(s.name)")
                             }
                             .padding(.horizontal, 12)
                             .frame(height: 36)
@@ -196,6 +203,9 @@ struct SecretList: View {
         .background(N.inspector, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .sheet(isPresented: $adding) { SecretSheet(name: "") }
         .sheet(item: Binding(get: { editing.map { IdentifiedName(name: $0) } }, set: { editing = $0?.name })) { SecretSheet(name: $0.name) }
+        .sheet(item: Binding(get: { model.revealedSecret }, set: { model.revealedSecret = $0 })) { item in
+            SecretRevealSheet(item: item)
+        }
     }
 }
 
@@ -209,6 +219,8 @@ struct SecretSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State var name: String
     @State private var value = ""
+    @State private var isJit = false
+    @State private var ttlSeconds: UInt64 = 900
     @State private var error: String?
     @State private var working = false
 
@@ -243,9 +255,22 @@ struct SecretSheet: View {
                     .padding(.horizontal, 12)
                     .frame(height: 34)
                     .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                Text("It's sealed on the server and can't be read back, here or anywhere.")
+                Text("Sealed on the server with XChaCha20-Poly1305. Break-glass reveals require Touch ID or phone approval.")
                     .font(.system(size: 11))
                     .foregroundStyle(N.faint)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("JIT deploy token (auto-purged after job)", isOn: $isJit)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 12.5))
+                if isJit {
+                    Picker("TTL", selection: $ttlSeconds) {
+                        Text("5 minutes").tag(UInt64(300))
+                        Text("15 minutes").tag(UInt64(900))
+                        Text("1 hour").tag(UInt64(3600))
+                    }
+                    .pickerStyle(.segmented)
+                }
             }
             if let error { Text(error).font(.system(size: 12)).foregroundStyle(N.rose).fixedSize(horizontal: false, vertical: true) }
             HStack {
@@ -258,7 +283,12 @@ struct SecretSheet: View {
                     Task {
                         defer { working = false }
                         do {
-                            try await model.setSecret(name: name.trimmingCharacters(in: .whitespaces), value: value)
+                            try await model.setSecret(
+                                name: name.trimmingCharacters(in: .whitespaces),
+                                value: value,
+                                kind: isJit ? .jitToken : .standard,
+                                ttlSeconds: isJit ? ttlSeconds : nil
+                            )
                             value = ""
                             dismiss()
                         } catch {
@@ -274,6 +304,57 @@ struct SecretSheet: View {
         .padding(24)
         .frame(width: 440)
         .background(N.sheet)
+    }
+}
+
+struct SecretRevealSheet: View {
+    @Environment(AppModel.self) private var model
+    var item: SecretRevealState
+    @State private var remaining = 30
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Image(systemName: "lock.open.fill")
+                    .foregroundStyle(N.amber)
+                Text("Break-Glass Reveal · \(item.name)")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(N.text)
+                Spacer()
+                TagPill(text: "\(remaining)s", color: N.amber, textColor: N.amber, background: N.amber.opacity(0.14))
+            }
+            Text("Scope: \(item.scopeLabel). Recorded in the server audit log.")
+                .font(.system(size: 12))
+                .foregroundStyle(N.muted)
+            Text(item.value)
+                .font(N.mono(13))
+                .foregroundStyle(N.text)
+                .textSelection(.enabled)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(N.surfaceHover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            HStack {
+                Button("Copy secret") { model.copy(item.value, label: item.name) }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 30))
+                Spacer()
+                Button("Hide now") { model.revealedSecret = nil }
+                    .buttonStyle(PillButtonStyle(kind: .primary, height: 30))
+            }
+        }
+        .padding(24)
+        .frame(width: 460)
+        .background(N.sheet)
+        .task(id: item.id) {
+            while !Task.isCancelled {
+                let left = Int(ceil(item.expiresAt.timeIntervalSinceNow))
+                if left <= 0 {
+                    model.revealedSecret = nil
+                    break
+                }
+                remaining = left
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use neutrino_proto::{Hunk, LineKind, MoveBlock, NoiseKind, SemanticSummary};
+use neutrino_proto::{Hunk, LineKind, MoveBlock, NoiseKind, SemanticSummary, SymbolDelta, SymbolDeltaKind};
 use tree_sitter::Node;
 
 use crate::syntax::{self, Lang};
@@ -351,6 +351,84 @@ pub fn detect_cross_file_moves(files: &[(&str, &[u8], &[u8])]) -> Vec<MoveBlock>
                 changed_lines: adds.max(dels),
             });
             next_id += 1;
+        }
+    }
+    out
+}
+
+fn decl_signature_header(path: &str, bytes: &[u8], start_line: u32, end_line: u32) -> (bool, String) {
+    let slice = decl_body_slice(bytes, start_line, end_line.min(start_line + 6));
+    let text = String::from_utf8_lossy(&slice);
+    let first_line = text.lines().next().unwrap_or("").trim();
+    let is_public = if path.ends_with(".rs") {
+        first_line.starts_with("pub ") || first_line.starts_with("pub(")
+    } else if path.ends_with(".swift") {
+        first_line.contains("public ") || first_line.contains("open ")
+    } else if path.ends_with(".ts") || path.ends_with(".tsx") || path.ends_with(".js") || path.ends_with(".jsx") {
+        first_line.starts_with("export ")
+    } else if path.ends_with(".py") {
+        !text.starts_with(' ')
+            && !text.starts_with('\t')
+            && !first_line.starts_with("def _")
+            && !first_line.starts_with("class _")
+            && (first_line.starts_with("def ") || first_line.starts_with("async def ") || first_line.starts_with("class "))
+    } else if path.ends_with(".go") {
+        first_line
+            .strip_prefix("func ")
+            .and_then(|s| s.trim_start().chars().next())
+            .is_some_and(|c| c.is_ascii_uppercase())
+    } else {
+        false
+    };
+    let head = text.split('{').next().unwrap_or(&text);
+    let normalized: String = head.split_whitespace().collect::<Vec<_>>().join(" ");
+    (is_public, normalized)
+}
+
+/// Compare exported/public declarations in `old` vs `new` for PR Blast Radius Receipts (Wave 5B).
+pub fn public_symbol_deltas(path: &str, old: &[u8], new: &[u8]) -> Vec<SymbolDelta> {
+    use std::collections::BTreeMap;
+
+    let collect_public = |bytes: &[u8]| -> BTreeMap<(String, &'static str), String> {
+        let mut map = BTreeMap::new();
+        for decl in extract_decls(path, bytes) {
+            let (is_pub, sig) = decl_signature_header(path, bytes, decl.start_line, decl.end_line);
+            if is_pub {
+                map.insert((decl.symbol, decl.kind), sig);
+            }
+        }
+        map
+    };
+
+    let old_map = collect_public(old);
+    let new_map = collect_public(new);
+    let mut out = Vec::new();
+
+    for ((sym, kind), sig) in &new_map {
+        match old_map.get(&(sym.clone(), *kind)) {
+            None => out.push(SymbolDelta {
+                path: path.to_string(),
+                symbol: sym.clone(),
+                kind: (*kind).to_string(),
+                change: SymbolDeltaKind::Added,
+            }),
+            Some(prev) if prev != sig => out.push(SymbolDelta {
+                path: path.to_string(),
+                symbol: sym.clone(),
+                kind: (*kind).to_string(),
+                change: SymbolDeltaKind::SignatureChanged,
+            }),
+            Some(_) => {}
+        }
+    }
+    for (sym, kind) in old_map.keys() {
+        if !new_map.contains_key(&(sym.clone(), *kind)) {
+            out.push(SymbolDelta {
+                path: path.to_string(),
+                symbol: sym.clone(),
+                kind: (*kind).to_string(),
+                change: SymbolDeltaKind::Removed,
+            });
         }
     }
     out

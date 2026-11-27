@@ -209,6 +209,11 @@ impl Remote {
         self.state.lock().unwrap().devices.iter().any(|d| d.id == device && d.signing_key.is_some())
     }
 
+    /// Stored base64 uncompressed P-256 signing key for `device`, if registered.
+    pub fn signing_key(&self, device: &str) -> Option<String> {
+        self.state.lock().unwrap().devices.iter().find(|d| d.id == device).and_then(|d| d.signing_key.clone())
+    }
+
     /// Check a signature over `message` (ECDSA P-256 with SHA-256, DER) made
     /// with the device's key.
     pub fn verify(&self, device: &str, message: &[u8], signature_b64: &str) -> Result<()> {

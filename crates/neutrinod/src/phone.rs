@@ -19,7 +19,10 @@ use crate::{Daemon, Scope};
 
 /// What has to be signed when the device signs.
 fn needs_signature(r: &Request) -> bool {
-    matches!(r, Request::MergePull { .. } | Request::ApproveJob { .. } | Request::CancelRun { .. })
+    matches!(
+        r,
+        Request::MergePull { .. } | Request::ApproveJob { .. } | Request::CancelRun { .. } | Request::RevealSecret { .. }
+    )
 }
 
 /// Apple's push service: a JWT made from the stored key, good for 50 minutes.
@@ -52,8 +55,15 @@ fn apns_jwt(p8: &str, key_id: &str, team_id: &str, at: i64) -> Result<String> {
 }
 
 impl Daemon {
-    /// Check a signed request and hand back what's inside it.
-    pub(crate) fn unwrap_signed(&self, scope: &Scope, inner: &str, at: i64, nonce: &str, signature: &str) -> Result<Request> {
+    /// Check a signature and hand back what's inside it plus the verified hardware evidence.
+    pub(crate) fn unwrap_signed(
+        &self,
+        scope: &Scope,
+        inner: &str,
+        at: i64,
+        nonce: &str,
+        signature: &str,
+    ) -> Result<(Request, crate::provenance::SignedEvidence)> {
         let Scope::Remote { id: device, .. } = scope else { bail!("only a paired device signs requests") };
         let remote = self.remote.as_ref().context("this server has no network endpoint")?;
         let t = now();
@@ -63,7 +73,8 @@ impl Daemon {
         if nonce.len() < 16 || nonce.len() > 64 {
             bail!("a signed request needs a nonce of 16 to 64 characters");
         }
-        remote.verify(device, format!("{at}\n{nonce}\n{inner}").as_bytes(), signature)?;
+        let payload = format!("{at}\n{nonce}\n{inner}");
+        remote.verify(device, payload.as_bytes(), signature)?;
         {
             let mut seen = self.nonces.lock().unwrap();
             seen.retain(|_, when| t - *when <= SIGNATURE_WINDOW_SECS);
@@ -76,7 +87,18 @@ impl Daemon {
         if matches!(request, Request::Signed { .. }) {
             bail!("a signed request can't hold another");
         }
-        Ok(request)
+        let public_key = remote.signing_key(device).unwrap_or_default();
+        Ok((
+            request,
+            crate::provenance::SignedEvidence {
+                device_id: device.clone(),
+                public_key,
+                signature: signature.to_string(),
+                at,
+                nonce: nonce.to_string(),
+                payload,
+            },
+        ))
     }
 
     /// The phone's own requests, and the gate on unsigned approvals. `None` lets the request through.

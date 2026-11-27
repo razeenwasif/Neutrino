@@ -266,11 +266,108 @@ public struct VaultScope: Codable, Hashable, Sendable {
     }
 }
 
+public enum SecretKind: String, Codable, Sendable {
+    case standard
+    case jitToken = "jit_token"
+}
+
 public struct SecretInfo: Codable, Hashable, Identifiable, Sendable {
     public var scope: VaultScope
     public var name: String
     public var updatedAt: Int64
+    public var kind: SecretKind
+    public var ttlSeconds: UInt64?
+    public var expiresAt: Int64?
     public var id: String { "\(scope.repo ?? "")/\(scope.environment ?? "")/\(name)" }
+
+    public init(scope: VaultScope, name: String, updatedAt: Int64, kind: SecretKind = .standard, ttlSeconds: UInt64? = nil, expiresAt: Int64? = nil) {
+        self.scope = scope
+        self.name = name
+        self.updatedAt = updatedAt
+        self.kind = kind
+        self.ttlSeconds = ttlSeconds
+        self.expiresAt = expiresAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try c.decode(VaultScope.self, forKey: .scope)
+        name = try c.decode(String.self, forKey: .name)
+        updatedAt = try c.decode(Int64.self, forKey: .updatedAt)
+        kind = try c.decodeIfPresent(SecretKind.self, forKey: .kind) ?? .standard
+        ttlSeconds = try c.decodeIfPresent(UInt64.self, forKey: .ttlSeconds)
+        expiresAt = try c.decodeIfPresent(Int64.self, forKey: .expiresAt)
+    }
+}
+
+public struct SecretRevealed: Codable, Hashable, Sendable {
+    public var scope: VaultScope
+    public var name: String
+    public var value: String
+    public var ttlSeconds: UInt32
+    public var expiresAt: Int64?
+}
+
+public enum ProvenanceKind: String, Codable, Sendable {
+    case merge, ci, deploy
+}
+
+public struct ProvenanceRecord: Codable, Hashable, Identifiable, Sendable {
+    public var id: Int64
+    public var repo: String
+    public var sha: String
+    public var kind: ProvenanceKind
+    public var statementJson: String
+    public var serverKeyId: String
+    public var serverPublicKey: String
+    public var serverSignature: String
+    public var deviceId: String?
+    public var devicePublicKey: String?
+    public var deviceSignature: String?
+    public var deviceSignedAt: Int64?
+    public var deviceNonce: String?
+    public var devicePayload: String?
+    public var gitRef: String?
+    public var createdAt: Int64
+}
+
+public struct ProvenanceVerification: Codable, Hashable, Sendable {
+    public var sha: String
+    public var valid: Bool
+    public var records: [ProvenanceRecord]
+    public var verifiedCount: UInt32
+    public var deviceSignedCount: UInt32
+    public var issues: [String]
+}
+
+public enum ShadowState: String, Codable, Sendable {
+    case disabled, idle, running, passed, failed
+}
+
+public struct ShadowStatus: Codable, Hashable, Sendable {
+    public var repo: String
+    public var enabled: Bool
+    public var cmd: String
+    public var useGraviton: Bool
+    public var image: String?
+    public var state: ShadowState
+    public var exitCode: Int32?
+    public var durationMs: UInt64?
+    public var updatedAt: Int64?
+    public var logTail: String
+
+    public init(repo: String, enabled: Bool, cmd: String, useGraviton: Bool = false, image: String? = nil, state: ShadowState = .disabled, exitCode: Int32? = nil, durationMs: UInt64? = nil, updatedAt: Int64? = nil, logTail: String = "") {
+        self.repo = repo
+        self.enabled = enabled
+        self.cmd = cmd
+        self.useGraviton = useGraviton
+        self.image = image
+        self.state = state
+        self.exitCode = exitCode
+        self.durationMs = durationMs
+        self.updatedAt = updatedAt
+        self.logTail = logTail
+    }
 }
 
 public struct Variable: Codable, Hashable, Identifiable, Sendable {
@@ -320,7 +417,10 @@ public struct VaultInfo: Codable, Hashable, Sendable {
 public protocol VaultService: Sendable {
     func vaultInfo() async throws -> VaultInfo
     func secrets(scope: VaultScope) async throws -> [SecretInfo]
-    func setSecret(scope: VaultScope, name: String, value: String) async throws -> [SecretInfo]
+    func setSecret(scope: VaultScope, name: String, value: String, kind: SecretKind, ttlSeconds: UInt64?) async throws -> [SecretInfo]
+    func revealSecret(scope: VaultScope, name: String, reason: String?) async throws -> SecretRevealed
+    func provenance(repo: String, rev: String) async throws -> [ProvenanceRecord]
+    func verifyProvenance(repo: String, rev: String) async throws -> ProvenanceVerification
     func deleteSecret(scope: VaultScope, name: String) async throws -> [SecretInfo]
     func variables(scope: VaultScope) async throws -> [Variable]
     func setVariable(scope: VaultScope, name: String, value: String) async throws -> [Variable]
@@ -356,8 +456,26 @@ extension ServerService: VaultService {
     }
 
     public func secrets(scope: VaultScope) async throws -> [SecretInfo] { try await secretList(.listSecrets(scope: scope)) }
-    public func setSecret(scope: VaultScope, name: String, value: String) async throws -> [SecretInfo] {
-        try await secretList(.setSecret(scope: scope, name: name, value: value))
+    public func setSecret(scope: VaultScope, name: String, value: String, kind: SecretKind = .standard, ttlSeconds: UInt64? = nil) async throws -> [SecretInfo] {
+        try await secretList(.setSecret(scope: scope, name: name, value: value, kind: kind, ttlSeconds: ttlSeconds))
+    }
+    public func revealSecret(scope: VaultScope, name: String, reason: String? = nil) async throws -> SecretRevealed {
+        guard case let .secretRevealed(r) = try await call(.revealSecret(scope: scope, name: name, reason: reason)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return r
+    }
+    public func provenance(repo: String, rev: String) async throws -> [ProvenanceRecord] {
+        guard case let .provenance(list) = try await call(.provenance(repo: repo, rev: rev)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return list
+    }
+    public func verifyProvenance(repo: String, rev: String) async throws -> ProvenanceVerification {
+        guard case let .provenanceVerified(v) = try await call(.verifyProvenance(repo: repo, rev: rev)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return v
     }
     public func deleteSecret(scope: VaultScope, name: String) async throws -> [SecretInfo] { try await secretList(.deleteSecret(scope: scope, name: name)) }
     public func variables(scope: VaultScope) async throws -> [Variable] { try await variableList(.listVariables(scope: scope)) }

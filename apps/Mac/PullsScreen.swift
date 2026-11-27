@@ -365,6 +365,12 @@ struct PullOverview: View {
                         .lineSpacing(4)
                         .textSelection(.enabled)
                 }
+                if let receipt = detail.receipt {
+                    VerificationReceiptCard(receipt: receipt)
+                }
+                if let receipt = detail.receipt {
+                    VerificationReceiptCard(receipt: receipt)
+                }
                 MergeBox(detail: detail)
                 NotesList(detail: detail)
                 VersionList(detail: detail)
@@ -375,6 +381,67 @@ struct PullOverview: View {
             .frame(maxWidth: 780, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+struct VerificationReceiptCard: View {
+    var receipt: VerificationReceipt
+
+    private var riskColor: Color {
+        switch receipt.riskLevel {
+        case "high": N.rose
+        case "medium": N.amber
+        default: N.mint
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(riskColor)
+                Text("Verification Receipt")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(N.text)
+                TagPill(text: "\(receipt.riskLevel.capitalized) blast radius", color: riskColor, textColor: riskColor, background: riskColor.opacity(0.14))
+                Spacer()
+                if receipt.provenanceCount > 0 {
+                    let suffix = receipt.deviceSignedCount > 0 ? " · \(receipt.deviceSignedCount) Secure Enclave" : ""
+                    TagPill(text: "SLSA L3 (\(receipt.provenanceCount)\(suffix))", color: N.indigo, textColor: N.indigo, background: N.indigo.opacity(0.14))
+                }
+            }
+
+            if receipt.publicSymbolDeltas.isEmpty && receipt.dependencyFiles.isEmpty && receipt.securityPaths.isEmpty && receipt.verifiedChecks.isEmpty {
+                Text("No exported API changes, dependency bumps, or security-sensitive path modifications detected.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(N.muted)
+            } else {
+                FlowWrapLayout(horizontalSpacing: 6, verticalSpacing: 6) {
+                    ForEach(receipt.securityPaths, id: \.self) { path in
+                        TagPill(text: "Security: \(path)", color: N.rose, textColor: N.rose, background: N.rose.opacity(0.12))
+                    }
+                    ForEach(receipt.dependencyFiles, id: \.self) { dep in
+                        TagPill(text: "Deps: \(dep)", color: N.amber, textColor: N.amber, background: N.amber.opacity(0.12))
+                    }
+                    ForEach(receipt.publicSymbolDeltas.prefix(10)) { d in
+                        let prefix = switch d.change {
+                        case .added: "+"
+                        case .removed: "-"
+                        case .signatureChanged: "~"
+                        }
+                        let col: Color = d.change == .added ? N.mint : (d.change == .removed ? N.rose : N.amber)
+                        TagPill(text: "\(prefix)\(d.symbol) (\(d.kind))", color: col, textColor: col, background: col.opacity(0.12))
+                    }
+                    ForEach(receipt.verifiedChecks, id: \.self) { chk in
+                        TagPill(text: "✓ \(chk)", color: N.mint, textColor: N.mint, background: N.mint.opacity(0.12))
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

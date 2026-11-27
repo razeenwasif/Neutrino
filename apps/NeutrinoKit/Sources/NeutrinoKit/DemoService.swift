@@ -303,6 +303,15 @@ extension DemoService {
     public func hibernateBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw ServiceError.daemon(Self.lineMessage) }
     public func thawBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw ServiceError.daemon(Self.lineMessage) }
     public func discardBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw ServiceError.daemon(Self.lineMessage) }
+    public func shadowStatus(repo: String) async throws -> ShadowStatus {
+        ShadowStatus(repo: repo, enabled: true, cmd: "cargo check", useGraviton: false, state: .passed, exitCode: 0, durationMs: 340, updatedAt: Int64(Date.now.timeIntervalSince1970) - 30, logTail: "Finished `dev` profile in 0.34s")
+    }
+    public func configureShadow(repo: String, enabled: Bool, cmd: String?, useGraviton: Bool?, image: String?) async throws -> ShadowStatus {
+        ShadowStatus(repo: repo, enabled: enabled, cmd: cmd ?? "cargo check", useGraviton: useGraviton ?? false, image: image, state: enabled ? .idle : .disabled)
+    }
+    public func runShadowNow(repo: String) async throws -> ShadowStatus {
+        ShadowStatus(repo: repo, enabled: true, cmd: "cargo check", useGraviton: false, state: .passed, exitCode: 0, durationMs: 280, updatedAt: Int64(Date.now.timeIntervalSince1970), logTail: "Finished `dev` profile in 0.28s")
+    }
     public func renameBranch(repo _: String, from _: String, to _: String) async throws { throw ServiceError.daemon(Self.lineMessage) }
     public func deleteBranch(repo _: String, name _: String, force _: Bool) async throws { throw ServiceError.daemon(Self.lineMessage) }
     public func events() -> AsyncStream<RepoEvent> { AsyncStream { _ in } }

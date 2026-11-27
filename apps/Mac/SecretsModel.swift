@@ -1,5 +1,14 @@
+import LocalAuthentication
 import NeutrinoKit
 import SwiftUI
+
+struct SecretRevealState: Identifiable, Equatable {
+    var name: String
+    var scopeLabel: String
+    var value: String
+    var expiresAt: Date
+    var id: String { "\(scopeLabel)/\(name)" }
+}
 
 /// Secrets, variables and environments on the server. Secrets go in and never
 /// come back out: the app only ever sees their names.
@@ -52,9 +61,37 @@ extension AppModel {
         await loadSecrets()
     }
 
-    func setSecret(name: String, value: String) async throws {
+    func setSecret(name: String, value: String, kind: SecretKind = .standard, ttlSeconds: UInt64? = nil) async throws {
         guard let service = vaultService else { throw ServiceError.daemon("Connect to the server first.") }
-        secretList = try await service.setSecret(scope: vaultScope, name: name, value: value)
+        secretList = try await service.setSecret(scope: vaultScope, name: name, value: value, kind: kind, ttlSeconds: ttlSeconds)
+    }
+
+    func revealSecret(_ s: SecretInfo) async {
+        guard let service = vaultService else {
+            notice = "Connect to the server first."
+            return
+        }
+        let ctx = LAContext()
+        ctx.localizedCancelTitle = "Cancel"
+        do {
+            var authError: NSError?
+            let ok: Bool
+            if ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) {
+                ok = try await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Authenticate to reveal vault secret \(s.name)")
+            } else {
+                ok = true
+            }
+            guard ok else { return }
+            let revealed = try await service.revealSecret(scope: s.scope, name: s.name, reason: "Touch ID break-glass reveal from NeutrinoMac")
+            revealedSecret = SecretRevealState(
+                name: revealed.name,
+                scopeLabel: revealed.scope.label,
+                value: revealed.value,
+                expiresAt: Date.now.addingTimeInterval(TimeInterval(max(5, Int(revealed.ttlSeconds))))
+            )
+        } catch {
+            notice = error.localizedDescription
+        }
     }
 
     func deleteSecret(_ s: SecretInfo) async {

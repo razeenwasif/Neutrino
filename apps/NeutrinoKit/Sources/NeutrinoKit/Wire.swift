@@ -799,12 +799,18 @@ public enum Request: Sendable, Equatable {
     case hibernateBranchStack(repo: String, branch: String)
     case thawBranchStack(repo: String, branch: String)
     case discardBranchStack(repo: String, branch: String)
+    case provenance(repo: String, rev: String)
+    case verifyProvenance(repo: String, rev: String)
+    case shadowStatus(repo: String)
+    case configureShadow(repo: String, enabled: Bool, cmd: String?, useGraviton: Bool?, image: String?)
+    case runShadowNow(repo: String)
     case dispatchRun(repo: String, workflow: String, branch: String)
     case workflows(repo: String, branch: String)
     case ciInfo
     case vaultInfo
     case listSecrets(scope: VaultScope)
-    case setSecret(scope: VaultScope, name: String, value: String)
+    case setSecret(scope: VaultScope, name: String, value: String, kind: SecretKind = .standard, ttlSeconds: UInt64? = nil)
+    case revealSecret(scope: VaultScope, name: String, reason: String? = nil)
     case deleteSecret(scope: VaultScope, name: String)
     case listVariables(scope: VaultScope)
     case setVariable(scope: VaultScope, name: String, value: String)
@@ -859,6 +865,10 @@ public enum Response: Sendable, Equatable {
     case frozenAttached(FrozenAttachment)
     case branchStacks([BranchStackStatus])
     case branchStackUpdated(BranchStackStatus)
+    case provenance([ProvenanceRecord])
+    case provenanceVerified(ProvenanceVerification)
+    case shadow(ShadowStatus)
+    case secretRevealed(SecretRevealed)
     case ci(CiInfo)
     case workflows([WorkflowFile])
     case vault(VaultInfo)
@@ -941,6 +951,10 @@ public enum Wire {
     private struct BranchParam: Encodable { var repo: String; var branch: String }
     private struct ScopeParam: Encodable { var scope: VaultScope }
     private struct NamedValueParam: Encodable { var scope: VaultScope; var name: String; var value: String }
+    private struct SetSecretParam: Encodable { var scope: VaultScope; var name: String; var value: String; var kind: SecretKind?; var ttlSeconds: UInt64? }
+    private struct RevealSecretParam: Encodable { var scope: VaultScope; var name: String; var reason: String? }
+    private struct ProvenanceParam: Encodable { var repo: String; var rev: String }
+    private struct ConfigureShadowParam: Encodable { var repo: String; var enabled: Bool; var cmd: String?; var useGraviton: Bool?; var image: String? }
     private struct NamedParam: Encodable { var scope: VaultScope; var name: String }
     private struct EnvironmentParam: Encodable { var environment: DeployEnvironment }
     private struct RepoNameParam: Encodable { var repo: String; var name: String }
@@ -1033,12 +1047,21 @@ public enum Wire {
         case let .hibernateBranchStack(repo, branch): try line(id, "hibernate_branch_stack", BranchParam(repo: repo, branch: branch))
         case let .thawBranchStack(repo, branch): try line(id, "thaw_branch_stack", BranchParam(repo: repo, branch: branch))
         case let .discardBranchStack(repo, branch): try line(id, "discard_branch_stack", BranchParam(repo: repo, branch: branch))
+        case let .provenance(repo, rev): try line(id, "provenance", ProvenanceParam(repo: repo, rev: rev))
+        case let .verifyProvenance(repo, rev): try line(id, "verify_provenance", ProvenanceParam(repo: repo, rev: rev))
+        case let .shadowStatus(repo): try line(id, "shadow_status", RepoParam(repo: repo))
+        case let .configureShadow(repo, enabled, cmd, useGraviton, image):
+            try line(id, "configure_shadow", ConfigureShadowParam(repo: repo, enabled: enabled, cmd: cmd, useGraviton: useGraviton, image: image))
+        case let .runShadowNow(repo): try line(id, "run_shadow_now", RepoParam(repo: repo))
         case let .dispatchRun(repo, workflow, branch): try line(id, "dispatch_run", DispatchParam(repo: repo, workflow: workflow, branch: branch))
         case let .workflows(repo, branch): try line(id, "workflows", BranchParam(repo: repo, branch: branch))
         case .ciInfo: try line(id, "ci_info", NoParams?.none)
         case .vaultInfo: try line(id, "vault_info", NoParams?.none)
         case let .listSecrets(scope): try line(id, "list_secrets", ScopeParam(scope: scope))
-        case let .setSecret(scope, name, value): try line(id, "set_secret", NamedValueParam(scope: scope, name: name, value: value))
+        case let .setSecret(scope, name, value, kind, ttl):
+            try line(id, "set_secret", SetSecretParam(scope: scope, name: name, value: value, kind: kind == .standard ? nil : kind, ttlSeconds: ttl))
+        case let .revealSecret(scope, name, reason):
+            try line(id, "reveal_secret", RevealSecretParam(scope: scope, name: name, reason: reason))
         case let .deleteSecret(scope, name): try line(id, "delete_secret", NamedParam(scope: scope, name: name))
         case let .listVariables(scope): try line(id, "list_variables", ScopeParam(scope: scope))
         case let .setVariable(scope, name, value): try line(id, "set_variable", NamedValueParam(scope: scope, name: name, value: value))
@@ -1117,6 +1140,10 @@ public enum Wire {
         case "frozen_attached": .frozenAttached(try data(FrozenAttachment.self))
         case "branch_stacks": .branchStacks(try data([BranchStackStatus].self))
         case "branch_stack_updated": .branchStackUpdated(try data(BranchStackStatus.self))
+        case "provenance": .provenance(try data([ProvenanceRecord].self))
+        case "provenance_verified": .provenanceVerified(try data(ProvenanceVerification.self))
+        case "shadow": .shadow(try data(ShadowStatus.self))
+        case "secret_revealed": .secretRevealed(try data(SecretRevealed.self))
         case "ci": .ci(try data(CiInfo.self))
         case "workflows": .workflows(try data([WorkflowFile].self))
         case "vault": .vault(try data(VaultInfo.self))

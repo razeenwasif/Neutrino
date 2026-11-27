@@ -186,7 +186,13 @@ async fn the_rest_of_ci() {
     let repo_scope = VaultScope { repo: Some(id.clone()), environment: None };
 
     // The vault: nothing until it's set up, then a recovery code once.
-    let set = |scope: VaultScope, name: &str, value: &str| Request::SetSecret { scope, name: name.into(), value: value.into() };
+    let set = |scope: VaultScope, name: &str, value: &str| Request::SetSecret {
+        scope,
+        name: name.into(),
+        value: value.into(),
+        kind: Default::default(),
+        ttl_seconds: None,
+    };
     assert!(matches!(call(&sock, set(VaultScope::default(), "TOKEN", "x")).await, Response::Error { message } if message.contains("vault setup")));
     let code = match call(&sock, Request::VaultSetup).await {
         Response::RecoveryCode { code } => code,

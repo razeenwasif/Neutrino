@@ -16,6 +16,100 @@ struct ChangesScreen: View {
     }
 }
 
+struct ShadowPill: View {
+    @Environment(AppModel.self) private var model
+    @State private var open = false
+    @State private var cmdText = "cargo check"
+    @State private var useGraviton = false
+    @State private var imageText = "rust:1.86-alpine"
+
+    var body: some View {
+        let st = model.shadowStatus
+        let color: Color = switch st?.state {
+        case .passed: N.mint
+        case .failed: N.rose
+        case .running: N.amber
+        case .idle: N.sky
+        default: N.muted
+        }
+        let label: String = switch st?.state {
+        case .passed: "Shadow OK"
+        case .failed: "Shadow Fail"
+        case .running: "Shadow…"
+        case .idle: "Shadow Ready"
+        default: "Shadow Off"
+        }
+
+        Button {
+            if let st {
+                cmdText = st.cmd
+                useGraviton = st.useGraviton
+                if let img = st.image, !img.isEmpty { imageText = img }
+            }
+            open.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                StatusDot(color: color, size: 5.5, pulse: st?.state == .running)
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(color)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Speculative Shadow CI")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(N.text)
+                TextField("Command (e.g. cargo check)", text: $cmdText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(N.mono(11.5))
+                Toggle("Run inside offline Graviton container", isOn: $useGraviton)
+                    .font(.system(size: 11.5))
+                if useGraviton {
+                    TextField("Image", text: $imageText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(N.mono(11.5))
+                }
+                HStack(spacing: 8) {
+                    Button(st?.enabled == true ? "Update" : "Enable") {
+                        Task { await model.configureShadow(enabled: true, cmd: cmdText, useGraviton: useGraviton, image: useGraviton ? imageText : nil) }
+                    }
+                    .buttonStyle(PillButtonStyle(kind: .primary, height: 26))
+                    if st?.enabled == true {
+                        Button("Disable") {
+                            Task { await model.configureShadow(enabled: false, cmd: nil) }
+                        }
+                        .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
+                    }
+                    Button("Run now") {
+                        Task { await model.runShadowNow() }
+                    }
+                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 26))
+                    .disabled(model.shadowBusy)
+                }
+                if let log = st?.logTail, !log.isEmpty {
+                    ScrollView {
+                        Text(log)
+                            .font(N.mono(10.5))
+                            .foregroundStyle(N.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 140)
+                    .padding(8)
+                    .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+            }
+            .padding(14)
+            .frame(width: 340)
+        }
+    }
+}
+
 // MARK: - The list
 
 struct ChangeList: View {
@@ -36,6 +130,7 @@ struct ChangeList: View {
                     }
                 }
                 Spacer()
+                ShadowPill()
                 if !model.notStaged.isEmpty || !(model.status?.conflicted.isEmpty ?? true) {
                     ActionPillButton(title: "Stage all", systemImage: "plus", tint: N.text, background: N.surfacePill) {
                         Task { await model.stageAll() }
@@ -51,6 +146,7 @@ struct ChangeList: View {
             .padding(.horizontal, 16)
             .padding(.top, 18)
             .padding(.bottom, 12)
+            .task(id: model.repoID) { await model.loadShadowStatus() }
 
             if let op = model.status?.operation {
                 HStack(alignment: .top, spacing: 8) {

@@ -57,6 +57,9 @@ public protocol NeutrinoService: Sendable {
     func hibernateBranchStack(repo: String, branch: String) async throws -> BranchStackStatus
     func thawBranchStack(repo: String, branch: String) async throws -> BranchStackStatus
     func discardBranchStack(repo: String, branch: String) async throws -> BranchStackStatus
+    func shadowStatus(repo: String) async throws -> ShadowStatus
+    func configureShadow(repo: String, enabled: Bool, cmd: String?, useGraviton: Bool?, image: String?) async throws -> ShadowStatus
+    func runShadowNow(repo: String) async throws -> ShadowStatus
     func renameBranch(repo: String, from: String, to: String) async throws
     func deleteBranch(repo: String, name: String, force: Bool) async throws
     /// Changes to any registered repo, until the stream is dropped.
@@ -186,6 +189,24 @@ public final class SocketService: NeutrinoService {
             throw ServiceError.unexpectedResponse
         }
         return status
+    }
+    public func shadowStatus(repo: String) async throws -> ShadowStatus {
+        guard case let .shadow(s) = try await call(.shadowStatus(repo: repo), timeout: 10) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return s
+    }
+    public func configureShadow(repo: String, enabled: Bool, cmd: String? = nil, useGraviton: Bool? = nil, image: String? = nil) async throws -> ShadowStatus {
+        guard case let .shadow(s) = try await call(.configureShadow(repo: repo, enabled: enabled, cmd: cmd, useGraviton: useGraviton, image: image), timeout: 15) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return s
+    }
+    public func runShadowNow(repo: String) async throws -> ShadowStatus {
+        guard case let .shadow(s) = try await call(.runShadowNow(repo: repo), timeout: 120) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return s
     }
     public func renameBranch(repo: String, from: String, to: String) async throws { try await perform(.renameBranch(repo: repo, from: from, to: to)) }
     public func deleteBranch(repo: String, name: String, force: Bool) async throws { try await perform(.deleteBranch(repo: repo, name: name, force: force)) }

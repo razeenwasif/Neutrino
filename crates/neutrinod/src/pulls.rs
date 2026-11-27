@@ -140,8 +140,22 @@ impl Daemon {
             note.current_line = forge::map_line(&repo, from, to, &note.path, note.line).unwrap_or(None);
         }
 
+        let checks = store.runs_for_sha(id, &last.head_sha)?;
+        let receipt = forge::compute_receipt(&repo, &base, &last.head_sha).ok().map(|mut r| {
+            r.verified_checks = checks
+                .iter()
+                .filter(|c| c.state == neutrino_proto::RunState::Success)
+                .map(|c| c.name.clone())
+                .collect();
+            if let Ok(prov) = store.provenance_for_sha(id, &last.head_sha) {
+                r.provenance_count = prov.len() as u32;
+                r.device_signed_count = prov.iter().filter(|p| p.device_signature.is_some()).count() as u32;
+            }
+            r
+        });
+
         Ok(Response::Pull(Box::new(PullDetail {
-            checks: store.runs_for_sha(id, &last.head_sha)?,
+            checks,
             rule: store.rule_for(id, &pull.target)?,
             pull,
             versions,
@@ -152,6 +166,7 @@ impl Daemon {
             stack,
             tour,
             moves,
+            receipt,
         })))
     }
 
@@ -324,7 +339,15 @@ impl Daemon {
         Ok(added)
     }
 
-    pub(crate) fn merge_pull(&self, id: &str, number: u32, strategy: MergeStrategy, message: Option<String>, delete_source: bool) -> Result<Response> {
+    pub(crate) fn merge_pull(
+        &self,
+        id: &str,
+        number: u32,
+        strategy: MergeStrategy,
+        message: Option<String>,
+        delete_source: bool,
+        evidence: Option<crate::provenance::SignedEvidence>,
+    ) -> Result<Response> {
         let store = self.store()?;
         let repo = self.hosted(id)?;
         let pull = store.pull(id, number)?;
@@ -371,6 +394,21 @@ impl Daemon {
         self.pulls_changed(id);
         self.maintain_after_push(id, repo.git_dir().to_path_buf());
         let sha = sha.to_string();
+        if let Err(e) = self.record_provenance(
+            id,
+            &sha,
+            neutrino_proto::ProvenanceKind::Merge,
+            serde_json::json!({
+                "pull": number,
+                "head_sha": pull.head_sha,
+                "source": pull.source,
+                "target": pull.target,
+                "strategy": format!("{strategy:?}"),
+            }),
+            evidence,
+        ) {
+            eprintln!("merged #{number} but couldn't record provenance: {e:#}");
+        }
         let changed = target_before.as_deref().and_then(|old| self.changed_files(id, old, &sha));
         let push = neutrino_ci::Event::Push { name: format!("refs/heads/{}", pull.target), sha: sha.clone() };
         self.trigger(id, &push, changed.as_deref());

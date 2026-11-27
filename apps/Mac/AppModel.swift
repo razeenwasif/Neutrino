@@ -273,6 +273,9 @@ final class AppModel {
     var variableList: [Variable] = []
     var environmentList: [DeployEnvironment] = []
     var secretsError: String?
+    var revealedSecret: SecretRevealState?
+    var shadowStatus: ShadowStatus?
+    var shadowBusy = false
 
     // Menu bar panel (methods in MenuBar.swift)
     /// Status of every working copy, refreshed when the panel opens.
@@ -481,7 +484,40 @@ final class AppModel {
         if source == .local, let repoID, let updated = try? await service.repos().first(where: { $0.id == repoID }), let i = repos.firstIndex(where: { $0.id == repoID }) {
             repos[i] = updated
         }
+        await loadShadowStatus()
         publishWidgetSnapshot()
+    }
+
+    func loadShadowStatus() async {
+        guard source == .local, let repoID, isLive else {
+            shadowStatus = nil
+            return
+        }
+        if let st = try? await service.shadowStatus(repo: repoID) {
+            shadowStatus = st
+        }
+    }
+
+    func configureShadow(enabled: Bool, cmd: String?, useGraviton: Bool? = nil, image: String? = nil) async {
+        guard let repoID, source == .local else { return }
+        shadowBusy = true
+        defer { shadowBusy = false }
+        do {
+            shadowStatus = try await service.configureShadow(repo: repoID, enabled: enabled, cmd: cmd, useGraviton: useGraviton, image: image)
+        } catch {
+            notice = error.localizedDescription
+        }
+    }
+
+    func runShadowNow() async {
+        guard let repoID, source == .local else { return }
+        shadowBusy = true
+        defer { shadowBusy = false }
+        do {
+            shadowStatus = try await service.runShadowNow(repo: repoID)
+        } catch {
+            notice = error.localizedDescription
+        }
     }
 
     // MARK: History

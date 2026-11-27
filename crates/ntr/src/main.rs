@@ -11,8 +11,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use neutrino_proto::{
-    BranchRule, ChangeStatus, Head, LogEntry, LogQuery, MergeStrategy, PullState, RefKind, Repo, Request, Response, RunDetail, RunState, Side, VaultScope,
-    decode_response, encode_request,
+    BranchRule, ChangeStatus, Head, LogEntry, LogQuery, MergeStrategy, ProvenanceKind, PullState, RefKind, Repo, Request, Response, RunDetail, RunState,
+    SecretKind, ShadowState, Side, VaultScope, decode_response, encode_request,
 };
 
 #[derive(Parser)]
@@ -125,6 +125,16 @@ enum Cmd {
     BranchStack {
         #[command(subcommand)]
         action: BranchStackCmd,
+    },
+    /// Server: SLSA L3 hardware-signed provenance ledger (`ntr provenance [show|verify] REF`).
+    Provenance {
+        #[command(subcommand)]
+        action: ProvenanceCmd,
+    },
+    /// Speculative Shadow CI on local working copy edits (`ntr shadow [status|enable|disable|run]`).
+    Shadow {
+        #[command(subcommand)]
+        action: ShadowCmd,
     },
     /// Server: branch rules on a hosted repository; with no action, lists them.
     Rules {
@@ -258,12 +268,61 @@ enum SecretCmd {
         name: String,
         #[command(flatten)]
         scope: ScopeArgs,
+        /// Auto-expiring JIT deployment token purged after approved run completes.
+        #[arg(long)]
+        jit: bool,
+        /// Optional expiration in seconds.
+        #[arg(long)]
+        ttl: Option<u64>,
+    },
+    /// Break-glass reveal of a vault secret (recorded in audit notifications).
+    Reveal {
+        name: String,
+        #[command(flatten)]
+        scope: ScopeArgs,
+        #[arg(long)]
+        reason: Option<String>,
     },
     Rm {
         name: String,
         #[command(flatten)]
         scope: ScopeArgs,
     },
+}
+
+#[derive(Subcommand)]
+enum ProvenanceCmd {
+    /// Print recorded SLSA L3 attestations for a revision.
+    Show {
+        #[arg(default_value = "HEAD")]
+        rev: String,
+    },
+    /// Verify all P-256 and Secure Enclave provenance signatures offline.
+    Verify {
+        #[arg(default_value = "HEAD")]
+        rev: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ShadowCmd {
+    /// Show the repo's Shadow CI configuration and latest result.
+    Status,
+    /// Enable speculative Shadow CI on debounced working tree edits.
+    Enable {
+        #[arg(long, default_value = "cargo check")]
+        cmd: String,
+        /// Run inside an air-gapped Graviton container instead of nice host sh.
+        #[arg(long)]
+        graviton: bool,
+        /// Container image when --graviton is set.
+        #[arg(long)]
+        image: Option<String>,
+    },
+    /// Disable speculative Shadow CI for this repo.
+    Disable,
+    /// Run the configured Shadow CI command right now.
+    Run,
 }
 
 #[derive(Subcommand)]
@@ -566,6 +625,7 @@ fn server_only(c: &Cmd) -> bool {
             | Cmd::Env(_)
             | Cmd::Backup
             | Cmd::Compact { .. }
+            | Cmd::Provenance { .. }
             | Cmd::Inbox
             | Cmd::Notify { .. }
     )
@@ -1191,10 +1251,15 @@ fn main() -> Result<()> {
                     let s = vault_scope(&mut c, cli.repo, scope)?;
                     (s.clone(), Request::ListSecrets { scope: s })
                 }
-                SecretCmd::Set { name, scope } => {
+                SecretCmd::Set { name, scope, jit, ttl } => {
                     let s = vault_scope(&mut c, cli.repo, scope)?;
                     let value = read_secret(&name)?;
-                    (s.clone(), Request::SetSecret { scope: s, name, value })
+                    let kind = if jit { SecretKind::JitToken } else { SecretKind::Standard };
+                    (s.clone(), Request::SetSecret { scope: s, name, value, kind, ttl_seconds: ttl })
+                }
+                SecretCmd::Reveal { name, scope, reason } => {
+                    let s = vault_scope(&mut c, cli.repo, scope)?;
+                    (s.clone(), Request::RevealSecret { scope: s, name, reason })
                 }
                 SecretCmd::Rm { name, scope } => {
                     let s = vault_scope(&mut c, cli.repo, scope)?;
@@ -1207,7 +1272,78 @@ fn main() -> Result<()> {
                         writeln!(out, "No secrets{}.", scope_text(&scope))?;
                     }
                     for s in list {
-                        writeln!(out, "{:<28} {:<24} {}", style.paint("1", &s.name), scope_text(&s.scope).trim_start(), style.paint("2", &ago(s.updated_at)))?;
+                        let jit = if s.kind == SecretKind::JitToken { " [JIT]" } else { "" };
+                        writeln!(out, "{:<28} {:<24} {}{}", style.paint("1", &s.name), scope_text(&s.scope).trim_start(), style.paint("2", &ago(s.updated_at)), jit)?;
+                    }
+                }
+                Response::SecretRevealed { name, value, ttl_seconds, .. } => {
+                    writeln!(out, "{} (audit logged; visible {}s):", style.paint("1", &name), ttl_seconds)?;
+                    writeln!(out, "{value}")?;
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
+        Cmd::Provenance { action } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            match action {
+                ProvenanceCmd::Show { rev } => match c.call(Request::Provenance { repo, rev })? {
+                    Response::Provenance(list) => {
+                        if list.is_empty() {
+                            writeln!(out, "No provenance attestations recorded for this revision.")?;
+                        }
+                        for rec in list {
+                            let k = match rec.kind {
+                                ProvenanceKind::Merge => "merge",
+                                ProvenanceKind::Ci => "ci",
+                                ProvenanceKind::Deploy => "deploy",
+                            };
+                            let hw = if rec.device_signature.is_some() { " · SecureEnclave" } else { "" };
+                            writeln!(out, "#{:<4} {:<6} key={}{} {} {}", rec.id, k, rec.server_key_id, hw, rec.git_ref.as_deref().unwrap_or(""), rec.statement_json)?;
+                        }
+                    }
+                    r => return Err(unexpected(r)),
+                },
+                ProvenanceCmd::Verify { rev } => match c.call(Request::VerifyProvenance { repo, rev })? {
+                    Response::ProvenanceVerified(v) => {
+                        let badge = if v.valid { style.paint("32", "VERIFIED") } else { style.paint("31", "FAILED") };
+                        writeln!(out, "{}  sha={}  records={} verified={} hw_signed={}", badge, v.sha, v.records.len(), v.verified_count, v.device_signed_count)?;
+                        for issue in &v.issues {
+                            writeln!(out, "  issue: {issue}")?;
+                        }
+                        if !v.valid {
+                            std::process::exit(1);
+                        }
+                    }
+                    r => return Err(unexpected(r)),
+                },
+            }
+        }
+        Cmd::Shadow { action } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            let req = match action {
+                ShadowCmd::Status => Request::ShadowStatus { repo },
+                ShadowCmd::Enable { cmd, graviton, image } => Request::ConfigureShadow {
+                    repo,
+                    enabled: true,
+                    cmd: Some(cmd),
+                    use_graviton: Some(graviton),
+                    image,
+                },
+                ShadowCmd::Disable => Request::ConfigureShadow { repo, enabled: false, cmd: None, use_graviton: None, image: None },
+                ShadowCmd::Run => Request::RunShadowNow { repo },
+            };
+            match c.call(req)? {
+                Response::Shadow(s) => {
+                    let state = match s.state {
+                        ShadowState::Disabled => style.paint("2", "disabled"),
+                        ShadowState::Idle => style.paint("36", "idle"),
+                        ShadowState::Running => style.paint("33", "running"),
+                        ShadowState::Passed => style.paint("32", "passed"),
+                        ShadowState::Failed => style.paint("31", "failed"),
+                    };
+                    writeln!(out, "{} shadow CI: {}  cmd=`{}`{}", s.repo, state, s.cmd, if s.use_graviton { " (graviton)" } else { "" })?;
+                    if !s.log_tail.is_empty() {
+                        writeln!(out, "{}", s.log_tail)?;
                     }
                 }
                 r => return Err(unexpected(r)),
@@ -1957,5 +2093,11 @@ mod tests {
         assert!(matches!(cli6.command, Cmd::BranchStack { action: BranchStackCmd::Thaw { ref branch } } if branch == "feat/auth"));
         let cli7 = Cli::try_parse_from(["ntr", "branch-stack", "ls"]).unwrap();
         assert!(matches!(cli7.command, Cmd::BranchStack { action: BranchStackCmd::Ls }));
+        let cli8 = Cli::try_parse_from(["ntr", "provenance", "verify", "HEAD"]).unwrap();
+        assert!(matches!(cli8.command, Cmd::Provenance { action: ProvenanceCmd::Verify { ref rev } } if rev == "HEAD"));
+        let cli9 = Cli::try_parse_from(["ntr", "secret", "set", "TOK", "--jit", "--ttl", "300"]).unwrap();
+        assert!(matches!(cli9.command, Cmd::Secret(SecretCmd::Set { ref name, jit: true, ttl: Some(300), .. }) if name == "TOK"));
+        let cli10 = Cli::try_parse_from(["ntr", "shadow", "enable", "--cmd", "cargo check"]).unwrap();
+        assert!(matches!(cli10.command, Cmd::Shadow { action: ShadowCmd::Enable { ref cmd, .. } } if cmd == "cargo check"));
     }
 }

@@ -196,6 +196,66 @@ public struct RuleOverride: Codable, Hashable, Sendable {
     }
 }
 
+public enum SymbolDeltaKind: String, Codable, Sendable {
+    case added, removed
+    case signatureChanged = "signature_changed"
+}
+
+public struct SymbolDelta: Codable, Hashable, Identifiable, Sendable {
+    public var path: String
+    public var symbol: String
+    public var kind: String
+    public var change: SymbolDeltaKind
+
+    public var id: String { "\(path):\(kind):\(symbol):\(change.rawValue)" }
+
+    public init(path: String, symbol: String, kind: String, change: SymbolDeltaKind) {
+        self.path = path
+        self.symbol = symbol
+        self.kind = kind
+        self.change = change
+    }
+}
+
+public struct VerificationReceipt: Codable, Hashable, Sendable {
+    public var publicSymbolDeltas: [SymbolDelta]
+    public var dependencyFiles: [String]
+    public var securityPaths: [String]
+    public var verifiedChecks: [String]
+    public var provenanceCount: UInt32
+    public var deviceSignedCount: UInt32
+    public var riskLevel: String
+
+    public init(
+        publicSymbolDeltas: [SymbolDelta] = [],
+        dependencyFiles: [String] = [],
+        securityPaths: [String] = [],
+        verifiedChecks: [String] = [],
+        provenanceCount: UInt32 = 0,
+        deviceSignedCount: UInt32 = 0,
+        riskLevel: String = "low"
+    ) {
+        self.publicSymbolDeltas = publicSymbolDeltas
+        self.dependencyFiles = dependencyFiles
+        self.securityPaths = securityPaths
+        self.verifiedChecks = verifiedChecks
+        self.provenanceCount = provenanceCount
+        self.deviceSignedCount = deviceSignedCount
+        self.riskLevel = riskLevel
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        publicSymbolDeltas = try c.decodeIfPresent([SymbolDelta].self, forKey: .publicSymbolDeltas) ?? []
+        dependencyFiles = try c.decodeIfPresent([String].self, forKey: .dependencyFiles) ?? []
+        securityPaths = try c.decodeIfPresent([String].self, forKey: .securityPaths) ?? []
+        verifiedChecks = try c.decodeIfPresent([String].self, forKey: .verifiedChecks) ?? []
+        provenanceCount = try c.decodeIfPresent(UInt32.self, forKey: .provenanceCount) ?? 0
+        deviceSignedCount = try c.decodeIfPresent(UInt32.self, forKey: .deviceSignedCount) ?? 0
+        riskLevel = try c.decodeIfPresent(String.self, forKey: .riskLevel) ?? "low"
+    }
+}
+
 public struct PullDetail: Codable, Hashable, Sendable {
     public var pull: PullRequest
     public var versions: [PullVersion]
@@ -210,6 +270,7 @@ public struct PullDetail: Codable, Hashable, Sendable {
     public var stack: [StackMember]
     public var tour: [TourStep]
     public var moves: [MoveBlock]
+    public var receipt: VerificationReceipt?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -224,13 +285,15 @@ public struct PullDetail: Codable, Hashable, Sendable {
         stack = try c.decodeIfPresent([StackMember].self, forKey: .stack) ?? []
         tour = try c.decodeIfPresent([TourStep].self, forKey: .tour) ?? []
         moves = try c.decodeIfPresent([MoveBlock].self, forKey: .moves) ?? []
+        receipt = try c.decodeIfPresent(VerificationReceipt.self, forKey: .receipt)
     }
 
-    public init(pull: PullRequest, versions: [PullVersion], notes: [Note], mergeability: Mergeability?, files: [FileChange], commits: [LogEntry], rule: BranchRule?, checks: [Run] = [], stack: [StackMember] = [], tour: [TourStep] = [], moves: [MoveBlock] = []) {
+    public init(pull: PullRequest, versions: [PullVersion], notes: [Note], mergeability: Mergeability?, files: [FileChange], commits: [LogEntry], rule: BranchRule?, checks: [Run] = [], stack: [StackMember] = [], tour: [TourStep] = [], moves: [MoveBlock] = [], receipt: VerificationReceipt? = nil) {
         self.checks = checks
         self.stack = stack
         self.tour = tour
         self.moves = moves
+        self.receipt = receipt
         self.pull = pull
         self.versions = versions
         self.notes = notes

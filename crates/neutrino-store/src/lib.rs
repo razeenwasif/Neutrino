@@ -11,6 +11,7 @@ use neutrino_proto::{BranchRule, Note, PullRequest, PullState, PullVersion, Rule
 use rusqlite::{Connection, OptionalExtension, params};
 
 mod phone;
+mod provenance;
 mod runs;
 mod vault;
 pub use runs::{NewJob, NewRun, QueuedJob};
@@ -198,6 +199,28 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE jobs ADD COLUMN frozen_failed_step TEXT;
     ALTER TABLE jobs ADD COLUMN frozen_exit_code INTEGER;
     ALTER TABLE jobs ADD COLUMN frozen_expires_at INTEGER;",
+    "ALTER TABLE secrets ADD COLUMN kind TEXT NOT NULL DEFAULT 'standard';
+    ALTER TABLE secrets ADD COLUMN ttl_seconds INTEGER;
+    ALTER TABLE secrets ADD COLUMN expires_at INTEGER;
+    CREATE TABLE provenance (
+        id INTEGER PRIMARY KEY,
+        repo TEXT NOT NULL,
+        sha TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        statement_json TEXT NOT NULL,
+        server_key_id TEXT NOT NULL,
+        server_public_key TEXT NOT NULL,
+        server_signature TEXT NOT NULL,
+        device_id TEXT,
+        device_public_key TEXT,
+        device_signature TEXT,
+        device_signed_at INTEGER,
+        device_nonce TEXT,
+        device_payload TEXT,
+        git_ref TEXT,
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX provenance_by_sha ON provenance (repo, sha);",
 ];
 
 pub struct Store {

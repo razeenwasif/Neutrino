@@ -692,6 +692,118 @@ pub struct PullDetail {
     /// AST move blocks across the PR's changed files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<MoveBlock>,
+    /// Deterministic AI/agent blast radius & verification receipt (Wave 5B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<VerificationReceipt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolDeltaKind {
+    Added,
+    Removed,
+    SignatureChanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolDelta {
+    pub path: String,
+    pub symbol: String,
+    pub kind: String,
+    pub change: SymbolDeltaKind,
+}
+
+/// Deterministic blast-radius & verification receipt attached to pull requests (Wave 5B).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationReceipt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_symbol_deltas: Vec<SymbolDelta>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependency_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verified_checks: Vec<String>,
+    pub provenance_count: u32,
+    pub device_signed_count: u32,
+    pub risk_level: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceKind {
+    Merge,
+    Ci,
+    Deploy,
+}
+
+/// Immutable SLSA L3 / In-Toto attestation record signed by server and optional Secure Enclave key (Wave 5A).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvenanceRecord {
+    pub id: i64,
+    pub repo: String,
+    pub sha: String,
+    pub kind: ProvenanceKind,
+    pub statement_json: String,
+    pub server_key_id: String,
+    pub server_public_key: String,
+    pub server_signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_signed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_nonce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_payload: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvenanceVerification {
+    pub sha: String,
+    pub valid: bool,
+    pub records: Vec<ProvenanceRecord>,
+    pub verified_count: u32,
+    pub device_signed_count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShadowState {
+    #[default]
+    Disabled,
+    Idle,
+    Running,
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShadowStatus {
+    pub repo: String,
+    pub enabled: bool,
+    pub cmd: String,
+    pub use_graviton: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    pub state: ShadowState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+    #[serde(default)]
+    pub log_tail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -801,12 +913,30 @@ pub struct VaultScope {
     pub environment: Option<String>,
 }
 
-/// A secret's name and where it applies; never its value.
+fn is_standard_secret_kind(k: &SecretKind) -> bool {
+    matches!(k, SecretKind::Standard)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretKind {
+    #[default]
+    Standard,
+    JitToken,
+}
+
+/// A secret's name and where it applies; never its value (until break-glass reveal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretInfo {
     pub scope: VaultScope,
     pub name: String,
     pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "is_standard_secret_kind")]
+    pub kind: SecretKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1405,6 +1535,23 @@ pub enum Request {
     ThawBranchStack { repo: String, branch: String },
     /// Discard a branch-bound Graviton Compose stack checkpoint.
     DiscardBranchStack { repo: String, branch: String },
+    /// Get SLSA L3 / In-Toto provenance records for `rev`.
+    Provenance { repo: String, rev: String },
+    /// Cryptographically verify SLSA L3 provenance signatures for `rev`.
+    VerifyProvenance { repo: String, rev: String },
+    /// Inspect or run speculative Shadow CI on a workstation working copy.
+    ShadowStatus { repo: String },
+    ConfigureShadow {
+        repo: String,
+        enabled: bool,
+        #[serde(default)]
+        cmd: Option<String>,
+        #[serde(default)]
+        use_graviton: Option<bool>,
+        #[serde(default)]
+        image: Option<String>,
+    },
+    RunShadowNow { repo: String },
     /// Start a workflow that has `workflow_dispatch` on a branch.
     DispatchRun { repo: String, workflow: String, branch: String },
     /// Check the workflow files on a branch without running them.
@@ -1418,8 +1565,23 @@ pub enum Request {
     /// Put the master key back from its recovery code. Local only.
     VaultRecover { code: String },
     ListSecrets { #[serde(default)] scope: VaultScope },
-    /// Write-only: there's no request that reads a secret back.
-    SetSecret { scope: VaultScope, name: String, value: String },
+    /// Write-only under normal flow (break-glass reveal requires biometrics / signed phone auth).
+    SetSecret {
+        scope: VaultScope,
+        name: String,
+        value: String,
+        #[serde(default, skip_serializing_if = "is_standard_secret_kind")]
+        kind: SecretKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_seconds: Option<u64>,
+    },
+    /// Break-glass reveal of a secret for a short client-side TTL (recorded in audit notifications).
+    RevealSecret {
+        scope: VaultScope,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     DeleteSecret { scope: VaultScope, name: String },
     ListVariables { #[serde(default)] scope: VaultScope },
     SetVariable { scope: VaultScope, name: String, value: String },
@@ -1541,6 +1703,17 @@ pub enum Response {
     FrozenAttached(FrozenAttachment),
     BranchStacks(Vec<BranchStackStatus>),
     BranchStackUpdated(BranchStackStatus),
+    Provenance(Vec<ProvenanceRecord>),
+    ProvenanceVerified(ProvenanceVerification),
+    Shadow(ShadowStatus),
+    SecretRevealed {
+        scope: VaultScope,
+        name: String,
+        value: String,
+        ttl_seconds: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<i64>,
+    },
     Ci(CiInfo),
     /// Each workflow file on a branch: its name and either its triggers or what's wrong with it.
     Workflows(Vec<WorkflowFile>),
@@ -1923,5 +2096,70 @@ mod tests {
         let resp = Response::BranchStacks(vec![status]);
         let encoded = encode_response(15, &resp);
         assert_eq!(decode_response(&encoded).unwrap(), (15, resp));
+    }
+
+    #[test]
+    fn wave5_provenance_receipt_and_shadow_wire() {
+        let req = Request::ConfigureShadow {
+            repo: "app".into(),
+            enabled: true,
+            cmd: Some("cargo check".into()),
+            use_graviton: Some(true),
+            image: Some("rust:1.86-alpine".into()),
+        };
+        let encoded = encode_request(16, &req);
+        let (id, decoded) = decode_request(&encoded);
+        assert_eq!((id, decoded.unwrap()), (Some(16), req));
+
+        let reveal = Request::RevealSecret {
+            scope: VaultScope { repo: Some("app".into()), environment: Some("prod".into()) },
+            name: "DEPLOY_KEY".into(),
+            reason: Some("incident".into()),
+        };
+        let encoded_reveal = encode_request(17, &reveal);
+        let (rid, decoded_reveal) = decode_request(&encoded_reveal);
+        assert_eq!((rid, decoded_reveal.unwrap()), (Some(17), reveal));
+
+        let rec = ProvenanceRecord {
+            id: 1,
+            repo: "app".into(),
+            sha: "abc1234".into(),
+            kind: ProvenanceKind::Ci,
+            statement_json: "{\"_type\":\"https://in-toto.io/Statement/v1\"}".into(),
+            server_key_id: "srv-1".into(),
+            server_public_key: "BPub".into(),
+            server_signature: "Sig".into(),
+            device_id: Some("iphone-1".into()),
+            device_public_key: Some("BDev".into()),
+            device_signature: Some("DSig".into()),
+            device_signed_at: Some(1_700_000_000),
+            device_nonce: Some("nonce123456789012".into()),
+            device_payload: Some("payload".into()),
+            git_ref: Some("refs/neutrino/attestations/abc1234".into()),
+            created_at: 1_700_000_001,
+        };
+        let ver = Response::ProvenanceVerified(ProvenanceVerification {
+            sha: "abc1234".into(),
+            valid: true,
+            records: vec![rec],
+            verified_count: 1,
+            device_signed_count: 1,
+            issues: vec![],
+        });
+        assert_eq!(decode_response(&encode_response(18, &ver)).unwrap(), (18, ver));
+
+        let shadow = Response::Shadow(ShadowStatus {
+            repo: "app".into(),
+            enabled: true,
+            cmd: "cargo check".into(),
+            use_graviton: false,
+            image: None,
+            state: ShadowState::Passed,
+            exit_code: Some(0),
+            duration_ms: Some(120),
+            updated_at: Some(1_700_000_002),
+            log_tail: "Finished dev".into(),
+        });
+        assert_eq!(decode_response(&encode_response(19, &shadow)).unwrap(), (19, shadow));
     }
 }

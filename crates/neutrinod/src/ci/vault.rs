@@ -1,10 +1,11 @@
 //! Requests for secrets, variables, environments and approvals.
 
 use anyhow::{Context, Result, bail};
-use neutrino_proto::{Environment, Response, SecretInfo, VaultInfo, VaultScope};
+use neutrino_proto::{Environment, ProvenanceKind, Response, SecretInfo, SecretKind, VaultInfo, VaultScope};
 use neutrino_store::Scope;
 
 use crate::Daemon;
+use crate::provenance::SignedEvidence;
 
 impl Daemon {
     pub(crate) fn vault(&self) -> Result<&neutrino_vault::Vault> {
@@ -31,7 +32,14 @@ impl Daemon {
         Ok(VaultInfo { set_up: self.vault()?.is_set_up()?, key_store: key_store.into() })
     }
 
-    pub(crate) fn set_secret(&self, scope: &VaultScope, name: &str, value: &str) -> Result<Response> {
+    pub(crate) fn set_secret(
+        &self,
+        scope: &VaultScope,
+        name: &str,
+        value: &str,
+        kind: SecretKind,
+        ttl_seconds: Option<u64>,
+    ) -> Result<Response> {
         let s = self.check_scope(scope)?;
         if value.is_empty() {
             bail!("a secret can't be empty");
@@ -41,8 +49,39 @@ impl Daemon {
         }
         neutrino_store::vault_check_name(name)?;
         let sealed = self.vault()?.seal(&s.context(name), value.as_bytes())?;
-        self.store()?.set_secret(&s, name, &sealed)?;
+        self.store()?.set_secret_with_meta(&s, name, &sealed, kind, ttl_seconds)?;
         Ok(Response::Secrets(self.store()?.secrets(&s)?))
+    }
+
+    pub(crate) fn reveal_secret(
+        self: &std::sync::Arc<Self>,
+        scope: &VaultScope,
+        name: &str,
+        who: &str,
+        reason: Option<&str>,
+    ) -> Result<Response> {
+        let s = self.check_scope(scope)?;
+        let Some((sealed, _kind, expires_at)) = self.store()?.sealed_secret(&s, name)? else {
+            bail!("there's no secret {name} there");
+        };
+        let plain = self.vault()?.open(&s.context(name), &sealed)?;
+        let value = String::from_utf8_lossy(&plain).into_owned();
+        let why = reason.map(str::trim).filter(|r| !r.is_empty()).unwrap_or("break-glass reveal");
+        self.notify(
+            "secret_revealed",
+            format!("Secret {name} revealed"),
+            format!("{who} accessed {name} ({why})"),
+            &s.repo,
+            None,
+            None,
+        );
+        Ok(Response::SecretRevealed {
+            scope: scope.clone(),
+            name: name.to_string(),
+            value,
+            ttl_seconds: 30,
+            expires_at,
+        })
     }
 
     pub(crate) fn secrets(&self, scope: &VaultScope) -> Result<Vec<SecretInfo>> {
@@ -73,7 +112,7 @@ impl Daemon {
     }
 
     /// Approve or turn down a job waiting on its environment.
-    pub(crate) fn approve(&self, repo: &str, job: i64, approve: bool, by: &str) -> Result<Response> {
+    pub(crate) fn approve(&self, repo: &str, job: i64, approve: bool, by: &str, evidence: Option<SignedEvidence>) -> Result<Response> {
         let store = self.store()?;
         let j = store.job(job)?;
         let run = store.run(j.run)?;
@@ -81,7 +120,24 @@ impl Daemon {
             bail!("job {job} isn't in {repo}");
         }
         store.decide(job, approve, by)?;
-        if !approve {
+        if approve {
+            if let Err(e) = self.record_provenance(
+                repo,
+                &run.sha,
+                ProvenanceKind::Deploy,
+                serde_json::json!({
+                    "run_id": run.id,
+                    "run_number": run.number,
+                    "job_id": j.id,
+                    "job_key": j.key,
+                    "environment": j.environment,
+                    "approved_by": by,
+                }),
+                evidence,
+            ) {
+                eprintln!("can't record deploy provenance for {repo} job {job}: {e:#}");
+            }
+        } else {
             store.settle_run(j.run)?;
         }
         self.runs_changed(repo);
