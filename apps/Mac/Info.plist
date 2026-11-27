@@ -35,5 +35,7 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Neutrino looks for your Neutrino server on the local network so you can pair with it.</string>
+	<key>NeutrinoWidgetGroupID</key>
+	<string>$(TeamIdentifierPrefix)group.dev.neutrino</string>
 </dict>
 </plist>

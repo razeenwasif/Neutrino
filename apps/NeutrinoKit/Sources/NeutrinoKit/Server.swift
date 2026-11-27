@@ -3,7 +3,7 @@ import Foundation
 import Network
 import Security
 
-// The server is neutrinod --server on atlas. Devices reach it over TLS with
+// The server is neutrinod --server. Devices reach it over TLS with
 // its certificate pinned (adapted from Graviton's remote client). Pairing is
 // two steps: connect once to see the certificate's fingerprint, and only when
 // the user has checked it against `ntr pair`, connect again pinned to it and
@@ -22,7 +22,7 @@ public struct ServerLink: Codable, Hashable, Sendable {
     public var port: UInt16
     /// SHA-256 of the server's certificate, lowercase hex. Every connection checks it.
     public var fingerprint: String
-    /// What to put in front of a hosted repo's path to push to it: an SSH host (`mini`) or a user@host.
+    /// What to put in front of a hosted repo's path to push to it: an SSH host (`build-server`) or a user@host.
     public var sshHost: String
 
     public init(deviceID: String, name: String, serviceName: String?, address: String?, port: UInt16, fingerprint: String, sshHost: String) {
@@ -45,7 +45,7 @@ public struct ServerLink: Codable, Hashable, Sendable {
         }.joined(separator: " ")
     }
 
-    /// The URL to push a hosted repo to: `ssh://mini/Users/…/app.git`, or the bare path when no SSH host is set.
+    /// The URL to push a hosted repo to: `ssh://build-server/Users/…/app.git`, or the bare path when no SSH host is set.
     public func pushURL(for path: String) -> String {
         let host = sshHost.trimmingCharacters(in: .whitespaces)
         return host.isEmpty ? path : "ssh://\(host)\(path)"
@@ -75,8 +75,8 @@ public enum ServerStore {
 
     /// Set at launch by an app that shares its pairing with an extension (the
     /// iPhone app and its notification extension): the app group for the link
-    /// and the Keychain access group for the token.
-    nonisolated(unsafe) public static var shared: (appGroup: String, keychainGroup: String)?
+    /// and the optional Keychain access group for the token.
+    nonisolated(unsafe) public static var shared: (appGroup: String, keychainGroup: String?)?
 
     private static var defaults: UserDefaults {
         shared.flatMap { UserDefaults(suiteName: $0.appGroup) } ?? .standard
@@ -103,7 +103,7 @@ public enum ServerStore {
 
     private static func query(_ id: String) -> [String: Any] {
         var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: id]
-        if let group = shared?.keychainGroup { q[kSecAttrAccessGroup as String] = group }
+        if let group = shared?.keychainGroup, !group.isEmpty { q[kSecAttrAccessGroup as String] = group }
         return q
     }
 

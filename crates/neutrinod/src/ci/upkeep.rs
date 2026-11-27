@@ -137,10 +137,20 @@ impl Daemon {
         let store = self.store()?;
         let dir = self.backup_dir();
         std::fs::create_dir_all(&dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
         let m = Moment::utc(now());
         let path = dir.join(format!("neutrino-{:04}-{:02}-{:02}-{:02}{:02}.db", m.year, m.month, m.day, m.hour, m.minute));
         let _ = std::fs::remove_file(&path);
         store.backup_to(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         let keep = self.ci.as_ref().map(|c| c.options.backups_kept).unwrap_or(14).max(1);
         let mut old: Vec<PathBuf> = std::fs::read_dir(&dir)?
             .flatten()

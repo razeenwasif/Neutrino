@@ -568,7 +568,7 @@ fn git_net(root: &Path, args: &[&str]) -> Result<String> {
         .arg(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_SSH_COMMAND", std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh -o BatchMode=yes -o ConnectTimeout=10".into()))
+        .env("GIT_SSH_COMMAND", std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ForwardAgent=no -o ClearAllForwardings=yes -o PermitLocalCommand=no -o StrictHostKeyChecking=yes".into()))
         .stdin(Stdio::null());
     let out = child.output().ctx("running git")?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();

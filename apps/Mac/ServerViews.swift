@@ -16,7 +16,7 @@ struct PairSheet: View {
     @State private var port = String(ServerLink.defaultPort)
     @State private var fingerprint: String?
     @State private var code = ""
-    @State private var sshHost = "mini"
+    @State private var sshHost = ""
     @State private var working = false
     @State private var error: String?
 
@@ -30,7 +30,7 @@ struct PairSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Pair with atlas")
+                Text("Pair with server")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(N.text)
                 Text("On the server, run `ntr pair`. It prints a one-time code and the server's fingerprint.")
@@ -124,7 +124,7 @@ struct PairSheet: View {
             }
             SectionLabel("Or by address").padding(.top, 6)
             HStack(spacing: 8) {
-                field("192.168.1.20 or atlas.local", text: $address)
+                field("192.0.2.20 or server.local", text: $address)
                     .onChange(of: address) { if !address.isEmpty { serviceName = nil } }
                 field("Port", text: $port).frame(width: 84)
             }
@@ -153,7 +153,7 @@ struct PairSheet: View {
             }
             VStack(alignment: .leading, spacing: 5) {
                 Text("SSH host for pushing").font(.system(size: 11, weight: .medium)).foregroundStyle(N.muted)
-                field("mini", text: $sshHost)
+                field("build-server", text: $sshHost)
                 Text("Pushes go to ssh://\(sshHost.isEmpty ? "<host>" : sshHost)/… with your own SSH keys. Leave it empty if the server is this Mac.")
                     .font(.system(size: 11))
                     .foregroundStyle(N.faint)
@@ -320,7 +320,7 @@ struct ServerSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                SectionLabel("On \(model.serverLink?.name ?? "atlas")")
+                SectionLabel("On \(model.serverLink?.name ?? "server")")
                 Spacer()
                 if model.serverLink != nil {
                     Menu {
@@ -350,7 +350,7 @@ struct ServerSection: View {
                 Button {
                     pairing = true
                 } label: {
-                    Label("Pair with atlas…", systemImage: "link")
+                    Label("Pair with server…", systemImage: "link")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(pairHovered ? N.text : N.muted)
                         .padding(.horizontal, 10)

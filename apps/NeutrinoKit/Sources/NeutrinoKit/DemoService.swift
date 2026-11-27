@@ -46,7 +46,7 @@ public final class DemoService: NeutrinoService {
                        "-    memory_gb: float", "+    memory_gb: float = Field(gt=0, le=64)", "+", "+    @field_validator(\"node\")",
                        "+    def known_node(cls, v):", "+        return require_node(v)",
                    ])]),
-            Sample(sha: sha("c9d2e55"), subject: "Add /v1/reservations endpoint", body: "First step towards Neutrino and Nexus sharing atlas: reservations are owner-only, like everything that runs code.", ago: 2 * 3600,
+            Sample(sha: sha("c9d2e55"), subject: "Add /v1/reservations endpoint", body: "First step towards Neutrino and Nexus sharing a build server: reservations are owner-only, like everything that runs code.", ago: 2 * 3600,
                    parents: [sha("5f0a7b8")], refs: [RefLabel(name: "origin/reservations", kind: .remote)],
                    graph: GraphRow(lane: 0, color: 0, upper: [seg(0, 0, 0)], lower: [seg(0, 0, 0)]),
                    files: [(FileChange(path: "docs/CONTROL_PLANE.md", status: .modified, additions: 2, deletions: 0), [
@@ -95,7 +95,7 @@ public final class DemoService: NeutrinoService {
         ]
     }()
 
-    private static let ada = Signature(name: "Razeen Wasif", email: "you@example.com", time: 0)
+    private static let ada = Signature(name: "Alex Rivera", email: "you@example.com", time: 0)
 
     private static func entry(_ s: Sample) -> LogEntry {
         var author = ada
@@ -223,11 +223,11 @@ final class DemoWorkingCopy: @unchecked Sendable {
             "+class Reservation:", "+    owner: str          # for example \"neutrino-ci\"",
         ]),
         File(status: StatusFile(path: "cluster/tests/test_placement.py", status: .modified, additions: 4, deletions: 0), diff: [
-            "@@ -52,2 +52,6 @@ def test_keeps_four_gb_for_the_node():", "     assert free_memory_gb(atlas, []) == 12", "+", "+",
-            "+def test_reservation_counts_against_free_memory(monkeypatch):", "+    assert free_memory_gb(atlas, []) == 6",
+            "@@ -52,2 +52,6 @@ def test_keeps_four_gb_for_the_node():", "     assert free_memory_gb(build_node, []) == 12", "+", "+",
+            "+def test_reservation_counts_against_free_memory(monkeypatch):", "+    assert free_memory_gb(build_node, []) == 6",
         ]),
         File(status: StatusFile(path: "docs/CONTROL_PLANE.md", status: .modified, additions: 3, deletions: 1), diff: [
-            "@@ -18,4 +18,6 @@", " - **Coordinator** runs on atlas. It keeps the queue in its own database,",
+            "@@ -18,4 +18,6 @@", " - **Coordinator** runs on the primary node. It keeps the queue in its own database,",
             "-  places each job on a node, and talks to the agents over the LAN.", "+  places each job on a node, and talks to the agents over the LAN. Other",
             "+  schedulers hold memory with `POST /v1/reservations`; placement treats a", "+  reservation like a running job that asked for the same RAM.",
             " - **Agents** run on each node. They report hardware and health.",

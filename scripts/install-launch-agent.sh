@@ -2,13 +2,13 @@
 # Install neutrinod as a launch agent so it starts at login (and restarts if it
 # stops). Logs go to ~/.neutrino/neutrinod.log.
 #
-#   scripts/install-launch-agent.sh             the workstation (this MacBook)
-#   scripts/install-launch-agent.sh --server    the server (atlas): hosts repos, pairs devices
+#   scripts/install-launch-agent.sh             the workstation (this Mac)
+#   scripts/install-launch-agent.sh --server    the server: hosts repos, pairs devices
 #   scripts/install-launch-agent.sh --uninstall
 #
-# Flags for neutrinod go after `--`, e.g. on the MacBook, to keep copies of the
-# server's nightly database snapshots:
-#   scripts/install-launch-agent.sh -- --copy-backups-from mini
+# Flags for neutrinod go after `--`, e.g. on a workstation, to keep copies of
+# the server's nightly database snapshots:
+#   scripts/install-launch-agent.sh -- --copy-backups-from my-server
 set -eu
 label=dev.neutrino.neutrinod
 plist="$HOME/Library/LaunchAgents/$label.plist"
@@ -32,9 +32,11 @@ if [ "${1:-}" = "--uninstall" ]; then
 fi
 
 cd "$(dirname "$0")/.."
-cargo build --release -p neutrinod -p ntr
+RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PWD=/src --remap-path-prefix=$HOME=/home" \
+  cargo build --release --locked -p neutrinod -p ntr
 target=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$state/bin" "$HOME/Library/LaunchAgents"
+chmod 700 "$state" "$state/bin"
 # A copy, so rebuilding doesn't swap the binary under the running daemon.
 cp "$target/release/neutrinod" "$target/release/ntr" "$state/bin/"
 
@@ -52,6 +54,7 @@ cat > "$plist" <<PLIST
 </dict>
 </plist>
 PLIST
+chmod 600 "$plist"
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist"
 if [ -n "$role_arg" ]; then

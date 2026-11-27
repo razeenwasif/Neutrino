@@ -1,16 +1,20 @@
 #!/bin/sh
 # Set the flags the server's neutrinod starts with, and restart it.
 #
-#   scripts/server-flags.sh [ssh-host] -- [neutrinod flags…]     default host: mini
-#   scripts/server-flags.sh mini -- --host-executor --nexus-token-file /Users/you/.duet/neutrino.token
-#   scripts/server-flags.sh mini --                               back to just --server
+#   scripts/server-flags.sh <ssh-host> -- [neutrinod flags…]     (or $NEUTRINO_SERVER)
+#   scripts/server-flags.sh my-server -- --bind 100.64.0.10 --no-bonjour --remote-name build-server
+#   scripts/server-flags.sh my-server --                         back to just --server
 #
 # Rewrites the launch agent installed by install-launch-agent.sh --server, so
 # the flags survive restarts and reboots. `ntr ci` on the server shows what's on.
 set -eu
 
-host=mini
+host="${NEUTRINO_SERVER:-}"
 if [ "${1:-}" != "--" ] && [ -n "${1:-}" ]; then host="$1"; shift; fi
+if [ -z "$host" ]; then
+    echo "usage: scripts/server-flags.sh <ssh-host> -- [neutrinod flags…]" >&2
+    exit 2
+fi
 [ "${1:-}" = "--" ] && shift
 
 args="<string>--server</string>"
@@ -20,7 +24,7 @@ for a in "$@"; do
 done
 
 # shellcheck disable=SC2087
-ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" sh -s <<REMOTE
+ssh -o BatchMode=yes -o ConnectTimeout=8 -o ForwardAgent=no -o ClearAllForwardings=yes -o PermitLocalCommand=no "$host" sh -s <<REMOTE
 set -eu
 label=dev.neutrino.neutrinod
 plist="\$HOME/Library/LaunchAgents/\$label.plist"
@@ -40,6 +44,7 @@ cat > "\$plist" <<PLIST
 </dict>
 </plist>
 PLIST
+chmod 600 "\$plist"
 launchctl bootout "gui/\$(id -u)/\$label" 2>/dev/null || true
 # bootout returns before the old one has stopped; bootstrapping then fails
 # with "5: Input/output error" and leaves the server down.

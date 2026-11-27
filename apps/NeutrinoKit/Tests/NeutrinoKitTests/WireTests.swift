@@ -159,19 +159,19 @@ func liveWorkingCopy() async throws {
 }
 
 @Test func serverWire() throws {
-    let push = try json(Wire.line(id: 1, .push(repo: "r", remote: "atlas", branch: nil, setUpstream: true)))
-    #expect(push == ["id": 1, "method": "push", "params": ["repo": "r", "remote": "atlas", "set_upstream": true]] as NSDictionary)
+    let push = try json(Wire.line(id: 1, .push(repo: "r", remote: "server", branch: nil, setUpstream: true)))
+    #expect(push == ["id": 1, "method": "push", "params": ["repo": "r", "remote": "server", "set_upstream": true]] as NSDictionary)
     #expect(try json(Wire.line(id: 0, .auth(token: "t"))) == ["id": 0, "method": "auth", "params": ["token": "t"]] as NSDictionary)
     let host = try json(Wire.line(id: 2, .createHosted(name: "app", description: nil)))
     #expect(host == ["id": 2, "method": "create_hosted", "params": ["name": "app"]] as NSDictionary)
-    #expect(try Wire.decode(Data(#"{"id":0,"type":"paired","data":{"token":"tok","device_id":"d1","host":"atlas"}}"#.utf8)) == (0, .paired(token: "tok", deviceID: "d1", host: "atlas")))
-    #expect(try Wire.decode(Data(#"{"id":0,"type":"authenticated","data":{"host":"atlas","role":"server"}}"#.utf8)) == (0, .authenticated(host: "atlas", role: "server")))
-    #expect(try Wire.decode(Data(#"{"id":3,"type":"remotes","data":[{"name":"atlas","url":"ssh://mini/x.git"}]}"#.utf8)) == (3, .remotes([RemoteInfo(name: "atlas", url: "ssh://mini/x.git")])))
+    #expect(try Wire.decode(Data(#"{"id":0,"type":"paired","data":{"token":"tok","device_id":"d1","host":"server"}}"#.utf8)) == (0, .paired(token: "tok", deviceID: "d1", host: "server")))
+    #expect(try Wire.decode(Data(#"{"id":0,"type":"authenticated","data":{"host":"server","role":"server"}}"#.utf8)) == (0, .authenticated(host: "server", role: "server")))
+    #expect(try Wire.decode(Data(#"{"id":3,"type":"remotes","data":[{"name":"server","url":"ssh://build-server/x.git"}]}"#.utf8)) == (3, .remotes([RemoteInfo(name: "server", url: "ssh://build-server/x.git")])))
 }
 
 @Test func pushURLs() {
-    let link = ServerLink(deviceID: "d", name: "atlas", serviceName: nil, address: "10.0.0.2", port: 7844, fingerprint: String(repeating: "ab", count: 32), sshHost: "mini")
-    #expect(link.pushURL(for: "/Users/me/.neutrino/repos/app.git") == "ssh://mini/Users/me/.neutrino/repos/app.git")
+    let link = ServerLink(deviceID: "d", name: "server", serviceName: nil, address: "10.0.0.2", port: 7844, fingerprint: String(repeating: "ab", count: 32), sshHost: "build-server")
+    #expect(link.pushURL(for: "/Users/me/.neutrino/repos/app.git") == "ssh://build-server/Users/me/.neutrino/repos/app.git")
     var local = link
     local.sshHost = " "
     #expect(local.pushURL(for: "/srv/app.git") == "/srv/app.git")

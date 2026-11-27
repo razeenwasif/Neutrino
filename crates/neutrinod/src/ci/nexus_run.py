@@ -37,7 +37,7 @@ GIT_BASH = (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\b
 def posix_shell(shell):
     """The bash or sh to run a step with, or None. On Windows that's Git for
     Windows' bash: System32\\bash.exe is WSL's launcher, which can't open a
-    Windows path (it ran "C:UsersRazeen..." and found nothing)."""
+    Windows path (it ran "C:UsersAlice..." and found nothing)."""
     if not WINDOWS:
         return shutil.which(shell)
     for guess in GIT_BASH:
@@ -135,17 +135,28 @@ def keep_artifacts(patterns):
     out = os.environ.get("DUET_OUTPUT_DIR")
     if not out or not patterns:
         return
+    root_real = os.path.realpath(ROOT)
     dest = os.path.join(out, "artifacts")
+    os.makedirs(dest, exist_ok=True)
+    dest_real = os.path.realpath(dest)
     kept = 0
     for pattern in patterns:
+        norm = pattern.replace("\\", "/")
+        if os.path.isabs(pattern) or norm.startswith("/") or ".." in norm.split("/"):
+            continue
         for match in glob.glob(os.path.join(ROOT, pattern), recursive=True):
-            rel = os.path.relpath(match, ROOT)
-            target = os.path.join(dest, rel)
+            match_real = os.path.realpath(match)
+            if match_real != root_real and not match_real.startswith(root_real + os.sep):
+                continue
+            rel = os.path.relpath(match_real, root_real)
+            target = os.path.realpath(os.path.join(dest_real, rel))
+            if target != dest_real and not target.startswith(dest_real + os.sep):
+                continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            if os.path.isdir(match):
-                shutil.copytree(match, target, dirs_exist_ok=True)
+            if os.path.isdir(match_real):
+                shutil.copytree(match_real, target, dirs_exist_ok=True)
             else:
-                shutil.copy2(match, target)
+                shutil.copy2(match_real, target)
             kept += 1
     print("##neutrino-note kept %d artifact path%s" % (kept, "" if kept == 1 else "s"))
 

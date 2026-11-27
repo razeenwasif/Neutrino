@@ -63,8 +63,42 @@ fn load(dir: &Path) -> Status {
 }
 
 fn save(dir: &Path, s: &Status) {
-    let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::write(dir.join(STATUS_FILE), serde_json::to_vec_pretty(s).expect("serialises"));
+    let _ = ensure_private_dir(dir);
+    let _ = write_private(&dir.join(STATUS_FILE), &serde_json::to_vec_pretty(s).expect("serialises"));
+}
+
+fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn set_private_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+        f.write_all(data)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
+        f.write_all(data)
+    }
 }
 
 /// What a workstation shows for `ntr backups`.
@@ -88,15 +122,37 @@ pub(crate) struct Ssh {
     pub host: String,
 }
 
-fn ssh_opts() -> [&'static str; 4] {
-    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
+fn ssh_opts() -> [&'static str; 12] {
+    [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ForwardAgent=no",
+        "-o",
+        "ClearAllForwardings=yes",
+        "-o",
+        "PermitLocalCommand=no",
+        "-o",
+        "StrictHostKeyChecking=yes",
+    ]
+}
+
+fn check_host(host: &str) -> Result<()> {
+    if host.is_empty() || host.starts_with('-') || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!("invalid SSH host {host:?}");
+    }
+    Ok(())
 }
 
 impl Source for Ssh {
     fn paths(&self) -> Result<Vec<String>> {
+        check_host(&self.host)?;
         let ntr = std::env::var("NEUTRINO_SERVER_NTR").unwrap_or_else(|_| ".neutrino/bin/ntr".into());
         let out = Command::new("ssh")
             .args(ssh_opts())
+            .arg("--")
             .arg(&self.host)
             .arg(format!("{ntr} backups --paths"))
             .stdin(std::process::Stdio::null())
@@ -109,9 +165,11 @@ impl Source for Ssh {
     }
 
     fn fetch(&self, path: &str, to: &Path) -> Result<()> {
+        check_host(&self.host)?;
         let out = Command::new("scp")
             .args(["-q", "-p"])
             .args(ssh_opts())
+            .arg("--")
             .arg(format!("{}:{path}", self.host))
             .arg(to)
             .stdin(std::process::Stdio::null())
@@ -127,7 +185,7 @@ impl Source for Ssh {
 /// Copy the snapshots `source` has that `dir` doesn't (the newest `KEEP`),
 /// then drop all but the newest `KEEP` here. Returns how many arrived.
 pub(crate) fn copy_from(source: &dyn Source, dir: &Path) -> Result<usize> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    ensure_private_dir(dir).with_context(|| format!("creating {}", dir.display()))?;
     let result = (|| -> Result<usize> {
         let mut wanted: Vec<(String, String)> = source
             .paths()?
@@ -155,7 +213,9 @@ pub(crate) fn copy_from(source: &dyn Source, dir: &Path) -> Result<usize> {
                 let _ = std::fs::remove_file(&part);
                 bail!("{path} on the server isn't an SQLite database; not keeping it");
             }
+            set_private_file(&part);
             std::fs::rename(&part, &dest)?;
+            set_private_file(&dest);
             copied += 1;
         }
         for old in list(dir).into_iter().skip(KEEP) {

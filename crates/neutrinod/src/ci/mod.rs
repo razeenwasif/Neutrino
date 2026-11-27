@@ -438,9 +438,17 @@ impl Daemon {
             .into_iter()
             .find(|a| format!("{}/{}", a.job, a.path) == path || a.path == path)
             .with_context(|| format!("run {run} has no artifact {path}"))?;
-        let file = self.state_dir.join("artifacts").join(run.to_string()).join(&artifact.job).join(&artifact.path);
+        workspace::validate_rel_path(&artifact.job)?;
+        workspace::validate_rel_path(&artifact.path)?;
+        let artifacts_root = self.state_dir.join("artifacts");
+        let file = artifacts_root.join(run.to_string()).join(&artifact.job).join(&artifact.path);
+        let canon_root = artifacts_root.canonicalize().with_context(|| format!("{path} is unavailable"))?;
+        let canon_file = file.canonicalize().with_context(|| format!("{path} is unavailable"))?;
+        if !canon_file.starts_with(&canon_root) {
+            bail!("artifact {path} escapes artifacts directory");
+        }
         let days = self.ci()?.options.retention_days;
-        let mut f = std::fs::File::open(&file).with_context(|| format!("{path} is gone (logs and artifacts are kept {days} days)"))?;
+        let mut f = std::fs::File::open(&canon_file).with_context(|| format!("{path} is gone (logs and artifacts are kept {days} days)"))?;
         let size = f.metadata()?.len();
         f.seek(SeekFrom::Start(offset.min(size)))?;
         let mut buf = Vec::new();

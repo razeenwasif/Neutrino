@@ -2,7 +2,7 @@
 # Build neutrinod and ntr from a commit, sign neutrinod with a stable identity,
 # copy both to the server, restart it there and check it runs that commit.
 #
-#   scripts/deploy-server.sh [ssh-host] [commit]    defaults: mini, HEAD
+#   scripts/deploy-server.sh <ssh-host> [commit]    (or set $NEUTRINO_SERVER)
 #
 # What it gets right, each the lesson of a deploy that went wrong:
 #
@@ -24,7 +24,11 @@
 #     one built, or the deploy fails.
 set -eu
 
-host="${1:-mini}"
+host="${1:-${NEUTRINO_SERVER:-}}"
+if [ -z "$host" ]; then
+    echo "usage: scripts/deploy-server.sh <ssh-host> [commit]  (or set NEUTRINO_SERVER)" >&2
+    exit 2
+fi
 rev="${2:-HEAD}"
 cd "$(dirname "$0")/.."
 
@@ -48,13 +52,15 @@ git worktree remove --force "$src" 2>/dev/null || rm -rf "$src"
 git worktree prune
 git worktree add --quiet --detach "$src" "$commit"
 trap 'git worktree remove --force "$src" 2>/dev/null || true' EXIT
-(cd "$src" && NEUTRINO_COMMIT="$commit" CARGO_TARGET_DIR="$target_root/neutrino-deploy" \
+(cd "$src" && NEUTRINO_COMMIT="$commit" \
+    CARGO_TARGET_DIR="$target_root/neutrino-deploy" \
+    RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$src=/src --remap-path-prefix=$HOME=/home" \
     cargo build -q --release --locked -p neutrinod -p ntr)
 out="$target_root/neutrino-deploy/release"
 codesign --force --identifier dev.neutrino.neutrinod --sign "$identity" --timestamp=none "$out/neutrinod"
 
 # 2. Copy beside the old files, then swap each in as a new file and restart.
-ssh_opts="-o BatchMode=yes -o ConnectTimeout=8"
+ssh_opts="-o BatchMode=yes -o ConnectTimeout=8 -o ForwardAgent=no -o ClearAllForwardings=yes -o PermitLocalCommand=no"
 # shellcheck disable=SC2086
 scp -q $ssh_opts "$out/neutrinod" "$host:.neutrino/bin/.neutrinod.new"
 # shellcheck disable=SC2086

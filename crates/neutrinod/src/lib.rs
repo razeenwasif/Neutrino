@@ -2,9 +2,9 @@
 //!
 //! One binary, two roles:
 //!
-//! * **workstation** (the MacBook): reads and changes the working copies you
+//! * **workstation**: reads and changes the working copies you
 //!   register, and answers the app and `ntr` over a Unix socket.
-//! * **server** (`--server`, on atlas): also hosts bare repositories under
+//! * **server** (`--server`): also hosts bare repositories under
 //!   `<state>/repos/`, takes pushes over SSH (git's own transport, with hooks
 //!   that report back here), and answers paired devices over TLS.
 
@@ -20,6 +20,7 @@ mod registry;
 mod watch;
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -29,12 +30,14 @@ use neutrino_proto::{EngineInfo, PROTOCOL_VERSION, RepoEvent, Request, Response,
 use neutrino_remote::Remote;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 pub use registry::Registry;
 
 /// Requests longer than this are refused.
 const MAX_LINE: usize = 1 << 20;
+const MAX_CONCURRENT_PREAUTH: usize = 32;
+const MAX_CONCURRENT_REMOTE_SESSIONS: usize = 64;
 
 /// Where state lives: `$NEUTRINO_HOME`, else `~/.neutrino`.
 pub fn state_dir() -> PathBuf {
@@ -68,10 +71,14 @@ impl Role {
 #[derive(Debug, Clone)]
 pub struct Options {
     pub role: Role,
+    /// Server only: IP address to bind the TLS endpoint to.
+    pub remote_bind: IpAddr,
     /// Server only: the TLS port, or `None` for no network endpoint.
     pub remote_port: Option<u16>,
     /// Server only: advertise the endpoint over Bonjour.
     pub advertise: bool,
+    /// Server only: display/Bonjour name override for the remote endpoint.
+    pub remote_name: Option<String>,
     /// Server only: where CI jobs run and what they may use.
     pub ci: ci::CiOptions,
     /// Server only: where the vault's master key is kept.
@@ -82,7 +89,16 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { role: Role::Workstation, remote_port: None, advertise: false, ci: ci::CiOptions::default(), vault: neutrino_vault::KeyStore::Keychain, copy_backups_from: None }
+        Options {
+            role: Role::Workstation,
+            remote_bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            remote_port: None,
+            advertise: false,
+            remote_name: None,
+            ci: ci::CiOptions::default(),
+            vault: neutrino_vault::KeyStore::Keychain,
+            copy_backups_from: None,
+        }
     }
 }
 
@@ -212,8 +228,19 @@ impl Daemon {
 
     pub fn with(state_dir: &Path, options: Options) -> Result<Arc<Self>> {
         std::fs::create_dir_all(state_dir).with_context(|| format!("creating {}", state_dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(state_dir, std::fs::Permissions::from_mode(0o700));
+        }
         let remote = match (options.role, options.remote_port) {
-            (Role::Server, Some(port)) => Some(Remote::open(state_dir, port, options.advertise)?),
+            (Role::Server, Some(port)) => Some(Remote::open_with(
+                state_dir,
+                options.remote_bind,
+                port,
+                options.advertise,
+                options.remote_name.clone(),
+            )?),
             _ => None,
         };
         let store = match options.role {
@@ -901,12 +928,24 @@ where
 
 /// Accept paired devices over TLS until the daemon stops.
 async fn serve_remote(daemon: Arc<Daemon>, remote: Arc<Remote>, listener: tokio::net::TcpListener) {
+    let preauth_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_PREAUTH));
+    let session_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_REMOTE_SESSIONS));
     loop {
         let Ok((tcp, peer)) = listener.accept().await else { continue };
-        let (daemon, remote) = (Arc::clone(&daemon), Arc::clone(&remote));
+        let Ok(preauth_permit) = Arc::clone(&preauth_sem).try_acquire_owned() else {
+            eprintln!("remote {peer}: too many concurrent pre-auth connections");
+            continue;
+        };
+        let (daemon, remote, session_sem) = (Arc::clone(&daemon), Arc::clone(&remote), Arc::clone(&session_sem));
         tokio::spawn(async move {
-            match remote.accept(tcp, daemon.options.role.name()).await {
+            let accepted = remote.accept(tcp, daemon.options.role.name()).await;
+            drop(preauth_permit);
+            match accepted {
                 Ok(Some((session, id, name))) => {
+                    let Ok(_session_permit) = session_sem.try_acquire_owned() else {
+                        eprintln!("remote {peer}: too many active sessions");
+                        return;
+                    };
                     let (read, write) = tokio::io::split(session);
                     connection(daemon, read, write, Scope::Remote { id, name }).await;
                 }

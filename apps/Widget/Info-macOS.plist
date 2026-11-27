@@ -25,5 +25,7 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
+	<key>NeutrinoWidgetGroupID</key>
+	<string>$(TeamIdentifierPrefix)group.dev.neutrino</string>
 </dict>
 </plist>

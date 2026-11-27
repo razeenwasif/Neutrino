@@ -7,7 +7,7 @@ SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTUR
 
 > Status: **milestone 9 done** (moving in from GitHub): `ntr import` brings a
 > GitHub repository's branches and tags onto the server, which copies every
-> push back to GitHub so a full copy lives off atlas; the MacBook keeps copies
+> push back to GitHub so a full copy lives off the server; the workstation keeps copies
 > of the server's nightly database snapshots; `scripts/move-in.sh` moves
 > working copies over. Milestone 8 gave the iPhone app. The phone shows what needs
 > you (deploys waiting for approval, pull requests ready to merge, runs) and
@@ -15,7 +15,7 @@ SwiftUI app shows them. The design is in [docs/ARCHITECTURE.md](docs/ARCHITECTUR
 > Secure Enclave after Face ID. Push notifications go through APNs carrying no
 > details; the phone fetches the text from the server. Milestone 7 gave the
 > other executors (`runs-on: host`, `runs-on: nexus`); 6 the vault and the rest
-> of CI; 5 CI on Graviton; 4 pull requests; 3 the server on atlas; 1 and 2 the
+> of CI; 5 CI on Graviton; 4 pull requests; 3 the server; 1 and 2 the
 > client.
 
 ## Layout
@@ -46,7 +46,7 @@ apps/
 design/            App icon sources; make-icons.sh renders them into the asset catalog
 scripts/
   dev-neutrinod.sh         Build and run the daemon in the foreground (pass --server for the server)
-  install-launch-agent.sh  Run neutrinod at login (--server on atlas, --uninstall to remove)
+  install-launch-agent.sh  Run neutrinod at login (--server on the server, --uninstall to remove)
   deploy-server.sh         Build, sign and copy neutrinod and ntr to the server, then restart it
   server-flags.sh          Set the flags the server's neutrinod starts with (executors, budget, backups)
   move-in.sh               Move working copies' repositories from GitHub to the server
@@ -71,13 +71,13 @@ exit code are git's own: `ntr status`, `ntr commit -m …`, `ntr rebase -i
 main`, `ntr push`. Server commands (`pr`, `runs`, `run`, `secret`, `var`,
 `env`, `rules`, `mirror`, `inbox`, `ci` and the rest) run on the server: on a
 workstation, `ntr` sends them over SSH to the server its working copy's origin
-is on (`ssh://mini/…`), naming the hosted repository by its path there, so
+is on (`ssh://my-server/…`), naming the hosted repository by its path there, so
 from any working copy `ntr pr list` lists that repository's pull requests.
 Outside one, it uses `git config --global neutrino.server` (or
 `$NEUTRINO_SERVER`). On the server itself they run locally, as before.
 
 ```bash
-git config --global neutrino.server mini   # once, for commands outside a working copy
+git config --global neutrino.server my-server   # once, for commands outside a working copy
 ln -s ~/.neutrino/bin/ntr ~/.local/bin/ntr # or anywhere on your PATH
 cd ~/code/myrepo
 ntr status && ntr commit -am "Fix the README" && ntr push   # git
@@ -87,7 +87,7 @@ ntr runs                                                    # the server
 
 ## The server
 
-On atlas (any Mac that's always on):
+On your build server (any Mac that's always on):
 
 ```bash
 scripts/install-launch-agent.sh --server   # neutrinod --server at login
@@ -97,20 +97,20 @@ ntr devices                                # paired devices; `devices revoke ID`
 ```
 
 The server keeps hosted repos in `~/.neutrino/repos/<name>.git` and listens
-for paired devices on TCP 7844 with TLS, advertised over Bonjour as
-`_neutrino._tcp`. Pushes and fetches don't go through it: they use git over
-SSH (`ssh://mini/Users/you/.neutrino/repos/myapp.git`), so Remote Login must
+for paired devices on TCP 7844 with TLS (optionally advertised over Bonjour as
+`_neutrino._tcp`). Pushes and fetches don't go through it: they use git over
+SSH (`ssh://my-server/Users/you/.neutrino/repos/myapp.git`), so Remote Login must
 be on and your SSH key in its `authorized_keys`. Each hosted repo's
 `pre-receive` and `post-receive` hooks call `neutrinod hook`, which tells the
 daemon what landed; the first branch pushed to an empty repo becomes its
 default, and the commit-graph is refreshed after each push.
 
-In the Mac app, choose Pair with atlas in the sidebar, pick the server (or type
+In the Mac app, choose Pair with server in the sidebar, pick the server (or type
 its address), check the fingerprint against `ntr pair`, then enter the code.
 The app pins that certificate and keeps its token in the Keychain; the server
 stores only token hashes. A paired device can read hosted repos, create them
 and follow pushes; it can't touch the server's working copies or paths, or
-manage pairing. Publish creates a hosted repo, adds it as the `atlas` remote
+manage pairing. Publish creates a hosted repo, adds it as the remote
 and pushes the current branch; Fetch and Push in the header do the rest.
 
 ### Moving in from GitHub
@@ -167,7 +167,7 @@ jobs need `--host-executor` and every Nexus job is a ticket to accept.
 ### Pull requests and branch rules
 
 They live on the server, in `~/.neutrino/neutrino.db`. From the app (Pull
-requests, ⌘4) or on atlas with `ntr`:
+requests, ⌘4) or on the server with `ntr`:
 
 ```bash
 ntr -r myapp pr create feature -t "Add the thing"   # into the default branch
@@ -266,7 +266,7 @@ the job and kept with its logs for `--retention-days 30`. Schedules are cron
 lines in UTC, run on each repo's default branch. Services start before the
 job's container, through Graviton, and the job reaches each at `<NAME>_HOST`.
 
-CI gets a fixed budget on atlas (`--ci-cpus 4 --ci-memory 6G` by default);
+CI gets a fixed budget on the server (`--ci-cpus 4 --ci-memory 6G` by default);
 jobs start in order while there's room, and one that asks for more than the
 whole budget fails at once. Graviton is found at its usual socket, or
 `--graviton-socket`.
@@ -289,7 +289,7 @@ ntr -r myapp run artifacts 12        # then: run download 12 build/target/releas
 |---|---|---|---|
 | `graviton` (default) | a Linux arm64 VM on the server | a VM per job | needs `image:`; services, caches |
 | `host` | the server's macOS, as processes | none | for Xcode, signing, simulators; off unless `--host-executor` |
-| `nexus` | a Nexus node (forge for Windows and the GPU) | Nexus's | `nexus: { node, accelerator, gpu-memory }`; no secrets |
+| `nexus` | a Nexus node (for Windows and GPU workers) | Nexus's | `nexus: { node, accelerator, gpu-memory }`; no secrets |
 
 Host jobs run in a fresh checkout in their own process group, so a timeout or
 a cancel takes the whole tree, with Homebrew's and your usual tool folders on
@@ -308,7 +308,7 @@ Accept in Nexus, and can't be stopped from Neutrino; the full token runs them
 straight away.
 
 ```bash
-scripts/server-flags.sh mini -- --host-executor --nexus-token-file /Users/you/.duet/neutrino-token
+scripts/server-flags.sh my-server -- --host-executor --nexus-token-file /Users/you/.duet/neutrino-token
 ntr ci                                   # on the server: which executors are on
 ```
 
@@ -338,24 +338,24 @@ write a secret into an artifact.
 
 An environment can require approval: its jobs wait in the Runs screen (or
 `ntr run approve`) and record who let them go; it can also limit which
-branches may deploy. The server's login Keychain must be unlocked, so atlas
-has to be logged in, as it already is for Nexus. `scripts/deploy-server.sh`
+branches may deploy. The server's login Keychain must be unlocked, so the server
+has to be logged in. `scripts/deploy-server.sh`
 signs `neutrinod` with your Apple Development certificate before copying it,
 so the Keychain keeps trusting it across deploys.
 
 The database is snapshotted every night after 03:30 UTC to `--backup-dir`
 (default `~/.neutrino/backups`), keeping the last 14. Secrets in a snapshot
 stay sealed; the recovery code opens them. To keep copies off the server, start
-the MacBook's neutrinod with `--copy-backups-from mini`: when it starts and
+the workstation's neutrinod with `--copy-backups-from my-server`: when it starts and
 every hour it asks the server over SSH for its snapshots (`ntr backups
 --paths`), copies the ones it's missing to `~/.neutrino/server-backups/`,
 checks each is an SQLite file, and keeps the newest 14. A laptop that was away
 catches up when it's back. `ntr backups` lists them, on either machine, and on
-the MacBook says when copying last worked.
+the workstation says when copying last worked.
 
 ```bash
-scripts/install-launch-agent.sh -- --copy-backups-from mini   # on the MacBook
-ntr backups                                                   # the copies, and the last copy
+scripts/install-launch-agent.sh -- --copy-backups-from my-server   # on the workstation
+ntr backups                                                         # the copies, and the last copy
 ```
 
 ### The iPhone app
@@ -364,7 +364,7 @@ ntr backups                                                   # the copies, and 
 cd apps && xcodegen generate && open Neutrino.xcodeproj   # scheme NeutrinoIOS
 ```
 
-Pair it like the Mac app: on atlas run `ntr pair`, pick the server on the
+Pair it like the Mac app: on the server run `ntr pair`, pick the server on the
 phone (or type its address), check the fingerprint, enter the code. Pairing
 also makes a P-256 key in the phone's Secure Enclave, usable only after Face
 ID or the passcode, and gives the server its public half (once: a device can't
@@ -382,7 +382,7 @@ recorded by device name.
 
 Notifications need an APNs key from your Apple developer account (Keys, with
 Apple Push Notification service). The server seals it like a secret, so set up
-the vault first. On atlas:
+the vault first. On the server:
 
 ```bash
 ntr notify setup --key AuthKey_ABC123.p8 --key-id ABC123 --team-id YOUR_TEAM_ID --topic dev.neutrino.ios
@@ -486,7 +486,7 @@ checked.
 - The watcher skips common build folders (`target`, `node_modules`, `.build`,
   `DerivedData` and a few more) by name rather than by `.gitignore`.
 - The phone talks to the server directly, so away from home it needs a way
-  back to atlas (Tailscale or similar); there's no relay.
+  back to the server (Tailscale or similar); there's no relay.
 - Line staging uses the working tree's bytes as they are, without git's
   clean filters (LFS, CRLF conversion); files that rely on them should be
   staged whole.

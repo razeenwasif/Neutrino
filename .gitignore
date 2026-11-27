@@ -15,3 +15,6 @@ apps/**/.swiftpm
 *.db-wal
 *.db-shm
 .neutrino/
+apps/Config/Signing.local.xcconfig
+__pycache__/
+*.pyc

@@ -259,7 +259,7 @@ public struct NeutrinoWidgetSnapshot: Codable, Sendable, Equatable {
     }
 
     public static let placeholder = NeutrinoWidgetSnapshot(
-        serverName: "mini",
+        serverName: "server",
         serverOnline: true,
         daemonOnline: true,
         localRepoCount: 6,
@@ -287,7 +287,7 @@ public struct NeutrinoWidgetSnapshot: Codable, Sendable, Equatable {
     )
 
     public static let phonePlaceholder = NeutrinoWidgetSnapshot(
-        serverName: "mini",
+        serverName: "server",
         serverOnline: true,
         daemonOnline: false,
         localRepoCount: 0,
@@ -319,7 +319,14 @@ public struct NeutrinoWidgetSnapshot: Codable, Sendable, Equatable {
 
 public enum NeutrinoWidgetStore {
     #if os(macOS)
-    public static let widgetGroupID = "YOUR_TEAM_ID.group.dev.neutrino"
+    public static let widgetGroupID: String = {
+        if let configured = Bundle.main.object(forInfoDictionaryKey: "NeutrinoWidgetGroupID") as? String,
+           !configured.isEmpty,
+           !configured.contains("$(") {
+            return configured
+        }
+        return "group.dev.neutrino"
+    }()
     #else
     public static let widgetGroupID = "group.dev.neutrino"
     #endif

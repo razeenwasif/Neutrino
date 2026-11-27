@@ -3,5 +3,6 @@
 # State lives in ~/.neutrino unless NEUTRINO_HOME says otherwise.
 set -e
 cd "$(dirname "$0")/.."
-cargo build --release -p ntr
-exec cargo run --release -q -p neutrinod -- "$@"
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PWD=/src --remap-path-prefix=$HOME=/home"
+cargo build --release --locked -p ntr
+exec cargo run --release --locked -q -p neutrinod -- "$@"

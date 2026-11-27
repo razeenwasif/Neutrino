@@ -115,7 +115,7 @@ async fn publish_push_and_pair() {
     let (server, stop_server) = start(
         root.join("server"),
         server_sock.clone(),
-        neutrinod::Options { role: neutrinod::Role::Server, remote_port: Some(0), advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None },
+        neutrinod::Options { role: neutrinod::Role::Server, remote_port: Some(0), ci: local_ci(), vault: neutrino_vault_test_key(), ..Default::default() },
     )
     .await;
     let (_work, stop_work) = start(root.join("work-state"), work_sock.clone(), neutrinod::Options::default()).await;
@@ -218,7 +218,7 @@ async fn a_restarted_server_adopts_its_repos() {
     let root = dir.path().canonicalize().unwrap();
     let state = root.join("server");
     neutrinod::hosting::create(&state.join("repos"), "kept", None).unwrap();
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, ci: local_ci(), vault: neutrino_vault_test_key(), ..Default::default() };
     let (_s, stop) = start(state.clone(), root.join("s.sock"), options).await;
     match call(&root.join("s.sock"), Request::ListRepos).await {
         Response::Repos(r) => assert!(r.iter().any(|r| r.id == "kept" && r.bare)),
@@ -238,7 +238,7 @@ async fn deleting_a_hosted_repo_moves_it_aside() {
     let root = dir.path().canonicalize().unwrap();
     let state = root.join("server");
     let sock = root.join("s.sock");
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, ci: local_ci(), vault: neutrino_vault_test_key(), ..Default::default() };
     let (_s, stop) = start(state.clone(), sock.clone(), options).await;
     let Response::Repo(gone) = call(&sock, Request::CreateHosted { name: "gone".into(), description: None }).await else { panic!() };
     let Response::Repo(_) = call(&sock, Request::CreateHosted { name: "stays".into(), description: None }).await else { panic!() };
@@ -262,7 +262,7 @@ async fn the_first_pushed_branch_becomes_the_default() {
     unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, ci: local_ci(), vault: neutrino_vault_test_key(), ..Default::default() };
     let (_s, stop) = start(root.join("server"), root.join("s.sock"), options).await;
     let Response::Repo(hosted) = call(&root.join("s.sock"), Request::CreateHosted { name: "old".into(), description: None }).await else { panic!() };
 
@@ -290,7 +290,7 @@ async fn import_then_every_push_reaches_the_mirror() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let sock = root.join("s.sock");
-    let options = neutrinod::Options { role: neutrinod::Role::Server, remote_port: None, advertise: false, ci: local_ci(), vault: neutrino_vault_test_key(), copy_backups_from: None };
+    let options = neutrinod::Options { role: neutrinod::Role::Server, ci: local_ci(), vault: neutrino_vault_test_key(), ..Default::default() };
     let (_s, stop) = start(root.join("server"), sock.clone(), options).await;
 
     // "GitHub": a bare repo with two branches and a tag, its default `develop`.

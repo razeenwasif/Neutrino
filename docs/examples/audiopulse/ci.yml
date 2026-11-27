@@ -4,7 +4,7 @@
 #   * ubuntu-latest + setup-go  ->  a golang:1.25 container on Graviton (arm64
 #     Linux; it has gcc, which -race needs)
 #   * setup-go's cache  ->  a Neutrino cache for Go's module and build caches,
-#     kept in the workspace on atlas's disk
+#     kept in the workspace on the server's disk
 #   * gofmt checks the repo's .go files, not the whole folder, so the module
 #     cache in the workspace isn't checked too
 

@@ -1,13 +1,13 @@
 # Nexus's .github/workflows/desktop-windows.yml, on Neutrino.
 #
-# Builds the Windows installer natively, on forge through Nexus. Changes from
+# Builds the Windows installer natively, on windows-worker through Nexus. Changes from
 # the GitHub version:
-#   * runs-on: windows-latest  ->  runs-on: nexus, placed on forge
+#   * runs-on: windows-latest  ->  runs-on: nexus, placed on windows-worker
 #   * the VITE_FIREBASE_* values are variables: Nexus mirrors jobs to
 #     Firestore, so Neutrino sends it no secrets (and these aren't secret)
 #   * the installer is kept as a run artifact (download it from the run, or
 #     `ntr run download`) instead of a GitHub Release
-#   * forge needs bun (https://bun.sh) and Git for Windows' bash. The Bun steps
+#   * windows-worker needs bun (https://bun.sh) and Git for Windows' bash. The Bun steps
 #     put %USERPROFILE%\.bun\bin, where Bun's installer puts it, first on their
 #     PATH: the Nexus agent's PATH doesn't have it.
 #
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   build_windows:
     runs-on: nexus
-    nexus: { node: forge }
+    nexus: { node: windows-worker }
     resources: { cpus: 8, memory: 8G }
     timeout-minutes: 30
     env:

@@ -37,7 +37,7 @@ struct PairView: View {
                         }
                     }
                     Section("Or by address") {
-                        TextField("192.168.1.20 or atlas.tailnet.ts.net", text: $address)
+                        TextField("192.0.2.20 or server.local", text: $address)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)

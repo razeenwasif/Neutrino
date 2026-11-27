@@ -212,14 +212,56 @@ fn utf8_boundary(buf: &[u8]) -> usize {
     }
 }
 
+/// Rejects absolute paths, parent traversal (`..`), and NUL bytes.
+pub(crate) fn validate_rel_path(p: &str) -> Result<()> {
+    if p.is_empty() || p.contains('\0') {
+        anyhow::bail!("invalid relative path {p:?}");
+    }
+    let path = Path::new(p);
+    if path.is_absolute() {
+        anyhow::bail!("path must be relative: {p:?}");
+    }
+    for c in path.components() {
+        if matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)) {
+            anyhow::bail!("path escapes workspace: {p:?}");
+        }
+    }
+    Ok(())
+}
+
+fn ensure_contained(base: &Path, candidate: &Path) -> Result<()> {
+    let canon_base = base.canonicalize().with_context(|| format!("resolving {}", base.display()))?;
+    let check_target = if candidate.exists() {
+        candidate.to_path_buf()
+    } else if let Some(parent) = candidate.parent() {
+        if parent.exists() {
+            parent.to_path_buf()
+        } else {
+            return Ok(());
+        }
+    } else {
+        return Ok(());
+    };
+    let canon_target = check_target.canonicalize().with_context(|| format!("resolving {}", check_target.display()))?;
+    if !canon_target.starts_with(&canon_base) {
+        anyhow::bail!("path {} escapes {}", candidate.display(), base.display());
+    }
+    Ok(())
+}
+
 /// Put a cache's paths back into the workspace.
 pub fn restore(dir: &Path, paths: &[String], workspace: &Path) -> Result<()> {
     for p in paths {
+        validate_rel_path(p)?;
         let saved = dir.join(p);
         if !saved.exists() {
             continue;
         }
+        if dir.exists() {
+            ensure_contained(dir, &saved)?;
+        }
         let dest = workspace.join(p);
+        ensure_contained(workspace, &dest)?;
         if dest.exists() {
             let _ = remove_tree(&dest);
         }
@@ -234,8 +276,10 @@ pub fn save(dir: &Path, paths: &[String], workspace: &Path) -> Result<u64> {
     let _ = remove_tree(&tmp);
     std::fs::create_dir_all(&tmp)?;
     for p in paths {
+        validate_rel_path(p)?;
         let src = workspace.join(p);
         if src.exists() {
+            ensure_contained(workspace, &src)?;
             clone(&src, &tmp.join(p))?;
         }
     }
@@ -356,5 +400,26 @@ mod tests {
         }
         assert_eq!(rebuilt, full);
         assert_eq!(offset, full.len() as u64);
+    }
+
+    #[test]
+    fn cache_paths_reject_traversal_and_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+
+        for bad in ["../escape", "/etc/passwd", "sub/../../escape", ""] {
+            assert!(save(&cache, &[bad.into()], &ws).is_err(), "save should reject {bad}");
+            assert!(restore(&cache, &[bad.into()], &ws).is_err(), "restore should reject {bad}");
+        }
+        #[cfg(unix)]
+        {
+            let outside = dir.path().join("secret");
+            std::fs::write(&outside, "top-secret").unwrap();
+            std::os::unix::fs::symlink(&outside, ws.join("leak")).unwrap();
+            assert!(save(&cache, &["leak".into()], &ws).is_err(), "symlink escaping workspace must fail");
+        }
     }
 }

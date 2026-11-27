@@ -1,15 +1,15 @@
 # Proton's .github/workflows/ui-and-paths.yml macOS and Windows legs, on Neutrino.
 #
 # Changes from the GitHub version:
-#   * the matrices become jobs: macOS on atlas itself (runs-on: host),
-#     Windows on forge through Nexus (runs-on: nexus)
+#   * the matrices become jobs: macOS on server itself (runs-on: host),
+#     Windows on windows-worker through Nexus (runs-on: nexus)
 #   * they run for version tags and when started by hand, not on every push:
 #     host jobs need the server started with --host-executor (off for now),
 #     and each Nexus job is a ticket waiting for your Accept in Nexus
 #   * the steps GitHub skipped on Windows are left out of the Windows jobs, and
 #     proton-study, proton-voice and proton-core's `study` test, which aren't
 #     on master yet, are left out of both
-#   * atlas needs Rust and Node 22 on its PATH; forge needs Rust, Node 22 and
+#   * server needs Rust and Node 22 on its PATH; windows-worker needs Rust, Node 22 and
 #     Git for Windows' bash
 
 name: native
@@ -48,7 +48,7 @@ jobs:
 
   ui-browser-windows:
     runs-on: nexus
-    nexus: { node: forge }
+    nexus: { node: windows-worker }
     resources: { cpus: 4, memory: 8G }
     timeout-minutes: 20
     artifacts: [playwright-report, test-results]
@@ -62,7 +62,7 @@ jobs:
 
   paths-windows:
     runs-on: nexus
-    nexus: { node: forge }
+    nexus: { node: windows-worker }
     resources: { cpus: 4, memory: 8G }
     timeout-minutes: 60
     env:

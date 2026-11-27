@@ -1,5 +1,5 @@
-//! The server's paired TLS endpoint: how the Mac app (and later the iPhone)
-//! reaches neutrinod on atlas.
+//! The server's paired TLS endpoint: how the Mac app (and the iPhone app)
+//! reaches neutrinod on the server.
 //!
 //! It listens on TCP [`neutrino_proto::REMOTE_PORT`] with TLS, using a
 //! self-signed certificate made once and kept in `<state>/remote/`. Devices
@@ -16,7 +16,9 @@
 //!
 //! Ported from Graviton's remote endpoint.
 
+use std::collections::HashMap;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -25,10 +27,16 @@ use anyhow::{Context, Result, anyhow, bail};
 use neutrino_proto::{PairedDevice, PairingInfo, Request, Response, decode_request, encode_response};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 const CODE_TTL: Duration = Duration::from_secs(300);
 pub const MAX_FAILURES: u32 = 5;
+const AUTH_WINDOW: Duration = Duration::from_secs(300);
+const AUTH_MAX_FAILURES: u32 = 5;
+const AUTH_LOCKOUT: Duration = Duration::from_secs(60);
+const MAX_AUTH_LIMIT_ENTRIES: usize = 4096;
+/// Maximum pre-authentication request size (16 KiB).
+pub const MAX_PREAUTH_LINE: usize = 16 * 1024;
 /// No 0/O, 1/I/L: easy to read off a screen and type.
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
@@ -66,11 +74,18 @@ struct PendingCode {
     expires: Instant,
 }
 
+struct AuthFailure {
+    count: u32,
+    window_start: Instant,
+    locked_until: Option<Instant>,
+}
+
 #[derive(Default)]
 struct State {
     devices: Vec<Device>,
     codes: Vec<PendingCode>,
     failures: u32,
+    auth_limits: HashMap<IpAddr, AuthFailure>,
 }
 
 /// An authenticated TLS connection, ready for ordinary requests.
@@ -81,6 +96,7 @@ pub struct Remote {
     devices_path: PathBuf,
     acceptor: tokio_rustls::TlsAcceptor,
     pub fingerprint: String,
+    pub bind: IpAddr,
     pub port: u16,
     pub host: String,
     rng: SystemRandom,
@@ -91,8 +107,13 @@ impl Remote {
     /// Load (or make) the certificate and the paired devices from `<state_dir>/remote/`.
     /// `advertise` registers the service over Bonjour.
     pub fn open(state_dir: &Path, port: u16, advertise: bool) -> Result<Arc<Self>> {
+        Self::open_with(state_dir, IpAddr::V4(Ipv4Addr::UNSPECIFIED), port, advertise, None)
+    }
+
+    pub fn open_with(state_dir: &Path, bind: IpAddr, port: u16, advertise: bool, host_override: Option<String>) -> Result<Arc<Self>> {
+        ensure_private_dir(state_dir)?;
         let dir = state_dir.join("remote");
-        fs::create_dir_all(&dir)?;
+        ensure_private_dir(&dir)?;
         let (cert, key) = identity(&dir)?;
         let fingerprint = hex(ring::digest::digest(&ring::digest::SHA256, &cert).as_ref());
 
@@ -111,12 +132,16 @@ impl Remote {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.into()),
         };
-        let host = computer_name();
+        let host = host_override
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(computer_name);
         Ok(Arc::new(Self {
             state: Mutex::new(State { devices, ..Default::default() }),
             devices_path,
             acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)),
             fingerprint,
+            bind,
             port,
             _bonjour: if advertise { Bonjour::register(&host, port) } else { None },
             host,
@@ -265,9 +290,21 @@ impl Remote {
     }
 
     /// The id and name of the device this token belongs to, if any.
+    #[cfg(test)]
     fn authenticate(&self, token: &str) -> Option<(String, String)> {
+        self.authenticate_from(None, token).ok().flatten()
+    }
+
+    fn authenticate_from(&self, peer_ip: Option<IpAddr>, token: &str) -> Result<Option<(String, String)>> {
+        let now = Instant::now();
         let hash = sha256_hex(token.as_bytes());
         let mut state = self.state.lock().unwrap();
+        if let Some(ip) = peer_ip
+            && let Some(entry) = state.auth_limits.get(&ip)
+            && entry.locked_until.is_some_and(|until| now < until)
+        {
+            bail!("too many failed authentication attempts; try again shortly");
+        }
         let mut found = None;
         for d in state.devices.iter_mut() {
             if constant_time_eq(d.token_sha256.as_bytes(), hash.as_bytes()) {
@@ -276,26 +313,49 @@ impl Remote {
             }
         }
         if found.is_some() {
+            if let Some(ip) = peer_ip {
+                state.auth_limits.remove(&ip);
+            }
             self.save(&state.devices);
+        } else if let Some(ip) = peer_ip {
+            if state.auth_limits.len() >= MAX_AUTH_LIMIT_ENTRIES {
+                state.auth_limits.retain(|_, v| {
+                    v.locked_until.is_some_and(|u| u > now)
+                        || now.saturating_duration_since(v.window_start) < AUTH_WINDOW
+                });
+            }
+            let entry = state.auth_limits.entry(ip).or_insert(AuthFailure {
+                count: 0,
+                window_start: now,
+                locked_until: None,
+            });
+            if now.saturating_duration_since(entry.window_start) >= AUTH_WINDOW {
+                entry.count = 0;
+                entry.window_start = now;
+                entry.locked_until = None;
+            }
+            entry.count += 1;
+            if entry.count >= AUTH_MAX_FAILURES {
+                entry.locked_until = Some(now + AUTH_LOCKOUT);
+                entry.count = 0;
+            }
         }
-        found
+        Ok(found)
     }
 
     /// Callers hold the state lock while saving, so saves can't interleave
     /// (they share the temporary file) or land out of order.
     fn save(&self, devices: &[Device]) {
         let tmp = self.devices_path.with_extension("json.tmp");
-        let ok = fs::write(&tmp, serde_json::to_vec_pretty(devices).expect("devices serialise")).and_then(|_| {
-            set_private(&tmp)?;
-            fs::rename(&tmp, &self.devices_path)
-        });
+        let ok = write_private(&tmp, &serde_json::to_vec_pretty(devices).expect("devices serialise"))
+            .and_then(|_| fs::rename(&tmp, &self.devices_path));
         if let Err(err) = ok {
             eprintln!("couldn't save paired devices: {err}");
         }
     }
 
     pub async fn bind(&self) -> Result<tokio::net::TcpListener> {
-        tokio::net::TcpListener::bind(("0.0.0.0", self.port)).await.with_context(|| format!("listening on TCP port {}", self.port))
+        tokio::net::TcpListener::bind((self.bind, self.port)).await.with_context(|| format!("listening on {}:{}", self.bind, self.port))
     }
 
     /// TLS handshake, then the first message: pair or authenticate. Returns the
@@ -303,26 +363,32 @@ impl Remote {
     /// (pairing answered, or refused).
     /// Hand back the session and the paired device's id and name once it has authenticated.
     pub async fn accept(&self, tcp: tokio::net::TcpStream, role: &str) -> Result<Option<(Session, String, String)>> {
+        let peer_ip = tcp.peer_addr().ok().map(|a| a.ip());
         let mut tls = tokio::time::timeout(Duration::from_secs(10), self.acceptor.accept(tcp)).await.context("TLS handshake timed out")??;
-        let mut first = String::new();
-        {
+        let first = {
             let mut reader = BufReader::new(&mut tls);
-            let n = tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut first)).await.context("no hello")??;
-            if n == 0 {
-                return Ok(None);
-            }
+            let line = match tokio::time::timeout(Duration::from_secs(15), read_bounded_line(&mut reader, MAX_PREAUTH_LINE))
+                .await
+                .context("no hello")?
+            {
+                Ok(Some(line)) => line,
+                Ok(None) => return Ok(None),
+                Err(e) => bail!("{e}"),
+            };
             // A pairing or auth message fits in one read; nothing else is sent before the answer.
             if !reader.buffer().is_empty() {
                 bail!("sent more than one message before authenticating");
             }
-        }
+            line
+        };
         let (id, request) = decode_request(first.trim());
         let id = id.unwrap_or(0);
         let (reply, device) = match request {
             Ok(Request::Pair { code, device }) => (self.pair(&code, &device).unwrap_or_else(|e| Response::Error { message: e.to_string() }), None),
-            Ok(Request::Auth { token }) => match self.authenticate(&token) {
-                Some(who) => (Response::Authenticated { host: self.host.clone(), role: role.to_string() }, Some(who)),
-                None => (Response::Error { message: "this device isn't paired with this server any more".into() }, None),
+            Ok(Request::Auth { token }) => match self.authenticate_from(peer_ip, &token) {
+                Ok(Some(who)) => (Response::Authenticated { host: self.host.clone(), role: role.to_string() }, Some(who)),
+                Ok(None) => (Response::Error { message: "this device isn't paired with this server any more".into() }, None),
+                Err(e) => (Response::Error { message: e.to_string() }, None),
             },
             _ => (Response::Error { message: "pair or authenticate first".into() }, None),
         };
@@ -331,25 +397,62 @@ impl Remote {
     }
 }
 
+async fn read_bounded_line<R: AsyncBufReadExt + Unpin>(reader: &mut R, max_bytes: usize) -> Result<Option<String>> {
+    let mut line = String::new();
+    let n = (&mut *reader).take(max_bytes as u64 + 1).read_line(&mut line).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if line.len() > max_bytes || !line.ends_with('\n') {
+        bail!("message exceeds {max_bytes} byte limit");
+    }
+    Ok(Some(line))
+}
+
 /// The endpoint's certificate and PKCS#8 key (DER), made on first use.
+/// Uses only a generic DNS SAN so the host's real computer name is never leaked in the TLS cert.
 fn identity(dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+    ensure_private_dir(dir)?;
     let (cert_path, key_path) = (dir.join("cert.der"), dir.join("key.der"));
     if let (Ok(cert), Ok(key)) = (fs::read(&cert_path), fs::read(&key_path)) {
         return Ok((cert, key));
     }
-    let names = vec!["neutrino.local".to_string(), format!("{}.local", computer_name().replace(' ', "-"))];
+    let names = vec!["neutrino.local".to_string()];
     let certified = rcgen::generate_simple_self_signed(names).context("making the remote certificate")?;
     let cert = certified.cert.der().to_vec();
     let key = certified.signing_key.serialize_der();
-    fs::write(&key_path, &key)?;
-    set_private(&key_path)?;
-    fs::write(&cert_path, &cert)?;
+    write_private(&key_path, &key)?;
+    write_private(&cert_path, &cert)?;
     Ok((cert, key))
 }
 
-fn set_private(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path)
+    }
+}
+
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+        f.write_all(data)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
+        f.write_all(data)
+    }
 }
 
 pub fn computer_name() -> String {
@@ -491,7 +594,7 @@ mod tests {
 
         // A wrong code is refused; the right one (any case, with a dash) works once.
         assert!(remote.pair("WRONGCOD", "Mac").is_err());
-        let typed = format!("{}-{}", &info.code[..4].to_lowercase(), &info.code[4..]);
+        let typed = format!("{}-{}", info.code[..4].to_lowercase(), &info.code[4..]);
         let Response::Paired { token, device_id, .. } = remote.pair(&typed, "MacBook").unwrap() else { panic!() };
         assert!(remote.pair(&info.code, "again").is_err(), "codes work once");
         assert!(remote.authenticate(&token).is_some());
@@ -516,5 +619,50 @@ mod tests {
             let _ = remote.pair("ZZZZZZZZ", "x");
         }
         assert!(remote.pair(&info.code, "x").is_err());
+    }
+
+    #[test]
+    fn identity_uses_generic_san_and_private_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let remote = Remote::open_with(dir.path(), IpAddr::V4(Ipv4Addr::LOCALHOST), 0, false, Some("custom-host".into())).unwrap();
+        assert_eq!(remote.host, "custom-host");
+        let remote_dir = dir.path().join("remote");
+        assert_eq!(fs::metadata(&remote_dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(remote_dir.join("key.der")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(remote_dir.join("cert.der")).unwrap().permissions().mode() & 0o777, 0o600);
+        let cert_der = fs::read(remote_dir.join("cert.der")).unwrap();
+        assert!(cert_der.windows(b"neutrino.local".len()).any(|w| w == b"neutrino.local"));
+        let host_label = format!("{}.local", computer_name().replace(' ', "-"));
+        assert!(
+            !cert_der.windows(host_label.len()).any(|w| w == host_label.as_bytes()),
+            "certificate must not leak real computer name {host_label}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_line_rejects_oversized_preauth() {
+        let data = format!("{}\n", "a".repeat(MAX_PREAUTH_LINE + 64));
+        let mut reader = BufReader::new(data.as_bytes());
+        assert!(read_bounded_line(&mut reader, MAX_PREAUTH_LINE).await.is_err());
+
+        let ok = "{\"id\":1,\"method\":\"auth\",\"params\":{\"token\":\"t\"}}\n";
+        let mut reader = BufReader::new(ok.as_bytes());
+        assert_eq!(read_bounded_line(&mut reader, MAX_PREAUTH_LINE).await.unwrap().as_deref(), Some(ok));
+    }
+
+    #[test]
+    fn per_ip_auth_rate_limit_locks_out_after_five_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = Remote::open_with(dir.path(), IpAddr::V4(Ipv4Addr::LOCALHOST), 0, false, None).unwrap();
+        let info = remote.begin_pairing().unwrap();
+        let Response::Paired { token, .. } = remote.pair(&info.code, "Mac").unwrap() else { panic!() };
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+        for _ in 0..AUTH_MAX_FAILURES {
+            assert!(remote.authenticate_from(Some(ip), "wrong").unwrap().is_none());
+        }
+        assert!(remote.authenticate_from(Some(ip), &token).is_err(), "locked IP must be rejected even with valid token");
+        let other = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11));
+        assert!(remote.authenticate_from(Some(other), &token).unwrap().is_some());
     }
 }

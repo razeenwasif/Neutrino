@@ -553,7 +553,7 @@ fn forward(repo: Option<&str>) -> Result<()> {
         None => {
             let named = std::env::var("NEUTRINO_SERVER").ok().filter(|s| !s.is_empty()).or_else(|| git_out(&["config", "--get", "neutrino.server"]));
             let named = named.ok_or_else(|| {
-                anyhow!("that's a server command, and this Mac's neutrinod isn't the server. Run it inside a working copy whose origin is on the server, or name the server once: git config --global neutrino.server mini")
+                anyhow!("that's a server command, and this Mac's neutrinod isn't the server. Run it inside a working copy whose origin is on the server, or name the server once: git config --global neutrino.server my-server")
             })?;
             (named, None, None)
         }
@@ -588,7 +588,10 @@ fn forward(repo: Option<&str>) -> Result<()> {
     } else {
         ssh.arg("-T");
     }
-    ssh.arg("-o").arg("LogLevel=ERROR");
+    ssh.arg("-o").arg("LogLevel=ERROR")
+        .arg("-o").arg("ForwardAgent=no")
+        .arg("-o").arg("ClearAllForwardings=yes")
+        .arg("-o").arg("PermitLocalCommand=no");
     if let Some(p) = port {
         ssh.arg("-p").arg(p);
     }
@@ -1658,9 +1661,9 @@ mod tests {
 
     #[test]
     fn server_urls() {
-        assert_eq!(server_url("ssh://mini/Users/me/.neutrino/repos/Prism.git"), Some(("mini".into(), None, "/Users/me/.neutrino/repos/Prism.git".into())));
-        assert_eq!(server_url("ssh://me@atlas:2222/srv/x.git"), Some(("me@atlas".into(), Some("2222".into()), "/srv/x.git".into())));
-        assert_eq!(server_url("mini:/Users/me/x.git"), Some(("mini".into(), None, "/Users/me/x.git".into())));
+        assert_eq!(server_url("ssh://my-server/Users/me/.neutrino/repos/Prism.git"), Some(("my-server".into(), None, "/Users/me/.neutrino/repos/Prism.git".into())));
+        assert_eq!(server_url("ssh://me@server:2222/srv/x.git"), Some(("me@server".into(), Some("2222".into()), "/srv/x.git".into())));
+        assert_eq!(server_url("my-server:/Users/me/x.git"), Some(("my-server".into(), None, "/Users/me/x.git".into())));
         // GitHub and relative scp paths aren't a Neutrino server.
         assert_eq!(server_url("git@github.com:me/x.git"), None);
         assert_eq!(server_url("https://github.com/me/x.git"), None);

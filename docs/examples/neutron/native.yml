@@ -2,13 +2,13 @@
 #
 # Windows is the shipped target, so this is the job that matters most.
 # Changes from the GitHub version:
-#   * macOS runs on atlas itself (runs-on: host), Windows on forge through
+#   * macOS runs on server itself (runs-on: host), Windows on windows-worker through
 #     Nexus (runs-on: nexus)
 #   * it runs for version tags and when started by hand, not on every push:
 #     host jobs need the server started with --host-executor (off for now),
 #     and each Nexus job is a ticket waiting for your Accept in Nexus
 #   * upload-artifact  ->  the zipped app is kept as the run's artifact
-#   * atlas needs Rust (with clippy) on its PATH; forge needs Rust and Git for
+#   * server needs Rust (with clippy) on its PATH; windows-worker needs Rust and Git for
 #     Windows' bash
 
 name: native
@@ -45,7 +45,7 @@ jobs:
   windows:
     name: Windows (the shipped target)
     runs-on: nexus
-    nexus: { node: forge }
+    nexus: { node: windows-worker }
     resources: { cpus: 8, memory: 8G }
     timeout-minutes: 60
     steps:

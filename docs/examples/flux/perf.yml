@@ -16,7 +16,7 @@
 #     rustc clear of the VM's limit while building flux-core
 #   * the macOS and Windows jobs are in native.yml
 # Each Linux job asks for the whole default CI budget (4 CPUs, 6G), so they
-# run one after another on atlas.
+# run one after another on server.
 
 name: perf-budgets
 
@@ -103,7 +103,7 @@ jobs:
 
   # Release binary size budget (≤ 28 MB). Heavier (full LTO build), so only
   # on main or when started by hand. Fat LTO with one codegen unit may need
-  # more memory than the 6G atlas gives CI by default (--ci-memory).
+  # more memory than the 6G server gives CI by default (--ci-memory).
   binary-size:
     if: neutrino.branch == 'main'
     image: node:20-slim

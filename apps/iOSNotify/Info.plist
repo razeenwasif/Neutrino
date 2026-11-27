@@ -27,5 +27,7 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
 	</dict>
+	<key>NeutrinoKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)dev.neutrino.shared</string>
 </dict>
 </plist>

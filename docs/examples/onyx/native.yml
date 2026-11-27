@@ -1,11 +1,11 @@
 # onyx's .github/workflows/ci.yml Scribe job, on Neutrino.
 #
 # Scribe needs macOS (Swift, a real window for the click test), so it runs on
-# atlas itself (runs-on: host). Changes from the GitHub version:
+# server itself (runs-on: host). Changes from the GitHub version:
 #   * it runs when started by hand and for version tags, not on every push:
 #     host jobs need the server started with --host-executor, which is off
 #     for now. Start it with: ntr run start native -b main
-#   * Node 22, as on GitHub: atlas's default Node (26) comes with an npm that
+#   * Node 22, as on GitHub: the server's default Node (26) comes with an npm that
 #     skips install scripts until approved, so Electron never downloaded its
 #     binary. The Node steps put Homebrew's node@22 first on their PATH.
 #   * rust-cache is gone: host jobs start from a fresh checkout

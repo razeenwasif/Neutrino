@@ -41,5 +41,7 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>NeutrinoKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)dev.neutrino.shared</string>
 </dict>
 </plist>

@@ -12,11 +12,11 @@
 #     hosting` with the service account, in the production environment
 #
 # Set up once (values are in apps/oracle-plant/.env and a service-account key
-# for oracle-neuro-sym):
+# for example-app):
 #   ntr -r oracle env set production --branch main
 #   ntr -r oracle var set VITE_FIREBASE_API_KEY …   (and the other five)
 #   ntr -r oracle secret set VITE_STITCH_API_KEY --env production
-#   ntr -r oracle secret set FIREBASE_SERVICE_ACCOUNT_ORACLE_NEURO_SYM --env production < sa.json
+#   ntr -r oracle secret set FIREBASE_SERVICE_ACCOUNT_EXAMPLE_APP --env production < sa.json
 
 name: Deploy frontend to Firebase Hosting
 
@@ -94,7 +94,7 @@ jobs:
 
       - name: Deploy to Firebase Hosting
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_ORACLE_NEURO_SYM }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_EXAMPLE_APP }}
         run: |
           printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
-          firebase deploy --only hosting --project oracle-neuro-sym --non-interactive
+          firebase deploy --only hosting --project example-app --non-interactive

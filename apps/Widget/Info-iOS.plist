@@ -31,5 +31,7 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Neutrino Widget refreshes approvals, pull requests, and CI runs from your Neutrino server.</string>
+	<key>NeutrinoKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)dev.neutrino.shared</string>
 </dict>
 </plist>

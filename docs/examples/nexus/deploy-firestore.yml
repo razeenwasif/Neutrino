@@ -8,9 +8,9 @@
 #     $RUNNER_TEMP + $GITHUB_ENV
 #   * `production` can require approval, so a rules deploy waits for a yes
 #
-# Set up once (on atlas):
+# Set up once (on server):
 #   ntr -r nexus env set production --approval --branch main
-#   ntr -r nexus secret set FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER --env production < sa.json
+#   ntr -r nexus secret set FIREBASE_SERVICE_ACCOUNT_EXAMPLE --env production < sa.json
 
 name: Deploy Firestore + Storage + RTDB rules + indexes
 
@@ -43,10 +43,10 @@ jobs:
 
       - name: Authenticate via service account
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_EXAMPLE }}
         run: |
           if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
-            echo "FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER isn't set for the production environment."
+            echo "FIREBASE_SERVICE_ACCOUNT_EXAMPLE isn't set for the production environment."
             exit 1
           fi
           printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
@@ -54,11 +54,11 @@ jobs:
       # One deploy per product: a combined --only aborts on the first failure,
       # and storage fails until the Blaze upgrade.
       - name: Deploy Firestore rules + indexes
-        run: firebase deploy --only firestore --project nexus-cluster --non-interactive
+        run: firebase deploy --only firestore --project example-project --non-interactive
 
       - name: Deploy RTDB rules
-        run: firebase deploy --only database --project nexus-cluster --non-interactive
+        run: firebase deploy --only database --project example-project --non-interactive
 
       - name: Deploy Storage rules (expected to fail until Blaze upgrade)
         continue-on-error: true
-        run: firebase deploy --only storage --project nexus-cluster --non-interactive
+        run: firebase deploy --only storage --project example-project --non-interactive

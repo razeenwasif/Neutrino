@@ -5,7 +5,7 @@
 #   * ubuntu-latest + setup-node 22  ->  a node:22 container on Graviton
 #     (arm64 Linux)
 #   * setup-node's npm cache  ->  a Neutrino cache for npm's download cache,
-#     kept in the workspace on atlas's disk
+#     kept in the workspace on the server's disk
 
 name: CI
 

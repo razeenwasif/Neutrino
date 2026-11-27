@@ -11,7 +11,9 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private var best: UNMutableNotificationContent?
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
-        ServerStore.shared = ("group.dev.neutrino", "YOUR_TEAM_ID.dev.neutrino.shared")
+        let keychainGroup = (Bundle.main.object(forInfoDictionaryKey: "NeutrinoKeychainGroup") as? String)
+            .flatMap { !$0.isEmpty && !$0.contains("$(") ? $0 : nil }
+        ServerStore.shared = ("group.dev.neutrino", keychainGroup)
         handler = contentHandler
         let content = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
         best = content

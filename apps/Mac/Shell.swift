@@ -716,7 +716,7 @@ struct MachineCard: View {
                     size: 5,
                     pulse: model.isServerOnline
                 )
-                Text(model.serverLink?.name ?? "atlas")
+                Text(model.serverLink?.name ?? "server")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(model.isServerOnline ? N.body : N.muted)
                     .lineLimit(1)

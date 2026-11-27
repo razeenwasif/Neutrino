@@ -2,12 +2,12 @@
 #
 # Compiles and tests the OS-specific native paths on macOS and Windows.
 # Changes from the GitHub version:
-#   * the matrix becomes two jobs: macOS runs on atlas itself (runs-on: host),
-#     Windows on forge through Nexus (runs-on: nexus)
+#   * the matrix becomes two jobs: macOS runs on server itself (runs-on: host),
+#     Windows on windows-worker through Nexus (runs-on: nexus)
 #   * it runs for version tags and when started by hand, not on every push:
 #     host jobs need the server started with --host-executor (off for now),
 #     and each Nexus job is a ticket waiting for your Accept in Nexus
-#   * atlas needs Rust and Node 20 on its PATH; forge needs Rust, Node 20 and
+#   * server needs Rust and Node 20 on its PATH; windows-worker needs Rust, Node 20 and
 #     Git for Windows' bash
 #   * rust-cache is gone: host and Nexus jobs start from a fresh checkout
 
@@ -22,7 +22,7 @@ jobs:
     runs-on: host
     timeout-minutes: 60
     steps:
-      # Node 22 from Homebrew: atlas's default Node 26 brings an npm that skips
+      # Node 22 from Homebrew: the server's default Node 26 brings an npm that skips
       # install scripts (esbuild's included) until they're approved.
       - run: |
           export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
@@ -38,7 +38,7 @@ jobs:
 
   windows:
     runs-on: nexus
-    nexus: { node: forge }
+    nexus: { node: windows-worker }
     resources: { cpus: 8, memory: 8G }
     timeout-minutes: 60
     steps:

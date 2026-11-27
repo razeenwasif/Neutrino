@@ -1,0 +1,7 @@
+// Local signing settings come from Signing.local.xcconfig (ignored by git).
+// Set NEUTRINO_TEAM_ID there for local Xcode builds.
+
+#include? "Signing.local.xcconfig"
+
+DEVELOPMENT_TEAM = $(NEUTRINO_TEAM_ID)
+NEUTRINO_TEAM_PREFIX = $(TeamIdentifierPrefix)

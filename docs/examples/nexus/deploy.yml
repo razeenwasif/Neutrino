@@ -9,9 +9,9 @@
 #   * FirebaseExtended/action-hosting-deploy becomes `firebase deploy --only
 #     hosting` with the production service account
 #
-# Set up once (on atlas):
+# Set up once (on server):
 #   ntr -r nexus var set VITE_FIREBASE_API_KEY …   (and the other five)
-#   ntr -r nexus secret set FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER --env production < sa.json
+#   ntr -r nexus secret set FIREBASE_SERVICE_ACCOUNT_EXAMPLE --env production < sa.json
 
 name: Deploy Nexus to Firebase Hosting
 
@@ -74,7 +74,7 @@ jobs:
 
       - name: Deploy to Firebase Hosting
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_NEXUS_CLUSTER }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_EXAMPLE }}
         run: |
           printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
-          firebase deploy --only hosting --project nexus-cluster --non-interactive
+          firebase deploy --only hosting --project example-project --non-interactive

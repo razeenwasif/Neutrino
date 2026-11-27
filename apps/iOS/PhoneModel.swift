@@ -6,7 +6,14 @@ import UserNotifications
 /// Shared with the notification extension: where the pairing and the token live.
 enum Shared {
     static let appGroup = "group.dev.neutrino"
-    static let keychainGroup = "YOUR_TEAM_ID.dev.neutrino.shared"
+    static let keychainGroup: String? = {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "NeutrinoKeychainGroup") as? String,
+              !value.isEmpty,
+              !value.contains("$(") else {
+            return nil
+        }
+        return value
+    }()
 
     static func configure() {
         ServerStore.shared = (appGroup, keychainGroup)

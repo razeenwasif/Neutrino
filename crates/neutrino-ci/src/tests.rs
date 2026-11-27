@@ -230,7 +230,7 @@ fn nexus_workflows() {
     assert!(!windows.triggered_by(&main));
     assert!(windows.triggered_by(&Event::Push { name: "refs/tags/v1.4.0".into(), sha: "s".into() }));
     assert_eq!(windows.jobs[0].runs_on, Executor::Nexus);
-    assert_eq!(windows.jobs[0].nexus.node.as_deref(), Some("forge"));
+    assert_eq!(windows.jobs[0].nexus.node.as_deref(), Some("windows-worker"));
     assert_eq!(windows.jobs[0].steps[0].shell.as_deref(), Some("bash"));
     assert!(!format!("{:?}", windows.jobs[0]).contains("secrets."), "nothing secret goes to Nexus");
     assert_eq!(hosting.jobs[0].environment.as_deref(), Some("production"));

@@ -36,7 +36,9 @@ struct NeutrinoProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NeutrinoEntry>) -> Void) {
         #if os(iOS)
-        ServerStore.shared = ("group.dev.neutrino", "YOUR_TEAM_ID.dev.neutrino.shared")
+        let keychainGroup = (Bundle.main.object(forInfoDictionaryKey: "NeutrinoKeychainGroup") as? String)
+            .flatMap { !$0.isEmpty && !$0.contains("$(") ? $0 : nil }
+        ServerStore.shared = ("group.dev.neutrino", keychainGroup)
         if let link = ServerStore.load() {
             let service = ServerService(link: link)
             let serverName = link.name

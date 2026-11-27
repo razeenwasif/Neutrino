@@ -2,26 +2,26 @@
 
 Neutrino is a self-hosted, single-user replacement for the parts of GitHub you
 pay for: repository hosting, branches, pull requests, diff review, CI/CD, and
-secret storage. The server runs on atlas (the always-on Mac mini); the MacBook
-is a client. CI jobs run in Graviton containers on atlas. Nothing leaves your
+secret storage. The server runs on a dedicated always-on Mac (`build-server`); the workstation
+is a client. CI jobs run in Graviton containers on the server. Nothing leaves your
 machines.
 
 Status: milestones 1 to 8 are built (CI on Graviton, the host and through
 Nexus, with secrets, environments, caches, artifacts and schedules; the iPhone
 app with signed approvals and content-free push notifications), and the server
-runs on atlas. See the README for what was measured and what's left.
+runs on your build host. See the README for what was measured and what's left.
 
 ## 1. Decisions and what they rest on
 
 | # | Decision | Why |
-|---|----------|-----|
+|---|---|---|
 | 1 | **Git-compatible storage**, not a new VCS format. | Every existing repo, editor, and tool keeps working, and you can leave at any time. "Custom engine" means our own Rust read/diff/index layer over git's object model. |
 | 2 | **Rust daemon + SwiftUI app**, same shape as Graviton. | One codebase style across your apps; `GravitonKit`'s theme and components carry over. |
-| 3 | **atlas is the server.** It hosts the bare repos, pull requests, CI and secrets. The MacBook pushes to it. | It is always on, so pushes, schedules and long jobs do not depend on the laptop being open, and CI stops competing with your own work. |
-| 4 | **One daemon binary, two roles**: `server` on atlas, `workstation` on the MacBook. | Working-copy operations (status, stage, commit) must be local and work offline; everything shared lives on the server. |
+| 3 | **A dedicated machine is the server.** It hosts the bare repos, pull requests, CI and secrets. The workstation pushes to it. | It is always on, so pushes, schedules and long jobs do not depend on the laptop being open, and CI stops competing with your own work. |
+| 4 | **One daemon binary, two roles**: `server` on the server, `workstation` on the laptop. | Working-copy operations (status, stage, commit) must be local and work offline; everything shared lives on the server. |
 | 5 | **Workflow files are Actions-shaped YAML, `run:` steps only.** | Familiar syntax without taking on the Actions marketplace runtime (`uses:`), which is most of the complexity of a runner. |
-| 6 | **Three executors: `graviton` (Linux arm64 VM on atlas), `host` (macOS on atlas), `nexus` (forge, for Windows and GPU).** | Graviton runs Linux guests only; Xcode builds need macOS; forge is reachable only through Nexus. |
-| 7 | **Neutrino runs its own jobs on atlas instead of sending all CI through Nexus.** | Nexus mirrors job state and logs to Firestore and records the command, so secrets and private logs would leave the house. Nexus is used only where it is the only way in. |
+| 6 | **Three executors: `graviton` (Linux arm64 VM on the server), `host` (macOS on the server), `nexus` (remote workers, for Windows and GPU).** | Graviton runs Linux guests only; Xcode builds need macOS; Windows/GPU nodes are reachable only through Nexus. |
+| 7 | **Neutrino runs its own jobs on the server instead of sending all CI through Nexus.** | Nexus mirrors job state and logs to Firestore and records the command, so secrets and private logs would leave the house. Nexus is used only where it is the only way in. |
 | 8 | **Secrets go into a step's exec environment, never the container spec.** | Graviton saves a container's `RunSpec.env` to disk and shows it in Inspect (`gravitond/src/runtime.rs:511`). |
 
 Decisions 1, 5 and 7 are the ones worth challenging before any code exists.
@@ -29,14 +29,14 @@ Decisions 1, 5 and 7 are the ones worth challenging before any code exists.
 ## 2. Topology
 
 ```
- MacBook (workstation, may be away)
+ Workstation (laptop, may be away)
  ┌───────────────────────────────────────────────────────────┐
  │ Neutrino.app ── Unix socket ── neutrinod (workstation)     │
  │                                 status · diff · commit     │
  │                                 working copies             │
  └───────┬───────────────────────────────────┬───────────────┘
-         │ paired TLS (LAN or Tailscale)     │ git over SSH (host "mini")
- atlas (Mac mini, always on)                 │
+         │ paired TLS (LAN or Tailscale)     │ git over SSH (host "my-server")
+ Build server (always on)                    │
  ┌───────▼───────────────────────────────────▼───────────────┐
  │ neutrinod (server)                                         │
  │   forge · CI scheduler · vault · SQLite · bare repos       │
@@ -45,13 +45,13 @@ Decisions 1, 5 and 7 are the ones worth challenging before any code exists.
  │   Linux job VMs        macOS / Xcode      (already there)  │
  └─────────────────────────────────────────────────┬─────────┘
                                                    │ Nexus agents
- forge (Windows, RTX 4090)                  ┌──────▼──────────┐
+ Windows/GPU worker                         ┌──────▼──────────┐
                                             │ Windows and GPU │
                                             │ jobs            │
                                             └─────────────────┘
 ```
 
-The iPhone app connects to atlas the same way the Mac app does, over the
+The iPhone app connects to the server the same way the Mac app does, over the
 paired TLS endpoint (section 7).
 
 ### Crates
@@ -82,9 +82,9 @@ macOS plate); `design/make-icons.sh` renders both into the asset catalogs.
 
 ### Away from home
 
-- **With Tailscale** (atlas already has a Tailscale address in Nexus's fleet
+- **With Tailscale** (the server has a Tailscale address in Nexus's fleet
   data): everything works as on the LAN.
-- **Without a route to atlas**: working copies work fully. Pull requests and
+- **Without a route to the server**: working copies work fully. Pull requests and
   runs show the last state the app saw, read-only. Pushes wait.
 
 ## 3. Git engine
@@ -104,13 +104,13 @@ daemon keeps one open handle per repo.
 - **Maintenance**: the server writes commit-graphs and repacks incrementally
   in the background after pushes.
 
-Working-copy diffs are computed on the MacBook. Pull request diffs are
-computed on atlas, which always has both sides, and streamed as hunks.
+Working-copy diffs are computed on the workstation. Pull request diffs are
+computed on the server, which always has both sides, and streamed as hunks.
 
 Stock `git` is still used where it is the right tool:
 
-- **Transport.** Hosted repos are plain bare repos, so the MacBook pushes and
-  fetches over SSH (`ssh://mini/~/.neutrino/repos/<name>.git`). The app sets
+- **Transport.** Hosted repos are plain bare repos, so the workstation pushes and
+  fetches over SSH (`ssh://my-server/~/.neutrino/repos/<name>.git`). The app sets
   the remote up for you.
 - **Merges in bare repos**: `git merge-tree --write-tree` computes a merge and
   its conflicts without a working tree.
@@ -126,8 +126,8 @@ status on a 100k-file tree under 50 ms, first paint of a 10k-line diff under
 JSON lines, one protocol on two transports:
 
 - **Local**: a Unix socket, for the app and `ntr` talking to the daemon on the
-  same machine, and for git hooks on atlas.
-- **Remote**: TLS on atlas, advertised over Bonjour. A device pairs once with a
+  same machine, and for git hooks on the server.
+- **Remote**: TLS on the server, optionally advertised over Bonjour. A device pairs once with a
   one-time code, pins the server's certificate, and keeps its token in the
   Keychain; the server stores only token hashes. This is gravitond's remote
   design, reused.
@@ -143,7 +143,7 @@ Large results (history, diffs, logs) are paged.
 
 ## 5. Forge
 
-**Hosted repos** live on atlas in `~/.neutrino/repos/<name>.git`. Server-side
+**Hosted repos** live on the server in `~/.neutrino/repos/<name>.git`. Server-side
 hooks are small scripts that call the daemon:
 
 - `pre-receive` asks the daemon whether each ref update is allowed (branch
@@ -211,33 +211,33 @@ Supported: `on`, `env`, `jobs.*.needs`, `if`, `strategy.matrix`, `services`,
 `matrix`, `needs`, and `neutrino` (ref, sha, event). Not supported: `uses:`.
 Checkout, cache and artifacts are built into the engine instead.
 
-### Scheduler and sharing atlas with Nexus
+### Scheduler and sharing the server with Nexus
 
 Events become runs; a run is a graph of jobs. Jobs wait in a queue ordered
 manual, pull request, push, schedule.
 
-atlas has 12 threads and 16 GB, and Nexus already places CPU jobs and
+The build server has 12 threads and 16 GB, and Nexus already places CPU jobs and
 llama.cpp models there. Nexus places by reservation, not by measured use, so
 it cannot see a CI VM's memory. Two schedulers on one small machine is the
 main operational risk of this design.
 
-- **Version 1**: CI gets a fixed budget on atlas (a setting; start around 4
+- **Version 1**: CI gets a fixed budget on the server (a setting; start around 4
   threads and 6 GB), and before admitting a job the scheduler asks the Nexus
-  coordinator what is running on atlas and waits while it is busy.
+  coordinator what is running on the server and waits while it is busy.
 - **Proper fix**: a reservation endpoint in the Nexus coordinator, so Neutrino
   holds memory the same way a Nexus job does. A small change to Nexus.
 
 ### A job on the Graviton executor
 
 1. **Checkout** the commit from the bare repo into
-   `runs/<run>/<job>/workspace`. Both are on atlas, so nothing is uploaded.
+   `runs/<run>/<job>/workspace`. Both are on the server, so nothing is uploaded.
 2. **Run** the container with an idle command, the workspace shared at
    `/workspace`, cache volumes attached, and only non-secret env:
    `Run(RunSpec { name: "ntr-<run>-<job>-<attempt>", command: ["sleep","infinity"], volumes, cpus, memory_mib })`.
 3. **Steps**: one `Exec` per step. `ExecOutput` chunks pass through the secret
    masker, are appended to the job's log file, and fan out to subscribers.
    `ExecExited` sets the step's result.
-4. **Collect** artifacts from the workspace; it is on atlas's disk, so no copy
+4. **Collect** artifacts from the workspace; it is on the server's disk, so no copy
    out of the VM is needed.
 5. **Teardown** always runs: `Stop`, `Remove`, delete the workspace.
 
@@ -260,18 +260,18 @@ address Graviton reports, exported to the job as `<NAME>_HOST`.
 
 ### The host executor
 
-`runs-on: host` runs steps as child processes on atlas in a scratch checkout,
+`runs-on: host` runs steps as child processes on the server in a scratch checkout,
 in their own process group so a timeout can kill the whole tree. It exists for
-Xcode builds, signing and simulators, so atlas needs Xcode and your signing
+Xcode builds, signing and simulators, so the server needs Xcode and your signing
 identities. It is **not isolated**: a host job can read anything your account
-on atlas can. Keep it for repos you trust, which here means your own.
+on the server can. Keep it for repos you trust, which here means your own.
 
 ### The Nexus executor
 
 `runs-on: nexus` submits the job to the Nexus coordinator, which places it on
-forge. It exists for what atlas cannot do: Windows builds (Nexus's own desktop
+a Windows/GPU worker. It exists for what the macOS server cannot do: Windows builds (Nexus's own desktop
 installer builds on `windows-latest` today) and GPU tests. The job fetches its
-commit from atlas itself. Limits, all inherited from Nexus:
+commit from the server itself. Limits, all inherited from Nexus:
 
 - Job state, the command and logs are mirrored to Firestore.
 - **No secrets** are passed to Nexus jobs in version 1.
@@ -286,9 +286,9 @@ working copies and does not commit; a phone is the wrong place to write code.
 **Screens**: Inbox (approvals waiting, pull requests ready to merge, running
 and recent runs), Pull request (overview, checks, versions, files with diffs
 and line notes, merge with a strategy), Run (jobs, steps, live log, cancel),
-and Pair with atlas.
+and Pair with server.
 
-**Connection**: the same paired TLS endpoint on atlas as the Mac app, found
+**Connection**: the same paired TLS endpoint on the server as the Mac app, found
 over Bonjour at home and reached over Tailscale elsewhere. Pairing works as in
 Graviton: a one-time code from `ntr pair` or the Mac app, the server's
 certificate pinned on the phone, and the token in the phone's Keychain.
@@ -305,19 +305,19 @@ or altered. A device with a key can't send them unsigned.
 closed app only through Apple's push service (APNs), so Neutrino uses it, and
 keeps what it sends to a minimum.
 
-- **What atlas sends**: a push whose payload is only an opaque event id and a
+- **What the server sends**: a push whose payload is only an opaque event id and a
   generic alert ("Something needs you"). No repo names, branches,
   commit messages, or log text. Apple learns that something happened, not
   what.
 - **What the phone does**: a Notification Service Extension wakes on the
-  push, fetches the event from atlas over the paired TLS connection, and
+  push, fetches the event from the server over the paired TLS connection, and
   rewrites the alert with the real text ("Deploy #212 needs approval") before
-  it is shown. If atlas is unreachable, the generic alert stays.
+  it is shown. If the server is unreachable, the generic alert stays.
 - **Which events**: a deploy waiting for approval and failed checks, each a
   switch on the phone. Everything else waits for the app to open.
 - **Setup**: an APNs auth key (`.p8`) from your Apple Developer account,
-  sealed under the vault's key (which is in atlas's Keychain), plus the app's Push
-  Notifications entitlement. The phone gives atlas its device token at
+  sealed under the vault's key (which is in the server's Keychain), plus the app's Push
+  Notifications entitlement. The phone gives the server its device token at
   pairing; revoking the device deletes it.
 - **Without the key** everything else works; the Inbox is current whenever the
   app is opened.
@@ -326,11 +326,11 @@ keeps what it sends to a minimum.
 
 - **Scopes**: global, repo, environment. The most specific wins.
 - **At rest**: each secret is encrypted (XChaCha20-Poly1305) with a key in
-  atlas's login Keychain, readable only by `neutrinod`'s signature. Variables
+  the server's login Keychain, readable only by `neutrinod`'s signature. Variables
   are plaintext and visible.
-- **Recovery key**: shown once at setup. Without it, a dead atlas means every
+- **Recovery key**: shown once at setup. Without it, a dead server means every
   secret has to be re-entered, even with a database backup.
-- **atlas must be logged in** for the Keychain to be unlocked after a reboot,
+- **The server must be logged in** for the Keychain to be unlocked after a reboot,
   the same constraint the Nexus agent already has as a login item.
 - **In the app**: secrets are write-only. Revealing one asks for Touch ID on
   the MacBook, and the server honours it only from a paired device. The
@@ -347,7 +347,7 @@ keeps what it sends to a minimum.
 
 ## 9. Storage
 
-On atlas:
+On the server:
 
 ```
 ~/.neutrino/
@@ -369,12 +369,12 @@ holds metadata only.
 ## 10. What Graviton needs
 
 Verified against Graviton's source. Graviton also has to be installed and
-running on atlas. Version 1 works with none of the changes below, but the
+running on the server. Version 1 works with none of the changes below, but the
 first is close to required on a 16 GB machine.
 
 | Gap | Today | Change |
-|-----|-------|--------|
-| **Root filesystem is in RAM.** A container's files unpack into a tmpfs sized at 90% of the VM's memory (`graviton-agent/src/container.rs:43`). | A `rust:1.85` job needs several GiB of memory before it compiles anything, which on atlas means one such job at a time. The workspace and caches avoid this because they are shared folders and volumes. | Disk-backed root filesystem. The most valuable change for CI. |
+|---|---|---|
+| **Root filesystem is in RAM.** A container's files unpack into a tmpfs sized at 90% of the VM's memory (`graviton-agent/src/container.rs:43`). | A `rust:1.85` job needs several GiB of memory before it compiles anything, which on a 16 GB host means one such job at a time. The workspace and caches avoid this because they are shared folders and volumes. | Disk-backed root filesystem. The most valuable change for CI. |
 | `ExecSpec` has no working directory or user. | Wrap each step in `sh -c 'cd … && …'`. | Expose `cwd` and `user`; the agent's `Exec` already takes both. |
 | No labels on containers. | Ownership by `ntr-` name prefix. | Labels on `RunSpec`. |
 | Containers and their logs are saved. | The reaper removes them. | An ephemeral flag that skips saved state. |
@@ -386,14 +386,14 @@ Also true today: guests are arm64 only, so x86-only images will not run.
 
 ## 11. Risks
 
-- **atlas is small and shared.** See the scheduler section. Until the root
+- **Server capacity.** See the scheduler section. Until the root
   filesystem is disk-backed and Nexus knows about CI's memory, expect one
   heavy job at a time.
-- **Backups.** Git history is on atlas, in every working copy and, for
+- **Backups.** Git history is on the server, in every working copy and, for
   repositories imported from GitHub, in their GitHub mirror, which gets every
-  push. Pull requests, comments, run history and secrets are in atlas's
-  database: it's snapshotted nightly, and the MacBook's neutrinod copies the
-  snapshots over SSH (`--copy-backups-from mini`), so a dead atlas costs at
+  push. Pull requests, comments, run history and secrets are in the server's
+  database: it's snapshotted nightly, and the workstation's neutrinod copies the
+  snapshots over SSH (`--copy-backups-from my-server`), so a dead server costs at
   most a day of them.
 - **Scope.** This is a forge, a git client, and a CI system across two
   machines. The milestones below are ordered so each one is usable alone.
@@ -406,23 +406,21 @@ Also true today: guests are arm64 only, so x86-only images will not run.
 0. **UI prototype**: history, diff viewer, branches, pull request, run view,
    secrets. Clickable, demo data.
 1. **Read path**: workstation daemon, socket, repo list, history, diff. The
-   app browses real repos on the MacBook.
+   app browses real repos on the workstation.
 2. **Working copy**: status, stage by hunk and line, commit, branches.
-3. **Server on atlas**: server role, pairing, hosted repos, push and fetch
+3. **Server role**: server role, pairing, hosted repos, push and fetch
    over SSH, hooks.
 4. **Pull requests**: versions, comments, mergeability, merge strategies,
    branch rules.
-5. **CI**: workflow parser, Graviton executor on atlas, live logs, timeouts,
+5. **CI**: workflow parser, Graviton executor on the server, live logs, timeouts,
    reaper, the fixed budget.
 6. **Vault and the rest of CI**: secrets, variables, environments, caches,
    artifacts, schedules, required checks, database backup.
-7. **Host and Nexus executors.** A good acceptance test is moving Nexus's
-   three GitHub workflows (hosting deploy, Firestore rules, Windows desktop
-   build) onto Neutrino.
+7. **Host and Nexus executors.** Moving macOS/Xcode and Windows/GPU jobs onto Neutrino.
 8. **iPhone app**: pairing, Inbox, pull requests, runs, signed approvals,
    then push notifications through APNs with content-free payloads.
 9. **Moving in**: import GitHub repositories onto the server and mirror every
-   push back to GitHub, so a full copy of each lives off atlas; copy the
-   nightly database snapshots to the MacBook; a script that moves working
+   push back to GitHub, so a full copy of each lives off the server; copy the
+   nightly database snapshots to the workstation; a script that moves working
    copies over. Workflows move by hand, one `.neutrino/workflows/` file at a
    time.

@@ -119,10 +119,24 @@ impl Runner {
 }
 
 /// The step's command line: `cd` into the folder, then the script under `sh -e`.
-fn shell_script(root: &str, dir: &str, script: &str) -> String {
-    let dir = dir.trim_matches('/');
-    let path = if dir.is_empty() { root.to_string() } else { format!("{root}/{dir}") };
-    format!("cd '{}' || exit 1\nset -e\n{script}\n", path.replace('\'', r"'\''"))
+fn shell_script(root: &str, dir: &str, script: &str) -> Result<String> {
+    if dir.contains('\0') {
+        bail!("invalid working-directory");
+    }
+    let trimmed = dir.trim();
+    if !trimmed.is_empty() {
+        if trimmed.starts_with('/') {
+            bail!("working-directory must be relative to workspace: {dir:?}");
+        }
+        for c in std::path::Path::new(trimmed).components() {
+            if matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_)) {
+                bail!("working-directory escapes workspace: {dir:?}");
+            }
+        }
+    }
+    let sub = trimmed.trim_matches('/');
+    let path = if sub.is_empty() { root.to_string() } else { format!("{root}/{sub}") };
+    Ok(format!("cd '{}' || exit 1\nset -e\n{script}\n", path.replace('\'', r"'\''")))
 }
 
 // ---------------------------------------------------------------------------
@@ -262,11 +276,12 @@ impl Graviton {
     async fn exec(&self, container: &str, dir: &str, script: &str, env: &[(String, String)], out: mpsc::Sender<Vec<u8>>) -> Result<i32> {
         let stream = self.connect().await?;
         let (read, mut write) = stream.into_split();
+        let cmd_script = shell_script(WORKSPACE, dir, script)?;
         let request = json!({
             "method": "exec",
             "params": {
                 "id": container,
-                "command": ["sh", "-c", shell_script(WORKSPACE, dir, script)],
+                "command": ["sh", "-c", cmd_script],
                 "tty": false,
                 "env": env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
             }
@@ -322,14 +337,21 @@ impl Local {
     async fn exec(&self, container: &str, dir: &str, script: &str, env: &[(String, String)], out: mpsc::Sender<Vec<u8>>) -> Result<i32> {
         let workspace = self.boxes.lock().unwrap().get(container).map(|(w, _)| w.clone()).ok_or_else(|| anyhow!("container {container} is gone"))?;
         let root = workspace.display().to_string();
+        let cmd_script = shell_script(&root, dir, script)?;
         let mut cmd = tokio::process::Command::new("/bin/sh");
         cmd.arg("-c")
-            .arg(shell_script(&root, dir, script))
+            .arg(cmd_script)
             .current_dir(&workspace)
+            .env_clear()
             .env("CI", "true")
             .env("PATH", host_path())
-            .envs(env.iter().map(|(k, v)| (k, v)))
-            .env("NEUTRINO_WORKSPACE", &root)
+            .env("NEUTRINO_WORKSPACE", &root);
+        for key in ["HOME", "USER", "TMPDIR", "LANG", "LC_ALL"] {
+            if let Some(val) = std::env::var_os(key) {
+                cmd.env(key, val);
+            }
+        }
+        cmd.envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -405,5 +427,19 @@ fn host_path() -> String {
 unsafe extern "C" {
     #[link_name = "kill"]
     fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_script;
+
+    #[test]
+    fn shell_script_rejects_traversal_and_absolute_paths() {
+        assert!(shell_script("/workspace", "apps/Mac", "echo ok").is_ok());
+        assert!(shell_script("/workspace", "", "echo ok").is_ok());
+        for bad in ["/tmp", "../escape", "apps/../../etc", "sub\0dir"] {
+            assert!(shell_script("/workspace", bad, "echo nope").is_err(), "expected error for {bad:?}");
+        }
+    }
 }
 

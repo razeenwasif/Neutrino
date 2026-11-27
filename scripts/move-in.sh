@@ -1,7 +1,8 @@
 #!/bin/bash
 # Move repositories from GitHub to the Neutrino server, one working copy at a time.
 #
-#   scripts/move-in.sh [--host mini] [--dry-run] [--disable-actions] DIR...
+#   scripts/move-in.sh --host my-server [--dry-run] [--disable-actions] DIR...
+#   (or set NEUTRINO_SERVER / NEUTRINO_HOST)
 #
 # For each DIR, a clone whose origin is on GitHub:
 #   1. The server imports the GitHub repository under its GitHub name, every
@@ -21,7 +22,7 @@
 # GitHub workflow you still want, such as a GitHub Pages deploy.
 set -euo pipefail
 
-host=mini
+host="${NEUTRINO_SERVER:-${NEUTRINO_HOST:-}}"
 dry=0
 disable_actions=0
 dirs=()
@@ -35,9 +36,9 @@ while [ $# -gt 0 ]; do
         *) dirs+=("$1"); shift ;;
     esac
 done
-[ ${#dirs[@]} -gt 0 ] || { echo "usage: scripts/move-in.sh [--host mini] [--dry-run] [--disable-actions] DIR..." >&2; exit 2; }
+[ -n "$host" ] && [ ${#dirs[@]} -gt 0 ] || { echo "usage: scripts/move-in.sh --host <ssh-host> [--dry-run] [--disable-actions] DIR..." >&2; exit 2; }
 
-ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15)
+ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15 -o ForwardAgent=no -o ClearAllForwardings=yes -o PermitLocalCommand=no)
 ntr=".neutrino/bin/ntr"
 
 # Run ntr on the server, each argument quoted for its shell.

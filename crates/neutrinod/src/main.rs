@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -18,6 +19,9 @@ struct Args {
     /// Run as the server: host repositories and accept paired devices.
     #[arg(long)]
     server: bool,
+    /// Server: IP address to bind the TLS endpoint to (e.g. Tailscale IP).
+    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::UNSPECIFIED))]
+    bind: IpAddr,
     /// Server: the TLS port for paired devices.
     #[arg(long, default_value_t = neutrino_proto::REMOTE_PORT)]
     port: u16,
@@ -27,6 +31,9 @@ struct Args {
     /// Server: don't advertise over Bonjour.
     #[arg(long)]
     no_bonjour: bool,
+    /// Server: display/Bonjour name for the remote endpoint instead of the system computer name.
+    #[arg(long)]
+    remote_name: Option<String>,
     /// Server: CPUs CI jobs may use at once.
     #[arg(long, default_value_t = 4)]
     ci_cpus: u32,
@@ -95,8 +102,10 @@ async fn run(args: Args, socket: PathBuf) -> Result<()> {
     let state = args.state_dir.unwrap_or_else(neutrinod::state_dir);
     let options = neutrinod::Options {
         role: if args.server { neutrinod::Role::Server } else { neutrinod::Role::Workstation },
+        remote_bind: args.bind,
         remote_port: if args.server && !args.no_remote { Some(args.port) } else { None },
         advertise: !args.no_bonjour,
+        remote_name: args.remote_name.clone(),
         ci: neutrinod::ci::CiOptions {
             runner: if args.ci_unisolated {
                 neutrinod::ci::Runner::Local(Default::default())

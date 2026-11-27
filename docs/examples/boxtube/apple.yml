@@ -2,14 +2,14 @@
 #
 # Builds the iPhone and Mac apps and runs BoxtubeKit's tests. Nothing is
 # signed and no keys are needed. Changes from the GitHub version:
-#   * it runs on atlas itself (runs-on: host), which has Xcode 27.2. GitHub's
+#   * it runs on server itself (runs-on: host), which has Xcode 27.2. GitHub's
 #     runners stop at Xcode 26.2, which is why the GitHub workflow is manual
 #     and fails.
 #   * it runs for changes under apple/ (and this file), on pushes to main and
-#     pull requests, now that atlas allows host jobs; start it by hand with
+#     pull requests, now that server allows host jobs; start it by hand with
 #     ntr run start apple -b main
-#   * xcodegen has to be on atlas's PATH already (it's in Homebrew there);
-#     the job doesn't install things on atlas
+#   * xcodegen has to be on the server's PATH already (it's in Homebrew there);
+#     the job doesn't install things on server
 
 name: Apple apps
 
@@ -31,7 +31,7 @@ jobs:
         run: |
           xcodebuild -version
           xcodebuild -version | grep -q "Xcode 27" || { echo "The apps target iOS 27 and macOS 27, so they need Xcode 27."; exit 1; }
-          command -v xcodegen || { echo "xcodegen isn't on atlas's PATH (brew install xcodegen)."; exit 1; }
+          command -v xcodegen || { echo "xcodegen isn't on the server's PATH (brew install xcodegen)."; exit 1; }
       - name: Test BoxtubeKit
         working-directory: apple/Packages/BoxtubeKit
         run: swift test
