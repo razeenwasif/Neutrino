@@ -142,6 +142,10 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::ListPulls { .. }
             | Request::CreatePull { .. }
             | Request::Pull { .. }
+            | Request::CompareVersions { .. }
+            | Request::CompareVersionDiff { .. }
+            | Request::ListStacks { .. }
+            | Request::SyncStack { .. }
             | Request::UpdatePull { .. }
             | Request::AddNote { .. }
             | Request::ResolveNote { .. }
@@ -605,8 +609,19 @@ impl Daemon {
                 self.registry.get(&id)?;
                 Response::Pulls(self.store()?.pulls(&id)?)
             }
-            Request::CreatePull { repo: id, title, body, source, target } => self.create_pull(&id, &title, &body, &source, &target)?,
+            Request::CreatePull { repo: id, title, body, source, target, stack_id, parent_pull } => {
+                self.create_pull(&id, &title, &body, &source, &target, stack_id, parent_pull)?
+            }
             Request::Pull { repo: id, number } => self.pull_detail(&id, number)?,
+            Request::CompareVersions { repo: id, number, from_version, to_version } => {
+                self.compare_versions(&id, number, from_version, to_version)?
+            }
+            Request::CompareVersionDiff { repo: id, number, from_version, to_version, path, context } => {
+                let context = context.unwrap_or(3).min(10_000);
+                self.compare_version_diff(&id, number, from_version, to_version, &path, context)?
+            }
+            Request::ListStacks { repo: id } => self.list_stacks(&id)?,
+            Request::SyncStack { repo: id, pull } => self.sync_stack(&id, pull)?,
             Request::UpdatePull { repo: id, number, title, body, state } => self.update_pull(&id, number, title, body, state)?,
             Request::AddNote { repo: id, number, path, side, line, text } => self.add_note(&id, number, &path, side, line, &text)?,
             Request::ResolveNote { repo: id, number, note, resolved } => self.resolve_note(&id, number, note, resolved)?,

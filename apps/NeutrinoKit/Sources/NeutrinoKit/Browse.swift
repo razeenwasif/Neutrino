@@ -64,8 +64,9 @@ public struct BlobContent: Codable, Hashable, Sendable {
     public var tooLarge: Bool
     public var text: String?
     public var lines: UInt32
+    public var syntax: [[SyntaxSpan]]
 
-    public init(commit: String, path: String, size: UInt64, binary: Bool = false, tooLarge: Bool = false, text: String?, lines: UInt32) {
+    public init(commit: String, path: String, size: UInt64, binary: Bool = false, tooLarge: Bool = false, text: String?, lines: UInt32, syntax: [[SyntaxSpan]] = []) {
         self.commit = commit
         self.path = path
         self.size = size
@@ -73,6 +74,19 @@ public struct BlobContent: Codable, Hashable, Sendable {
         self.tooLarge = tooLarge
         self.text = text
         self.lines = lines
+        self.syntax = syntax
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        commit = try c.decode(String.self, forKey: .commit)
+        path = try c.decode(String.self, forKey: .path)
+        size = try c.decode(UInt64.self, forKey: .size)
+        binary = try c.decodeIfPresent(Bool.self, forKey: .binary) ?? false
+        tooLarge = try c.decodeIfPresent(Bool.self, forKey: .tooLarge) ?? false
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        lines = try c.decode(UInt32.self, forKey: .lines)
+        syntax = try c.decodeIfPresent([[SyntaxSpan]].self, forKey: .syntax) ?? []
     }
 }
 

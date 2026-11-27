@@ -180,8 +180,7 @@ jobs:
     std::fs::write(dir.path().join("Cargo.lock"), "a").unwrap();
     std::fs::create_dir_all(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("sub/x.toml"), "b").unwrap();
-    let mut cx = expr::Context::default();
-    cx.root = Some(dir.path().to_path_buf());
+    let cx = expr::Context { root: Some(dir.path().to_path_buf()), ..Default::default() };
     let one = expr::interpolate("${{ hashFiles('Cargo.lock') }}", &cx).unwrap();
     let both = expr::interpolate("${{ hashFiles('Cargo.lock', '**/*.toml') }}", &cx).unwrap();
     assert_eq!(one.len(), 64);

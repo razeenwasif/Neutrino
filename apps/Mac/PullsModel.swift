@@ -72,7 +72,13 @@ extension AppModel {
 
     func select(pull number: UInt32, keepFile: Bool = false) async {
         guard let service = pullService, let pullRepo else { return }
-        if pullNumber != number { pullFile = nil; pullDiff = nil }
+        if pullNumber != number {
+            pullFile = nil
+            pullDiff = nil
+            pullInterdiffFrom = nil
+            pullInterdiffTo = nil
+            pullInterdiff = nil
+        }
         pullNumber = number
         pullGeneration += 1
         let generation = pullGeneration
@@ -87,13 +93,34 @@ extension AppModel {
         }
     }
 
+    func orderedFiles(for detail: PullDetail) -> [FileChange] {
+        let base = pullInterdiff?.files ?? detail.files
+        guard pullOrder == .tour else { return base }
+        let tour = pullInterdiff?.tour ?? detail.tour
+        guard !tour.isEmpty else { return base }
+        let rank = Dictionary(tour.enumerated().map { ($0.element.path, $0.offset) }, uniquingKeysWith: { a, _ in a })
+        return base.enumerated().sorted { a, b in
+            let ra = rank[a.element.path] ?? Int.max
+            let rb = rank[b.element.path] ?? Int.max
+            if ra != rb { return ra < rb }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+
+    func tourStep(for path: String, detail: PullDetail) -> (Int, TourStep)? {
+        let tour = pullInterdiff?.tour ?? detail.tour
+        guard let idx = tour.firstIndex(where: { $0.path == path }) else { return nil }
+        return (idx + 1, tour[idx])
+    }
+
     /// Show a detail the server sent back, keeping the file shown when it's still there.
     private func show(_ d: PullDetail, keepFile: Bool = true) {
         pullDetail = d
         pullError = nil
         if let i = pullList.firstIndex(where: { $0.number == d.pull.number }) { pullList[i] = d.pull }
-        let keep = keepFile ? pullFile.flatMap { p in d.files.first { $0.path == p } } : nil
-        if let file = keep ?? d.files.first {
+        let files = orderedFiles(for: d)
+        let keep = keepFile ? pullFile.flatMap { p in files.first { $0.path == p } } : nil
+        if let file = keep ?? files.first {
             Task { await select(pullFile: file.path) }
         } else {
             pullFile = nil
@@ -109,12 +136,19 @@ extension AppModel {
     }
 
     func select(pullFile path: String) async {
-        guard let service = pullService, let pullRepo, let base = pullBase, let head = pullDetail?.latest?.headSha else { return }
+        guard let service = pullService, let pullRepo else { return }
         pullFile = path
         pullDiffGeneration += 1
         let generation = pullDiffGeneration
         do {
-            let d = try await service.compareDiff(repo: pullRepo, base: base, head: head, path: path)
+            let d: FileDiff
+            if let from = pullInterdiffFrom, let to = pullInterdiffTo, let n = pullNumber {
+                d = try await service.compareVersionDiff(repo: pullRepo, number: n, fromVersion: from, toVersion: to, path: path)
+            } else if let base = pullBase, let head = pullDetail?.latest?.headSha {
+                d = try await service.compareDiff(repo: pullRepo, base: base, head: head, path: path)
+            } else {
+                return
+            }
             guard generation == pullDiffGeneration else { return }
             pullDiff = d
             pullDiffError = nil
@@ -122,6 +156,55 @@ extension AppModel {
             guard generation == pullDiffGeneration else { return }
             pullDiff = nil
             pullDiffError = error.localizedDescription
+        }
+    }
+
+    func selectInterdiff(from: UInt32?, to: UInt32?) async {
+        guard let service = pullService, let pullRepo, let n = pullNumber, let detail = pullDetail else { return }
+        guard let from, let to, from < to else {
+            pullInterdiffFrom = nil
+            pullInterdiffTo = nil
+            pullInterdiff = nil
+            let files = orderedFiles(for: detail)
+            if let keep = pullFile.flatMap({ p in files.first { $0.path == p } }) ?? files.first {
+                await select(pullFile: keep.path)
+            } else {
+                pullFile = nil
+                pullDiff = nil
+            }
+            return
+        }
+        pullInterdiffFrom = from
+        pullInterdiffTo = to
+        do {
+            let inter = try await service.compareVersions(repo: pullRepo, number: n, fromVersion: from, toVersion: to)
+            pullInterdiff = inter
+            let files = orderedFiles(for: detail)
+            if let keep = pullFile.flatMap({ p in files.first { $0.path == p } }) ?? files.first {
+                await select(pullFile: keep.path)
+            } else {
+                pullFile = nil
+                pullDiff = nil
+            }
+        } catch {
+            notice = error.localizedDescription
+        }
+    }
+
+    func syncStack() async {
+        guard let service = pullService, let pullRepo, let n = pullNumber, pullBusy == nil else { return }
+        pullBusy = "Syncing stack"
+        defer { pullBusy = nil }
+        do {
+            let report = try await service.syncStack(repo: pullRepo, pull: n)
+            await select(pull: n, keepFile: true)
+            if let list = try? await service.pulls(repo: pullRepo) { pullList = list }
+            let conflicts = report.updated.filter { $0.conflict != nil }.count
+            notice = conflicts > 0
+                ? "Stack synced with \(conflicts) conflict\(conflicts == 1 ? "" : "s")."
+                : "Restacked \(report.updated.count) stacked PR\(report.updated.count == 1 ? "" : "s")."
+        } catch {
+            notice = error.localizedDescription
         }
     }
 
@@ -201,9 +284,9 @@ extension AppModel {
         hostedRepos.first { $0.id == pullRepo }?.head?.label
     }
 
-    func createPull(title: String, body: String, source: String, target: String) async throws {
+    func createPull(title: String, body: String, source: String, target: String, parentPull: UInt32? = nil) async throws {
         guard let service = pullService, let pullRepo else { throw ServiceError.daemon("Connect to the server first.") }
-        let d = try await service.createPull(repo: pullRepo, title: title, body: body, source: source, target: target)
+        let d = try await service.createPull(repo: pullRepo, title: title, body: body, source: source, target: target, stackId: nil, parentPull: parentPull)
         pullFilter = .open
         pullList = (try? await service.pulls(repo: pullRepo)) ?? pullList
         pullNumber = d.pull.number

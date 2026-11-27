@@ -4,6 +4,7 @@ import SwiftUI
 struct DiffPane: View {
     @Environment(AppModel.self) private var model
     @State private var wideHovered = false
+    @State private var hideFormatting = false
 
     var body: some View {
         @Bindable var model = model
@@ -22,6 +23,15 @@ struct DiffPane: View {
                         .lineLimit(1)
                         .truncationMode(.head)
                     StatCounts(additions: d.additions, deletions: d.deletions)
+                    let noiseCount = d.hunks.filter { $0.noise != nil }.count
+                    if noiseCount > 0 {
+                        FilterPillButton(
+                            title: hideFormatting ? "Show formatting (\(noiseCount))" : "Hide formatting (\(noiseCount))",
+                            isSelected: hideFormatting
+                        ) {
+                            hideFormatting.toggle()
+                        }
+                    }
                 } else if model.loadingDiff {
                     ProgressView().controlSize(.small)
                 }
@@ -65,7 +75,7 @@ struct DiffPane: View {
                     } else if d.hunks.isEmpty {
                         EmptyState(icon: "doc.text", title: "No line changes", message: d.oldPath != nil ? "Renamed without changes." : "Only the file's mode changed.")
                     } else {
-                        DiffBody(diff: d, layout: model.layout)
+                        DiffBody(diff: d, layout: model.layout, hideFormatting: hideFormatting)
                     }
                 } else if let error = model.diffError {
                     EmptyState(icon: "exclamationmark.triangle", title: "Can't show this diff", message: error)
@@ -84,12 +94,13 @@ struct DiffPane: View {
 /// A flat list of what the diff draws, so long diffs render lazily.
 private enum Row: Identifiable {
     case hunk(Int, Hunk)
+    case folded(Int, Int, Hunk)
     case line(Int, DiffLine)
     case pair(Int, DiffLine?, DiffLine?)
 
     var id: Int {
         switch self {
-        case let .hunk(i, _), let .line(i, _), let .pair(i, _, _): i
+        case let .hunk(i, _), let .folded(i, _, _), let .line(i, _), let .pair(i, _, _): i
         }
     }
 }
@@ -97,6 +108,7 @@ private enum Row: Identifiable {
 struct DiffBody: View {
     var diff: FileDiff
     var layout: DiffLayout
+    var hideFormatting: Bool = false
     /// Lines picked for staging; empty and unused in read-only diffs.
     var picks: Set<LinePick> = []
     /// Set to make changed lines pickable.
@@ -108,6 +120,8 @@ struct DiffBody: View {
     var pickContext = false
     /// Drawn under a line: its notes, say.
     var footer: ((DiffLine) -> AnyView?)? = nil
+    @State private var expandedNoise: Set<Int> = []
+    @State private var showMoves = true
 
     private func picked(_ l: DiffLine?) -> Bool {
         guard let l, let p = LinePick(l) else { return false }
@@ -117,7 +131,11 @@ struct DiffBody: View {
     private var rows: [Row] {
         var out: [Row] = []
         var n = 0
-        for h in diff.hunks {
+        for (hunkIndex, h) in diff.hunks.enumerated() {
+            if hideFormatting && h.noise != nil && !expandedNoise.contains(hunkIndex) {
+                out.append(.folded(n, hunkIndex, h)); n += 1
+                continue
+            }
             out.append(.hunk(n, h)); n += 1
             if layout == .unified {
                 for l in h.lines { out.append(.line(n, l)); n += 1 }
@@ -146,8 +164,34 @@ struct DiffBody: View {
         GeometryReader { geo in
             ScrollView(layout == .unified ? [.vertical, .horizontal] : .vertical) {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    if !diff.moves.isEmpty {
+                        moveSummaryBanner
+                    }
                     ForEach(rows) { row in
                         switch row {
+                        case let .folded(_, hunkIndex, h):
+                            let label = h.noise == .importSort ? "Import sort" : "Formatting only"
+                            Button {
+                                expandedNoise.insert(hunkIndex)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(N.muted)
+                                    Text("\(label) · \(h.lines.count) lines")
+                                        .font(N.mono(11))
+                                        .foregroundStyle(N.muted)
+                                    Spacer(minLength: 8)
+                                    Text("Show")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(N.indigo)
+                                }
+                                .padding(.horizontal, 14)
+                                .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+                                .background(N.surfaceSubtle.opacity(0.6))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 6)
                         case let .hunk(_, h):
                             HStack(spacing: 10) {
                                 Rectangle()
@@ -156,6 +200,13 @@ struct DiffBody: View {
                                 Text(h.header)
                                     .font(N.mono(11.5))
                                     .foregroundStyle(N.sky)
+                                if let noise = h.noise {
+                                    TagPill(
+                                        text: noise == .importSort ? "Imports" : "Formatting",
+                                        textColor: N.muted,
+                                        background: N.surfacePill
+                                    )
+                                }
                                 if let hunkAction, let onHunk {
                                     Button(hunkAction) { onHunk(h) }
                                         .buttonStyle(PillButtonStyle(kind: .secondary, height: 22))
@@ -187,6 +238,47 @@ struct DiffBody: View {
             }
         }
         .background(N.ground)
+    }
+    @ViewBuilder private var moveSummaryBanner: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                showMoves.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: showMoves ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(N.sky)
+                    Text("\(diff.moves.count) moved symbol\(diff.moves.count == 1 ? "" : "s")")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(N.text)
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+            if showMoves {
+                ForEach(diff.moves, id: \.id) { m in
+                    HStack(spacing: 8) {
+                        TagPill(text: m.kind.uppercased(), textColor: N.sky, background: N.sky.opacity(0.14), monospaced: true)
+                        Text(m.symbol)
+                            .font(N.mono(11.5, weight: .medium))
+                            .foregroundStyle(N.text)
+                        Text(m.fromPath == m.toPath
+                            ? "L\(m.fromLine) → L\(m.toLine)"
+                            : "\((m.fromPath as NSString).lastPathComponent):\(m.fromLine) → \((m.toPath as NSString).lastPathComponent):\(m.toLine)")
+                            .font(N.mono(11))
+                            .foregroundStyle(N.muted)
+                        Text("· \(m.lines)L" + (m.changedLines > 0 ? " (\(m.changedLines) edited)" : " unchanged"))
+                            .font(.system(size: 11))
+                            .foregroundStyle(N.faint)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(N.surfaceSubtle)
+        .padding(.top, 8)
     }
 }
 
@@ -235,19 +327,7 @@ private func colors(_ kind: LineKind) -> (bg: Color, sign: Color, text: Color, e
 
 private func styled(_ line: DiffLine) -> AttributedString {
     let c = colors(line.kind)
-    if line.segments.isEmpty {
-        var s = AttributedString(line.text.isEmpty ? " " : line.text)
-        s.foregroundColor = c.text
-        return s
-    }
-    var out = AttributedString()
-    for seg in line.segments {
-        var part = AttributedString(seg.text)
-        part.foregroundColor = c.text
-        if seg.changed { part.backgroundColor = c.emph }
-        out += part
-    }
-    return out
+    return SyntaxHighlight.attributedLine(text: line.text, syntax: line.syntax, segments: line.segments, fallback: c.text, emph: c.emph)
 }
 
 private struct UnifiedLine: View {

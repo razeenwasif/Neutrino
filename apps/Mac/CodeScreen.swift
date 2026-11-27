@@ -672,7 +672,7 @@ private struct FileView: View {
                         .padding(.horizontal, 24)
                         .padding(.vertical, 20)
                 } else {
-                    CodeLines(text: b.text ?? "")
+                    CodeLines(text: b.text ?? "", syntax: b.syntax)
                 }
             } else {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }.frame(height: 160)
@@ -691,6 +691,7 @@ private struct FileView: View {
 /// Source with line numbers. Lines are laid out lazily, so long files open quickly.
 private struct CodeLines: View {
     var text: String
+    var syntax: [[SyntaxSpan]] = []
 
     var body: some View {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
@@ -699,15 +700,15 @@ private struct CodeLines: View {
         ScrollView(.horizontal) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(shown.enumerated()), id: \.offset) { i, line in
+                    let spans = i < syntax.count ? syntax[i] : []
                     HStack(spacing: 0) {
                         Text("\(i + 1)")
                             .font(N.mono(11.5).monospacedDigit())
                             .foregroundStyle(N.faint)
                             .frame(width: gutter, alignment: .trailing)
                             .padding(.trailing, 16)
-                        Text(line.isEmpty ? " " : String(line).replacingOccurrences(of: "\t", with: "    "))
+                        Text(SyntaxHighlight.attributedLine(text: String(line), syntax: spans, fallback: N.body, expandTabs: true))
                             .font(N.mono(12))
-                            .foregroundStyle(N.body)
                             .fixedSize()
                     }
                     .frame(height: 20)

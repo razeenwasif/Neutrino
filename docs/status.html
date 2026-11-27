@@ -502,7 +502,7 @@
         <li class="bl-item"><div class="bl-head"><h5>The menu bar icon hasn't been seen in place</h5><span class="pill muted">Check</span></div><p class="bl-text">The glyph and the panel were checked in a preview window. A menu bar manager on workstation hides new items behind its arrow, so the icon itself hasn't been looked at in the bar.</p></li>
         <li class="bl-item"><div class="bl-head"><h5>Line staging skips git's clean filters</h5><span class="pill warn">Open</span></div><p class="bl-text">Picked lines are taken from the working tree's bytes as they are, so files that rely on LFS or CRLF conversion should be staged whole. Whole-file staging goes through <code>git add</code> and is unaffected.</p></li>
         <li class="bl-item"><div class="bl-head"><h5>The watcher skips build folders by name</h5><span class="pill muted">By design for now</span></div><p class="bl-text"><code>target</code>, <code>node_modules</code>, <code>.build</code>, <code>DerivedData</code> and a few others are ignored by name, not by reading <code>.gitignore</code>. A tracked file inside such a folder won't trigger a refresh until something else does.</p></li>
-        <li class="bl-item"><div class="bl-head"><h5>No syntax highlighting in diffs</h5><span class="pill warn">Open</span></div><p class="bl-text">Diffs and the Code page's files show no code colours. Planned: tree-sitter in the engine, cached per blob id, sent as spans with each line.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>No syntax highlighting in diffs</h5><span class="pill ok">Done</span></div><p class="bl-text">Tree-sitter parses 10 languages in <code>neutrino-diff</code> (Rust, Swift, TS/JS, Python, JSON, TOML, YAML, Bash, Markdown), cached per blob/content hash and rendered with Stratus T3 colors in <code>NeutrinoMac</code> and <code>NeutrinoIOS</code>.</p></li>
         <li class="bl-item"><div class="bl-head"><h5>Merge commits show the first parent only</h5><span class="pill muted">By design for now</span></div><p class="bl-text">A merge's file list and diffs compare with its first parent, like GitHub. A combined view (what the merge itself resolved) would need a second diff per file.</p></li>
         <li class="bl-item"><div class="bl-head"><h5>The diff cache lives in memory</h5><span class="pill muted">Idea</span></div><p class="bl-text">512 diffs, dropped when the daemon restarts. The design calls for an LRU on disk, which only matters once diffs are big or the daemon restarts often.</p></li>
         <li class="bl-item"><div class="bl-head"><h5>Partial clones can't diff unfetched files</h5><span class="pill muted">By design</span></div><p class="bl-text">A blobless clone has no file contents until fetched. Neutrino says so instead of fetching behind your back.</p></li>
@@ -1328,14 +1328,14 @@
         "note": "Landed in cbc1c48: bounded remote TLS auth/reads, CI validate_rel_path + ensure_contained sandbox guards, local runner env_clear(), Signing.xcconfig/TeamIdentifierPrefix scrub, SECURITY.md, and scripts/check-leaks.sh."
     },
     "semantic-move-diffs": {
-        "status": "todo",
-        "updated": "2026-11-26T13:05:00+11:00",
-        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+        "status": "done",
+        "updated": "2026-11-27T14:00:00+11:00",
+        "note": "Landed in Wave 2: Tree-sitter syntax spans across 10 languages, intra/cross-file AST move detection, formatting & import-sort noise folding, and Stratus T3 SyntaxHighlight in NeutrinoMac & NeutrinoIOS."
     },
     "review-tour-interdiffs-stacks": {
-        "status": "todo",
-        "updated": "2026-11-26T13:05:00+11:00",
-        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+        "status": "done",
+        "updated": "2026-11-27T14:00:00+11:00",
+        "note": "Landed in Wave 2: Call-graph topological Review Tour ordering, PR version interdiffs (compare_versions/compare_version_diff), and Stacked PRs (ntr stack create|list|sync & cascading restack on merge)."
     },
     "hardware-provenance-slsa": {
         "status": "todo",

@@ -190,7 +190,18 @@ pub fn work_diff(repo: &gix::Repository, path: &str, area: Area, context: u32) -
     let s = sides(repo, path, area)?;
     let status = if is_conflicted(repo, path)? { ChangeStatus::Conflicted } else { s.status };
     let (old, new) = (s.old.unwrap_or_default(), s.new.unwrap_or_default());
-    let mut out = FileDiff { path: path.to_string(), old_path: None, status, binary: false, too_large: s.too_large, additions: 0, deletions: 0, hunks: Vec::new() };
+    let mut out = FileDiff {
+        path: path.to_string(),
+        old_path: None,
+        status,
+        binary: false,
+        too_large: s.too_large,
+        additions: 0,
+        deletions: 0,
+        hunks: Vec::new(),
+        moves: Vec::new(),
+        semantic_summary: None,
+    };
     if s.too_large {
         return Ok(out);
     }
@@ -198,10 +209,12 @@ pub fn work_diff(repo: &gix::Repository, path: &str, area: Area, context: u32) -
         out.binary = true;
         return Ok(out);
     }
-    let d = neutrino_diff::diff(&old, &new, context);
+    let d = neutrino_diff::diff_with_path(path, &old, &new, context);
     out.additions = d.additions;
     out.deletions = d.deletions;
     out.hunks = d.hunks;
+    out.moves = d.moves;
+    out.semantic_summary = d.semantic_summary;
     Ok(out)
 }
 

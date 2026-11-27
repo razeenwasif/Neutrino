@@ -222,6 +222,68 @@ pub struct Segment {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyntaxKind {
+    Keyword,
+    Type,
+    Function,
+    String,
+    Number,
+    Comment,
+    Property,
+    Operator,
+    Attribute,
+    Constant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyntaxSpan {
+    pub start: u32,
+    pub len: u32,
+    pub kind: SyntaxKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoiseKind {
+    Formatting,
+    ImportSort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveBlock {
+    pub id: u32,
+    pub symbol: String,
+    pub kind: String,
+    pub from_path: String,
+    pub from_line: u32,
+    pub to_path: String,
+    pub to_line: u32,
+    pub lines: u32,
+    pub changed_lines: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticSummary {
+    pub moved_blocks: u32,
+    pub formatting_hunks: u32,
+    pub import_hunks: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_symbols: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TourStep {
+    pub path: String,
+    pub tier: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub defines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_by: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffLine {
     pub kind: LineKind,
@@ -235,6 +297,9 @@ pub struct DiffLine {
     /// The file ends on this line without a newline.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_newline: bool,
+    /// Tree-sitter syntax highlight spans within `text`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub syntax: Vec<SyntaxSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +310,9 @@ pub struct Hunk {
     pub new_start: u32,
     pub new_lines: u32,
     pub lines: Vec<DiffLine>,
+    /// Set when the hunk only changes whitespace/formatting or import order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noise: Option<NoiseKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +326,12 @@ pub struct FileDiff {
     pub additions: u32,
     pub deletions: u32,
     pub hunks: Vec<Hunk>,
+    /// AST blocks moved within or into this file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moves: Vec<MoveBlock>,
+    /// Compact AST & noise classification summary for this file diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_summary: Option<SemanticSummary>,
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +390,9 @@ pub struct BlobContent {
     pub text: Option<String>,
     /// Line count of `text` (0 when None). A trailing newline doesn't add a line.
     pub lines: u32,
+    /// Tree-sitter syntax spans per line (parallel to lines of `text`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub syntax: Vec<Vec<SyntaxSpan>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +568,15 @@ pub struct PullRequest {
     pub merged_at: Option<i64>,
     /// The commit the merge left on the target.
     pub merge_sha: Option<String>,
+    /// Stack identifier shared by stacked PRs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_id: Option<String>,
+    /// Direct upstream PR number in a stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pull: Option<u32>,
+    /// Conflict details if automatic child restacking stopped on conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_conflict: Option<String>,
 }
 
 /// One push to the source branch while the pull request was open.
@@ -597,6 +683,67 @@ pub struct PullDetail {
     /// The latest run of each workflow on the latest version.
     #[serde(default)]
     pub checks: Vec<Run>,
+    /// Stacked PR chain members ordered from root to leaves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack: Vec<StackMember>,
+    /// Call-graph / dependency-ordered file review tour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tour: Vec<TourStep>,
+    /// AST move blocks across the PR's changed files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moves: Vec<MoveBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackMember {
+    pub number: u32,
+    pub title: String,
+    pub source: String,
+    pub target: String,
+    pub state: PullState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pull: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_conflict: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackInfo {
+    pub stack_id: String,
+    pub members: Vec<StackMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackSyncOutcome {
+    pub number: u32,
+    pub source: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackSyncReport {
+    pub root: u32,
+    pub updated: Vec<StackSyncOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionInterdiff {
+    pub number: u32,
+    pub from_version: u32,
+    pub to_version: u32,
+    pub from_sha: String,
+    pub to_sha: String,
+    pub files: Vec<FileChange>,
+    pub commits: Vec<LogEntry>,
+    pub notes: Vec<Note>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moves: Vec<MoveBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tour: Vec<TourStep>,
 }
 
 /// Where a run, a job or a step is.
@@ -1136,8 +1283,24 @@ pub enum Request {
         body: String,
         source: String,
         target: String,
+        #[serde(default)]
+        stack_id: Option<String>,
+        #[serde(default)]
+        parent_pull: Option<u32>,
     },
     Pull { repo: String, number: u32 },
+    CompareVersions { repo: String, number: u32, from_version: u32, to_version: u32 },
+    CompareVersionDiff {
+        repo: String,
+        number: u32,
+        from_version: u32,
+        to_version: u32,
+        path: String,
+        #[serde(default)]
+        context: Option<u32>,
+    },
+    ListStacks { repo: String },
+    SyncStack { repo: String, pull: u32 },
     /// Change the title or description, or close or reopen.
     UpdatePull {
         repo: String,
@@ -1318,6 +1481,9 @@ pub enum Response {
     Paired { token: String, device_id: String, host: String },
     Pulls(Vec<PullRequest>),
     Pull(Box<PullDetail>),
+    VersionDiff(Box<VersionInterdiff>),
+    Stacks(Vec<StackInfo>),
+    StackSynced(StackSyncReport),
     Merged { sha: String },
     Compare(Vec<FileChange>),
     Rules(Vec<BranchRule>),
@@ -1463,7 +1629,7 @@ mod tests {
 
     #[test]
     fn diff_line_omits_empty_extras() {
-        let line = DiffLine { kind: LineKind::Added, old_line: None, new_line: Some(4), text: "x".into(), segments: vec![], no_newline: false };
+        let line = DiffLine { kind: LineKind::Added, old_line: None, new_line: Some(4), text: "x".into(), segments: vec![], no_newline: false, syntax: vec![] };
         assert_eq!(serde_json::to_value(&line).unwrap(), json!({"kind": "added", "old_line": null, "new_line": 4, "text": "x"}));
     }
 
@@ -1551,7 +1717,7 @@ mod tests {
             json!({"id": 5, "type": "overview", "data": {"commit": "abc", "commits": 3, "commits_capped": false, "contributors": 2, "files": 10,
                 "languages": [{"name": "Rust", "bytes": 300}], "readme": "README.md", "license": null}})
         );
-        let blob = Response::Blob(BlobContent { commit: "abc".into(), path: "a".into(), size: 2, binary: false, too_large: false, text: Some("a\n".into()), lines: 1 });
+        let blob = Response::Blob(BlobContent { commit: "abc".into(), path: "a".into(), size: 2, binary: false, too_large: false, text: Some("a\n".into()), lines: 1, syntax: vec![] });
         assert_eq!(
             wire(&encode_response(6, &blob)),
             json!({"id": 6, "type": "blob", "data": {"commit": "abc", "path": "a", "size": 2, "binary": false, "too_large": false, "text": "a\n", "lines": 1}})
@@ -1595,5 +1761,75 @@ mod tests {
         assert_eq!((id, d.run.number, d.jobs[0].steps[0].exit_code), (4, 3, Some(1)));
         let (_, again) = decode_response(&encode_response(4, &Response::Run(d.clone()))).unwrap();
         assert_eq!(again, Response::Run(d));
+    }
+
+    #[test]
+    fn wave2_semantic_interdiff_and_stack_wire() {
+        let req = Request::CompareVersions { repo: "app".into(), number: 3, from_version: 1, to_version: 2 };
+        let (_, back) = decode_request(&encode_request(10, &req));
+        assert_eq!(back.unwrap(), req);
+
+        let sync = Request::SyncStack { repo: "app".into(), pull: 5 };
+        assert_eq!(wire(&encode_request(11, &sync)), json!({"id": 11, "method": "sync_stack", "params": {"repo": "app", "pull": 5}}));
+
+        let stacks = Response::Stacks(vec![StackInfo {
+            stack_id: "stack-1".into(),
+            members: vec![StackMember {
+                number: 1,
+                title: "Base".into(),
+                source: "s1".into(),
+                target: "main".into(),
+                state: PullState::Open,
+                parent_pull: None,
+                stack_conflict: None,
+            }],
+        }]);
+        assert_eq!(decode_response(&encode_response(12, &stacks)).unwrap().1, stacks);
+
+        let fd = FileDiff {
+            path: "a.rs".into(),
+            old_path: None,
+            status: ChangeStatus::Modified,
+            binary: false,
+            too_large: false,
+            additions: 1,
+            deletions: 1,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 1,
+                lines: vec![DiffLine {
+                    kind: LineKind::Added,
+                    old_line: None,
+                    new_line: Some(1),
+                    text: "fn foo() {}".into(),
+                    segments: vec![],
+                    no_newline: false,
+                    syntax: vec![SyntaxSpan { start: 0, len: 2, kind: SyntaxKind::Keyword }],
+                }],
+                noise: Some(NoiseKind::Formatting),
+            }],
+            moves: vec![MoveBlock {
+                id: 1,
+                symbol: "foo".into(),
+                kind: "function".into(),
+                from_path: "b.rs".into(),
+                from_line: 10,
+                to_path: "a.rs".into(),
+                to_line: 1,
+                lines: 3,
+                changed_lines: 0,
+            }],
+            semantic_summary: Some(SemanticSummary {
+                moved_blocks: 1,
+                formatting_hunks: 1,
+                import_hunks: 0,
+                changed_symbols: vec!["foo".into()],
+            }),
+        };
+        let encoded = encode_response(13, &Response::FileDiff(fd.clone()));
+        let (_, decoded) = decode_response(&encoded).unwrap();
+        assert_eq!(decoded, Response::FileDiff(fd));
     }
 }

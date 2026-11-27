@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
-use neutrino_proto::{BranchRule, Note, PullRequest, PullState, PullVersion, RuleOverride, Side};
+use neutrino_proto::{BranchRule, Note, PullRequest, PullState, PullVersion, RuleOverride, Side, StackInfo, StackMember};
 use rusqlite::{Connection, OptionalExtension, params};
 
 mod phone;
@@ -189,6 +189,10 @@ const MIGRATIONS: &[&str] = &[
         topic TEXT NOT NULL,
         sealed_key BLOB NOT NULL
     );",
+    "ALTER TABLE pulls ADD COLUMN stack_id TEXT;
+    ALTER TABLE pulls ADD COLUMN parent_pull INTEGER;
+    ALTER TABLE pulls ADD COLUMN stack_conflict TEXT;
+    CREATE INDEX pulls_by_stack ON pulls (repo, stack_id);",
 ];
 
 pub struct Store {
@@ -267,7 +271,7 @@ impl Store {
     fn pull_from_row(db: &Connection, repo: &str, number: u32) -> Result<Option<PullRequest>> {
         let row = db
             .query_row(
-                "SELECT title, body, source, target, state, created_at, updated_at, merged_at, merge_sha FROM pulls WHERE repo = ?1 AND number = ?2",
+                "SELECT title, body, source, target, state, created_at, updated_at, merged_at, merge_sha, stack_id, parent_pull, stack_conflict FROM pulls WHERE repo = ?1 AND number = ?2",
                 params![repo, number],
                 |r| {
                     Ok((
@@ -280,11 +284,16 @@ impl Store {
                         r.get::<_, i64>(6)?,
                         r.get::<_, Option<i64>>(7)?,
                         r.get::<_, Option<String>>(8)?,
+                        r.get::<_, Option<String>>(9)?,
+                        r.get::<_, Option<u32>>(10)?,
+                        r.get::<_, Option<String>>(11)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((title, body, source, target, state, created_at, updated_at, merged_at, merge_sha)) = row else { return Ok(None) };
+        let Some((title, body, source, target, state, created_at, updated_at, merged_at, merge_sha, stack_id, parent_pull, stack_conflict)) = row else {
+            return Ok(None);
+        };
         let (versions, head_sha): (u32, String) = db.query_row(
             "SELECT COUNT(*), COALESCE((SELECT head_sha FROM versions WHERE repo = ?1 AND number = ?2 ORDER BY version DESC LIMIT 1), '')
              FROM versions WHERE repo = ?1 AND number = ?2",
@@ -308,6 +317,9 @@ impl Store {
             updated_at,
             merged_at,
             merge_sha,
+            stack_id,
+            parent_pull,
+            stack_conflict,
         }))
     }
 
@@ -337,6 +349,22 @@ impl Store {
 
     /// Create a pull request with its first version.
     pub fn create_pull(&self, repo: &str, title: &str, body: &str, source: &str, target: &str, head: &str, base: &str) -> Result<u32> {
+        self.create_pull_in_stack(repo, title, body, source, target, head, base, None, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_pull_in_stack(
+        &self,
+        repo: &str,
+        title: &str,
+        body: &str,
+        source: &str,
+        target: &str,
+        head: &str,
+        base: &str,
+        stack_id: Option<&str>,
+        parent_pull: Option<u32>,
+    ) -> Result<u32> {
         if title.trim().is_empty() {
             bail!("give the pull request a title");
         }
@@ -352,11 +380,26 @@ impl Store {
         if let Some(n) = open {
             bail!("pull request #{n} already merges {source} into {target}");
         }
+        let mut resolved_stack = stack_id.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        if let Some(parent) = parent_pull {
+            let parent_stack: Option<Option<String>> = tx
+                .query_row("SELECT stack_id FROM pulls WHERE repo = ?1 AND number = ?2", params![repo, parent], |r| r.get(0))
+                .optional()?;
+            let Some(ps) = parent_stack else {
+                bail!("parent pull request #{parent} does not exist in {repo}");
+            };
+            let chosen = resolved_stack.unwrap_or_else(|| ps.unwrap_or_else(|| format!("stack-{parent}")));
+            tx.execute(
+                "UPDATE pulls SET stack_id = COALESCE(stack_id, ?3) WHERE repo = ?1 AND number = ?2",
+                params![repo, parent, chosen],
+            )?;
+            resolved_stack = Some(chosen);
+        }
         let number: u32 = tx.query_row("SELECT COALESCE(MAX(number), 0) + 1 FROM pulls WHERE repo = ?1", params![repo], |r| r.get(0))?;
         let t = now();
         tx.execute(
-            "INSERT INTO pulls (repo, number, title, body, source, target, state, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7, ?7)",
-            params![repo, number, title.trim(), body, source, target, t],
+            "INSERT INTO pulls (repo, number, title, body, source, target, state, created_at, updated_at, stack_id, parent_pull) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7, ?7, ?8, ?9)",
+            params![repo, number, title.trim(), body, source, target, t, resolved_stack, parent_pull],
         )?;
         tx.execute(
             "INSERT INTO versions (repo, number, version, head_sha, base_sha, created_at) VALUES (?1, ?2, 1, ?3, ?4, ?5)",
@@ -364,6 +407,73 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(number)
+    }
+
+    pub fn stack_members(&self, repo: &str, stack_id: &str) -> Result<Vec<StackMember>> {
+        let db = self.db.lock().unwrap();
+        Ok(db
+            .prepare(
+                "SELECT number, title, source, target, state, parent_pull, stack_conflict
+                 FROM pulls WHERE repo = ?1 AND stack_id = ?2 ORDER BY number ASC",
+            )?
+            .query_map(params![repo, stack_id], |r| {
+                Ok(StackMember {
+                    number: r.get(0)?,
+                    title: r.get(1)?,
+                    source: r.get(2)?,
+                    target: r.get(3)?,
+                    state: parse_state(&r.get::<_, String>(4)?),
+                    parent_pull: r.get(5)?,
+                    stack_conflict: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn stacks(&self, repo: &str) -> Result<Vec<StackInfo>> {
+        let stack_ids: Vec<String> = {
+            let db = self.db.lock().unwrap();
+            db.prepare("SELECT DISTINCT stack_id FROM pulls WHERE repo = ?1 AND stack_id IS NOT NULL ORDER BY stack_id ASC")?
+                .query_map(params![repo], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let mut out = Vec::with_capacity(stack_ids.len());
+        for sid in stack_ids {
+            let members = self.stack_members(repo, &sid)?;
+            if !members.is_empty() {
+                out.push(StackInfo { stack_id: sid, members });
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn child_pulls(&self, repo: &str, parent: u32) -> Result<Vec<PullRequest>> {
+        let numbers: Vec<u32> = {
+            let db = self.db.lock().unwrap();
+            db.prepare("SELECT number FROM pulls WHERE repo = ?1 AND parent_pull = ?2 AND state = 'open' ORDER BY number ASC")?
+                .query_map(params![repo, parent], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let db = self.db.lock().unwrap();
+        numbers.into_iter().filter_map(|n| Self::pull_from_row(&db, repo, n).transpose()).collect()
+    }
+
+    pub fn retarget_pull(&self, repo: &str, number: u32, new_target: &str, new_parent: Option<u32>, conflict: Option<&str>) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE pulls SET target = ?3, parent_pull = ?4, stack_conflict = ?5, updated_at = ?6 WHERE repo = ?1 AND number = ?2",
+            params![repo, number, new_target, new_parent, conflict, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_stack_conflict(&self, repo: &str, number: u32, conflict: Option<&str>) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE pulls SET stack_conflict = ?3, updated_at = ?4 WHERE repo = ?1 AND number = ?2",
+            params![repo, number, conflict, now()],
+        )?;
+        Ok(())
     }
 
     /// Record a new version when the source moved. Returns its number, or `None` when the head is the same.

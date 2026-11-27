@@ -6,8 +6,12 @@
 //! added lines are paired in order, and each pair that is similar enough is
 //! diffed again by word so the client can highlight what actually changed.
 
+pub mod semantic;
+pub mod syntax;
+pub mod tour;
+
 use imara_diff::{Algorithm, Diff, InternedInput, TokenSource};
-use neutrino_proto::{DiffLine, Hunk, LineKind, Segment};
+use neutrino_proto::{DiffLine, Hunk, LineKind, MoveBlock, Segment, SemanticSummary};
 
 /// Sides bigger than this are not diffed line by line.
 pub const MAX_DIFF_BYTES: usize = 8 << 20;
@@ -23,6 +27,14 @@ pub struct LineDiff {
     pub additions: u32,
     pub deletions: u32,
     pub hunks: Vec<Hunk>,
+}
+
+pub struct RichLineDiff {
+    pub additions: u32,
+    pub deletions: u32,
+    pub hunks: Vec<Hunk>,
+    pub moves: Vec<MoveBlock>,
+    pub semantic_summary: Option<SemanticSummary>,
 }
 
 /// A sequence of byte slices as an imara-diff token source.
@@ -96,6 +108,7 @@ pub fn diff(old: &[u8], new: &[u8], context: u32) -> LineDiff {
             text: display(before[o as usize]),
             segments: Vec::new(),
             no_newline: (old_no_eol && o + 1 == old_len) || (new_no_eol && n as usize + 1 == after.len()),
+            syntax: Vec::new(),
         };
         let (mut o, mut n) = (old_begin, new_begin);
         for change in group {
@@ -114,6 +127,7 @@ pub fn diff(old: &[u8], new: &[u8], context: u32) -> LineDiff {
                     text: display(before[k as usize]),
                     segments: Vec::new(),
                     no_newline: old_no_eol && k + 1 == old_len,
+                    syntax: Vec::new(),
                 })
                 .collect();
             let added: Vec<DiffLine> = change
@@ -126,6 +140,7 @@ pub fn diff(old: &[u8], new: &[u8], context: u32) -> LineDiff {
                     text: display(after[k as usize]),
                     segments: Vec::new(),
                     no_newline: new_no_eol && k as usize + 1 == after.len(),
+                    syntax: Vec::new(),
                 })
                 .collect();
             let (mut removed, mut added) = (removed, added);
@@ -155,11 +170,54 @@ pub fn diff(old: &[u8], new: &[u8], context: u32) -> LineDiff {
             new_start: if new_lines == 0 { new_begin } else { new_begin + 1 },
             new_lines,
             lines: out,
+            noise: None,
         });
         i = j;
     }
 
     LineDiff { additions: diff.count_additions(), deletions: diff.count_removals(), hunks }
+}
+
+/// Diff two texts using the Tree-sitter grammar inferred from `path` to populate
+/// line syntax spans, hunk noise classification (`Formatting`, `ImportSort`),
+/// intra-file AST move blocks, and semantic symbol summary.
+pub fn diff_with_path(path: &str, old: &[u8], new: &[u8], context: u32) -> RichLineDiff {
+    let base = diff(old, new, context);
+    let mut hunks = base.hunks;
+    let old_syntax = syntax::highlight_lines(path, old);
+    let new_syntax = syntax::highlight_lines(path, new);
+
+    for h in &mut hunks {
+        for l in &mut h.lines {
+            l.syntax = match l.kind {
+                LineKind::Removed => l
+                    .old_line
+                    .and_then(|n| old_syntax.get(n.saturating_sub(1) as usize))
+                    .cloned()
+                    .unwrap_or_default(),
+                LineKind::Added | LineKind::Context => l
+                    .new_line
+                    .and_then(|n| new_syntax.get(n.saturating_sub(1) as usize))
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+        }
+    }
+
+    let (moves, summary) = semantic::analyze_file(path, old, new, &mut hunks);
+    let semantic_summary = (summary.moved_blocks > 0
+        || summary.formatting_hunks > 0
+        || summary.import_hunks > 0
+        || !summary.changed_symbols.is_empty())
+    .then_some(summary);
+
+    RichLineDiff {
+        additions: base.additions,
+        deletions: base.deletions,
+        hunks,
+        moves,
+        semantic_summary,
+    }
 }
 
 /// Words, runs of whitespace, and single punctuation characters.
@@ -184,11 +242,11 @@ fn words(text: &str) -> Vec<&str> {
     let mut prev: Option<Class> = None;
     for (i, c) in text.char_indices() {
         let k = class(c);
-        if let Some(p) = prev {
-            if p != k || k == Class::Other {
-                out.push(&text[start..i]);
-                start = i;
-            }
+        if let Some(p) = prev
+            && (p != k || k == Class::Other)
+        {
+            out.push(&text[start..i]);
+            start = i;
         }
         prev = Some(k);
     }
@@ -420,5 +478,80 @@ mod tests {
     fn crlf_is_not_shown() {
         let d = diff(b"a\r\nb\r\n", b"a\r\nc\r\n", 3);
         assert_eq!(d.hunks[0].lines[0].text, "a");
+    }
+
+    #[test]
+    fn syntax_spans_for_languages() {
+        let rust = b"// doc\npub fn compute(x: usize) -> usize { x + 42 }\n";
+        let spans = syntax::highlight_lines("src/lib.rs", rust);
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].iter().any(|s| s.kind == neutrino_proto::SyntaxKind::Comment));
+        assert!(spans[1].iter().any(|s| s.kind == neutrino_proto::SyntaxKind::Keyword));
+        assert!(spans[1].iter().any(|s| s.kind == neutrino_proto::SyntaxKind::Function));
+        assert!(spans[1].iter().any(|s| s.kind == neutrino_proto::SyntaxKind::Number));
+
+        let swift = b"struct Item {\n    let title: String = \"ok\"\n}\n";
+        let sw_spans = syntax::highlight_lines("App.swift", swift);
+        assert!(sw_spans[0].iter().any(|s| s.kind == neutrino_proto::SyntaxKind::Keyword));
+        assert!(sw_spans[1].iter().any(|s| s.kind == neutrino_proto::SyntaxKind::String));
+
+        for (p, src) in [
+            ("mod.ts", b"export async function load(n: number): Promise<void> {}" as &[u8]),
+            ("app.py", b"def run(x):\n    return \"hi\"\n"),
+            ("pkg.json", b"{\"name\": \"neutrino\", \"count\": 3}\n"),
+            ("Cargo.toml", b"[package]\nname = \"x\"\n"),
+            ("ci.yml", b"name: ci\non: [push]\n"),
+            ("run.sh", b"#!/bin/sh\necho \"hello\"\n"),
+        ] {
+            let s = syntax::highlight_lines(p, src);
+            assert!(!s.is_empty(), "expected syntax lines for {p}");
+            assert!(s.iter().any(|line| !line.is_empty()), "expected tokens for {p}");
+        }
+    }
+
+    #[test]
+    fn formatting_and_import_sort_noise_folding() {
+        let old = b"use b::Beta;\nuse a::Alpha;\n\nconst A: i32 = 1;\nconst B: i32 = 2;\nconst C: i32 = 3;\nconst D: i32 = 4;\nconst E: i32 = 5;\nconst F: i32 = 6;\nconst G: i32 = 7;\n\nfn calc(x: i32) -> i32 { x + 1 }\n";
+        let new = b"use a::Alpha;\nuse b::Beta;\n\nconst A: i32 = 1;\nconst B: i32 = 2;\nconst C: i32 = 3;\nconst D: i32 = 4;\nconst E: i32 = 5;\nconst F: i32 = 6;\nconst G: i32 = 7;\n\nfn calc(\n    x: i32,\n) -> i32 {\n    x + 1\n}\n";
+        let rich = diff_with_path("src/math.rs", old, new, 3);
+        assert!(rich.hunks.iter().any(|h| h.noise == Some(neutrino_proto::NoiseKind::ImportSort)));
+        let fmt_old = b"let total=alpha+beta;\n";
+        let fmt_new = b"let total = alpha + beta;\n";
+        let fmt_rich = diff_with_path("src/a.rs", fmt_old, fmt_new, 3);
+        assert_eq!(fmt_rich.hunks[0].noise, Some(neutrino_proto::NoiseKind::Formatting));
+    }
+
+    #[test]
+    fn intra_and_cross_file_ast_move_detection() {
+        let old = b"fn alpha() -> i32 {\n    let a = 10;\n    let b = 20;\n    a + b\n}\n\nfn middle_one() -> i32 { 1 }\nfn middle_two() -> i32 { 2 }\nfn middle_three() -> i32 { 3 }\n";
+        let new = b"fn middle_one() -> i32 { 1 }\nfn middle_two() -> i32 { 2 }\nfn middle_three() -> i32 { 3 }\n\nfn alpha() -> i32 {\n    let a = 10;\n    let b = 21;\n    a + b\n}\n";
+        let rich = diff_with_path("src/lib.rs", old, new, 3);
+        assert_eq!(rich.moves.len(), 1, "expected 1 intra-file move: {:?}", rich.moves);
+        assert_eq!(rich.moves[0].symbol, "alpha");
+        assert_eq!(rich.moves[0].changed_lines, 1);
+
+        let f1_old = b"pub fn helper_work(val: i32) -> i32 {\n    let doubled = val * 2;\n    doubled + 5\n}\n";
+        let f1_new = b"// moved\n";
+        let f2_old = b"";
+        let f2_new = b"pub fn helper_work(val: i32) -> i32 {\n    let doubled = val * 2;\n    doubled + 5\n}\n";
+        let cross = semantic::detect_cross_file_moves(&[("src/a.rs", f1_old, f1_new), ("src/b.rs", f2_old, f2_new)]);
+        assert_eq!(cross.len(), 1);
+        assert_eq!((cross[0].from_path.as_str(), cross[0].to_path.as_str()), ("src/a.rs", "src/b.rs"));
+    }
+
+    #[test]
+    fn call_graph_review_tour_order() {
+        let files: Vec<(&str, &[u8], &[u8])> = vec![
+            ("crates/app/tests/flow.rs", b"", b"fn test_flow() { let _ = build_token(); }"),
+            ("crates/app/src/core.rs", b"", b"pub fn build_token() -> Token { Token {} }"),
+            ("crates/app/src/proto.rs", b"", b"pub struct Token {}"),
+            ("apps/Mac/TokenView.swift", b"", b"struct TokenView { let tok: Token }"),
+        ];
+        let tour = tour::compute_review_tour(&files);
+        let paths: Vec<&str> = tour.iter().map(|s| s.path.as_str()).collect();
+        let pos = |p: &str| paths.iter().position(|x| *x == p).unwrap();
+        assert!(pos("crates/app/src/proto.rs") < pos("crates/app/src/core.rs"));
+        assert!(pos("crates/app/src/core.rs") < pos("apps/Mac/TokenView.swift"));
+        assert!(pos("apps/Mac/TokenView.swift") < pos("crates/app/tests/flow.rs"));
     }
 }

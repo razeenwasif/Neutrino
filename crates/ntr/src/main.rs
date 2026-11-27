@@ -117,6 +117,9 @@ enum Cmd {
     /// Server: pull requests on a hosted repository.
     #[command(subcommand)]
     Pr(PrCmd),
+    /// Server: stacked pull requests (`ntr stack [list|create|sync]`).
+    #[command(subcommand)]
+    Stack(StackCmd),
     /// Server: branch rules on a hosted repository; with no action, lists them.
     Rules {
         #[command(subcommand)]
@@ -353,9 +356,21 @@ enum PrCmd {
         title: String,
         #[arg(long, short = 'm', default_value = "")]
         body: String,
+        #[arg(long)]
+        parent: Option<u32>,
+        #[arg(long)]
+        stack: Option<String>,
     },
-    /// A pull request: versions, files, commits, notes and whether it merges.
+    /// A pull request: versions, files, commits, notes, stack chain and review tour.
     Show { number: u32 },
+    /// Compare two versions of a pull request directly (`v1` -> `v2`).
+    Interdiff {
+        number: u32,
+        from: u32,
+        to: u32,
+        /// Optional path to show a line diff between the two versions.
+        path: Option<String>,
+    },
     Merge {
         number: u32,
         /// merge, squash, rebase or ff.
@@ -379,6 +394,26 @@ enum PrCmd {
         #[arg(long)]
         old: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum StackCmd {
+    /// List PR stacks in this repository.
+    List,
+    /// Open a pull request stacked on top of `--parent` (another PR number).
+    Create {
+        source: String,
+        #[arg(long)]
+        parent: u32,
+        #[arg(long, short = 't')]
+        title: String,
+        #[arg(long, short = 'm', default_value = "")]
+        body: String,
+        #[arg(long)]
+        stack: Option<String>,
+    },
+    /// Restack child PRs cleanly on top of PR NUMBER.
+    Sync { pull: u32 },
 }
 
 #[derive(Subcommand)]
@@ -938,6 +973,10 @@ fn main() -> Result<()> {
             let repo = pick_repo(&mut c, cli.repo)?;
             pr(&mut c, out, &style, repo, cmd)?;
         }
+        Cmd::Stack(cmd) => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            stack(&mut c, out, &style, repo, cmd)?;
+        }
         Cmd::Rules { action } => {
             let repo = pick_repo(&mut c, cli.repo)?;
             let request = match action {
@@ -1491,7 +1530,7 @@ fn run_cmd(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd:
 fn pr(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: PrCmd) -> Result<()> {
     let request = match cmd {
         PrCmd::List => Request::ListPulls { repo },
-        PrCmd::Create { source, target, title, body } => {
+        PrCmd::Create { source, target, title, body, parent, stack } => {
             let target = match target {
                 Some(t) => t,
                 None => match repos(c)?.into_iter().find(|r| r.id == repo).and_then(|r| r.head) {
@@ -1499,9 +1538,32 @@ fn pr(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: PrCm
                     _ => bail!("{repo} has no default branch; name the target"),
                 },
             };
-            Request::CreatePull { repo, title, body, source, target }
+            Request::CreatePull { repo, title, body, source, target, stack_id: stack, parent_pull: parent }
         }
         PrCmd::Show { number } => Request::Pull { repo, number },
+        PrCmd::Interdiff { number, from, to, path } => {
+            if let Some(path) = path {
+                match c.call(Request::CompareVersionDiff { repo, number, from_version: from, to_version: to, path: path.clone(), context: None })? {
+                    Response::FileDiff(fd) => {
+                        writeln!(out, "#{} v{from}..v{to}  {path} (+{} -{})", number, fd.additions, fd.deletions)?;
+                        for h in &fd.hunks {
+                            writeln!(out, "@@ -{},{} +{},{} @@", h.old_start, h.old_lines, h.new_start, h.new_lines)?;
+                            for l in &h.lines {
+                                let sign = match l.kind {
+                                    neutrino_proto::LineKind::Added => '+',
+                                    neutrino_proto::LineKind::Removed => '-',
+                                    neutrino_proto::LineKind::Context => ' ',
+                                };
+                                writeln!(out, "{sign}{}", l.text)?;
+                            }
+                        }
+                        return Ok(());
+                    }
+                    r => return Err(unexpected(r)),
+                }
+            }
+            Request::CompareVersions { repo, number, from_version: from, to_version: to }
+        }
         PrCmd::Merge { number, strategy, message, delete_branch } => {
             let strategy = match strategy.as_str() {
                 "merge" => MergeStrategy::Merge,
@@ -1576,10 +1638,30 @@ fn pr(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: PrCm
             for e in &d.commits {
                 writeln!(out, "  {} {}", style.paint("33", &e.sha[..7]), e.subject)?;
             }
-            writeln!(out, "\nFiles")?;
-            for f in &d.files {
-                let counts = if f.binary { "binary".to_string() } else { format!("+{} −{}", f.additions, f.deletions) };
-                writeln!(out, "  {} {}  {}", status_letter(f.status), f.path, style.paint("2", &counts))?;
+            if !d.moves.is_empty() {
+                writeln!(out, "\nMoved AST blocks")?;
+                for m in &d.moves {
+                    writeln!(out, "  {} {}  {}:{} → {}:{} ({} changed)", m.kind, style.paint("36", &m.symbol), m.from_path, m.from_line, m.to_path, m.to_line, m.changed_lines)?;
+                }
+            }
+            if !d.stack.is_empty() {
+                writeln!(out, "\nStack")?;
+                for s in &d.stack {
+                    let conflict = s.stack_conflict.as_deref().map(|c| format!("  {}", style.paint("31", c))).unwrap_or_default();
+                    writeln!(out, "  #{}  {}  {} → {}{conflict}", s.number, state(s.state), s.source, s.target)?;
+                }
+            }
+            if !d.tour.is_empty() {
+                writeln!(out, "\nReview tour (dependency order)")?;
+                for (i, step) in d.tour.iter().enumerate() {
+                    writeln!(out, "  {}. [{}] {}  — {}", i + 1, style.paint("36", &step.tier), step.path, style.paint("2", &step.reason))?;
+                }
+            } else {
+                writeln!(out, "\nFiles")?;
+                for f in &d.files {
+                    let counts = if f.binary { "binary".to_string() } else { format!("+{} −{}", f.additions, f.deletions) };
+                    writeln!(out, "  {} {}  {}", status_letter(f.status), f.path, style.paint("2", &counts))?;
+                }
             }
             if !d.notes.is_empty() {
                 writeln!(out, "\nNotes")?;
@@ -1593,8 +1675,68 @@ fn pr(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: PrCm
                 }
             }
         }
+        Response::VersionDiff(v) => {
+            writeln!(out, "#{} interdiff v{}..v{} ({} → {})", v.number, v.from_version, v.to_version, &v.from_sha[..7.min(v.from_sha.len())], &v.to_sha[..7.min(v.to_sha.len())])?;
+            for f in &v.files {
+                let counts = if f.binary { "binary".to_string() } else { format!("+{} −{}", f.additions, f.deletions) };
+                writeln!(out, "  {} {}  {}", status_letter(f.status), f.path, style.paint("2", &counts))?;
+            }
+        }
         Response::Merged { sha } => writeln!(out, "Merged as {}", &sha[..7.min(sha.len())])?,
         r => return Err(unexpected(r)),
+    }
+    Ok(())
+}
+
+fn stack(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd: StackCmd) -> Result<()> {
+    let state = |s: PullState| match s {
+        PullState::Open => style.paint("32", "open"),
+        PullState::Merged => style.paint("35", "merged"),
+        PullState::Closed => style.paint("31", "closed"),
+    };
+    match cmd {
+        StackCmd::List => match c.call(Request::ListStacks { repo })? {
+            Response::Stacks(list) => {
+                if list.is_empty() {
+                    writeln!(out, "No PR stacks. Create one with `ntr stack create BRANCH --parent PR -t TITLE`.")?;
+                }
+                for st in list {
+                    writeln!(out, "{}", style.paint("1", &st.stack_id))?;
+                    for m in &st.members {
+                        let cmsg = m.stack_conflict.as_deref().map(|e| format!("  {}", style.paint("31", e))).unwrap_or_default();
+                        writeln!(out, "  #{}  {}  {} → {}  {}{cmsg}", m.number, state(m.state), style.paint("36", &m.source), m.target, m.title)?;
+                    }
+                }
+            }
+            r => return Err(unexpected(r)),
+        },
+        StackCmd::Create { source, parent, title, body, stack } => {
+            let parent_detail = match c.call(Request::Pull { repo: repo.clone(), number: parent })? {
+                Response::Pull(d) => d,
+                r => return Err(unexpected(r)),
+            };
+            let target = parent_detail.pull.source.clone();
+            match c.call(Request::CreatePull { repo, title, body, source, target, stack_id: stack, parent_pull: Some(parent) })? {
+                Response::Pull(d) => writeln!(out, "Created stacked PR #{} ({} → {}) in {}", d.pull.number, d.pull.source, d.pull.target, d.pull.stack_id.as_deref().unwrap_or("stack"))?,
+                r => return Err(unexpected(r)),
+            }
+        }
+        StackCmd::Sync { pull } => match c.call(Request::SyncStack { repo, pull })? {
+            Response::StackSynced(rep) => {
+                if rep.updated.is_empty() {
+                    writeln!(out, "Stack rooted at #{} has no open child PRs to sync.", rep.root)?;
+                }
+                for o in &rep.updated {
+                    if let Some(err) = &o.conflict {
+                        writeln!(out, "  #{} {} → {}: {}", o.number, o.source, o.target, style.paint("31", err))?;
+                    } else {
+                        let short = o.new_sha.as_deref().map(|s| &s[..7.min(s.len())]).unwrap_or("ok");
+                        writeln!(out, "  #{} {} → {}: restacked to {}", o.number, o.source, o.target, style.paint("32", short))?;
+                    }
+                }
+            }
+            r => return Err(unexpected(r)),
+        },
     }
     Ok(())
 }
@@ -1676,5 +1818,16 @@ mod tests {
         assert_eq!(sh_quote("Fix it's thing"), r"'Fix it'\''s thing'");
         assert_eq!(sh_quote(""), "''");
         assert_eq!(sh_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
+    }
+
+    #[test]
+    fn parses_stack_and_interdiff_commands() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["ntr", "stack", "create", "feat-b", "--parent", "1", "-t", "Part 2"]).unwrap();
+        assert!(matches!(cli.command, Cmd::Stack(StackCmd::Create { parent: 1, .. })));
+        let cli2 = Cli::try_parse_from(["ntr", "stack", "sync", "1"]).unwrap();
+        assert!(matches!(cli2.command, Cmd::Stack(StackCmd::Sync { pull: 1 })));
+        let cli3 = Cli::try_parse_from(["ntr", "pr", "interdiff", "3", "1", "2"]).unwrap();
+        assert!(matches!(cli3.command, Cmd::Pr(PrCmd::Interdiff { number: 3, from: 1, to: 2, .. })));
     }
 }

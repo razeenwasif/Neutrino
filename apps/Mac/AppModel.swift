@@ -84,6 +84,10 @@ enum PullTab: String {
     case overview, files, commits
 }
 
+enum PullFileOrder: String {
+    case tour, path
+}
+
 /// A file in the Changes list, and which side of it is shown.
 struct ChangeRef: Hashable {
     var path: String
@@ -236,6 +240,11 @@ final class AppModel {
     var pullDiffGeneration = 0
     var pullBusy: String?
     var loadingPulls = false
+    var pullOrder: PullFileOrder = .tour
+    var hideFormatting = false
+    var pullInterdiffFrom: UInt32?
+    var pullInterdiffTo: UInt32?
+    var pullInterdiff: VersionInterdiff?
 
     // CI runs (methods in RunsModel.swift); they belong to the same hosted repo as pull requests.
     var runList: [Run] = []

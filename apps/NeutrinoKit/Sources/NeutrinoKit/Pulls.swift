@@ -31,11 +31,15 @@ public struct PullRequest: Codable, Hashable, Identifiable, Sendable {
     public var updatedAt: Int64
     public var mergedAt: Int64?
     public var mergeSha: String?
+    public var stackId: String?
+    public var parentPull: UInt32?
+    public var stackConflict: String?
 
     public var id: String { "\(repo)#\(number)" }
 
     public init(repo: String, number: UInt32, title: String, body: String, source: String, target: String, state: PullState, headSha: String,
-                versions: UInt32, openNotes: UInt32, createdAt: Int64, updatedAt: Int64, mergedAt: Int64? = nil, mergeSha: String? = nil) {
+                versions: UInt32, openNotes: UInt32, createdAt: Int64, updatedAt: Int64, mergedAt: Int64? = nil, mergeSha: String? = nil,
+                stackId: String? = nil, parentPull: UInt32? = nil, stackConflict: String? = nil) {
         self.repo = repo
         self.number = number
         self.title = title
@@ -50,6 +54,9 @@ public struct PullRequest: Codable, Hashable, Identifiable, Sendable {
         self.updatedAt = updatedAt
         self.mergedAt = mergedAt
         self.mergeSha = mergeSha
+        self.stackId = stackId
+        self.parentPull = parentPull
+        self.stackConflict = stackConflict
     }
 }
 
@@ -200,6 +207,9 @@ public struct PullDetail: Codable, Hashable, Sendable {
     public var rule: BranchRule?
     /// The latest run of each workflow on the latest version.
     public var checks: [Run]
+    public var stack: [StackMember]
+    public var tour: [TourStep]
+    public var moves: [MoveBlock]
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -211,10 +221,16 @@ public struct PullDetail: Codable, Hashable, Sendable {
         commits = try c.decode([LogEntry].self, forKey: .commits)
         rule = try c.decodeIfPresent(BranchRule.self, forKey: .rule)
         checks = try c.decodeIfPresent([Run].self, forKey: .checks) ?? []
+        stack = try c.decodeIfPresent([StackMember].self, forKey: .stack) ?? []
+        tour = try c.decodeIfPresent([TourStep].self, forKey: .tour) ?? []
+        moves = try c.decodeIfPresent([MoveBlock].self, forKey: .moves) ?? []
     }
 
-    public init(pull: PullRequest, versions: [PullVersion], notes: [Note], mergeability: Mergeability?, files: [FileChange], commits: [LogEntry], rule: BranchRule?, checks: [Run] = []) {
+    public init(pull: PullRequest, versions: [PullVersion], notes: [Note], mergeability: Mergeability?, files: [FileChange], commits: [LogEntry], rule: BranchRule?, checks: [Run] = [], stack: [StackMember] = [], tour: [TourStep] = [], moves: [MoveBlock] = []) {
         self.checks = checks
+        self.stack = stack
+        self.tour = tour
+        self.moves = moves
         self.pull = pull
         self.versions = versions
         self.notes = notes
@@ -234,7 +250,7 @@ public struct PullDetail: Codable, Hashable, Sendable {
 /// Pull requests and rules, on the server.
 public protocol PullService: Sendable {
     func pulls(repo: String) async throws -> [PullRequest]
-    func createPull(repo: String, title: String, body: String, source: String, target: String) async throws -> PullDetail
+    func createPull(repo: String, title: String, body: String, source: String, target: String, stackId: String?, parentPull: UInt32?) async throws -> PullDetail
     func pull(repo: String, number: UInt32) async throws -> PullDetail
     func updatePull(repo: String, number: UInt32, title: String?, body: String?, state: PullState?) async throws -> PullDetail
     func addNote(repo: String, number: UInt32, path: String, side: Side, line: UInt32, text: String) async throws -> PullDetail
@@ -242,10 +258,20 @@ public protocol PullService: Sendable {
     func mergePull(repo: String, number: UInt32, strategy: MergeStrategy, message: String?, deleteSource: Bool) async throws -> String
     /// One file's diff from `base` (via the merge base) to `head`.
     func compareDiff(repo: String, base: String, head: String, path: String) async throws -> FileDiff
+    func compareVersions(repo: String, number: UInt32, fromVersion: UInt32, toVersion: UInt32) async throws -> VersionInterdiff
+    func compareVersionDiff(repo: String, number: UInt32, fromVersion: UInt32, toVersion: UInt32, path: String) async throws -> FileDiff
+    func stacks(repo: String) async throws -> [StackInfo]
+    func syncStack(repo: String, pull: UInt32) async throws -> StackSyncReport
     func rules(repo: String) async throws -> [BranchRule]
     func setRule(repo: String, rule: BranchRule) async throws -> [BranchRule]
     func deleteRule(repo: String, pattern: String) async throws -> [BranchRule]
     func overrides(repo: String) async throws -> [RuleOverride]
+}
+
+public extension PullService {
+    func createPull(repo: String, title: String, body: String, source: String, target: String) async throws -> PullDetail {
+        try await createPull(repo: repo, title: title, body: body, source: source, target: target, stackId: nil, parentPull: nil)
+    }
 }
 
 extension ServerService: PullService {
@@ -264,8 +290,8 @@ extension ServerService: PullService {
         return list
     }
 
-    public func createPull(repo: String, title: String, body: String, source: String, target: String) async throws -> PullDetail {
-        try await detail(.createPull(repo: repo, title: title, body: body, source: source, target: target))
+    public func createPull(repo: String, title: String, body: String, source: String, target: String, stackId: String? = nil, parentPull: UInt32? = nil) async throws -> PullDetail {
+        try await detail(.createPull(repo: repo, title: title, body: body, source: source, target: target, stackId: stackId, parentPull: parentPull))
     }
 
     public func pull(repo: String, number: UInt32) async throws -> PullDetail {
@@ -296,6 +322,34 @@ extension ServerService: PullService {
             throw ServiceError.unexpectedResponse
         }
         return d
+    }
+
+    public func compareVersions(repo: String, number: UInt32, fromVersion: UInt32, toVersion: UInt32) async throws -> VersionInterdiff {
+        guard case let .versionDiff(v) = try await call(.compareVersions(repo: repo, number: number, fromVersion: fromVersion, toVersion: toVersion)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return v
+    }
+
+    public func compareVersionDiff(repo: String, number: UInt32, fromVersion: UInt32, toVersion: UInt32, path: String) async throws -> FileDiff {
+        guard case let .fileDiff(d) = try await call(.compareVersionDiff(repo: repo, number: number, fromVersion: fromVersion, toVersion: toVersion, path: path, context: 3)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return d
+    }
+
+    public func stacks(repo: String) async throws -> [StackInfo] {
+        guard case let .stacks(s) = try await call(.listStacks(repo: repo)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return s
+    }
+
+    public func syncStack(repo: String, pull: UInt32) async throws -> StackSyncReport {
+        guard case let .stackSynced(r) = try await call(.syncStack(repo: repo, pull: pull)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return r
     }
 
     public func rules(repo: String) async throws -> [BranchRule] { try await ruleList(.branchRules(repo: repo)) }

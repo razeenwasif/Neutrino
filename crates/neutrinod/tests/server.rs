@@ -356,7 +356,7 @@ async fn import_then_every_push_reaches_the_mirror() {
     let dir3 = wc.clone();
     let out = tokio::task::spawn_blocking(move || Command::new("git").args(["push", "-q", "atlas", "topic"]).current_dir(&dir3).output().unwrap()).await.unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let created = call(&sock, Request::CreatePull { repo: "app".into(), title: "Add CI".into(), body: String::new(), source: "topic".into(), target: "develop".into() }).await;
+    let created = call(&sock, Request::CreatePull { repo: "app".into(), title: "Add CI".into(), body: String::new(), source: "topic".into(), target: "develop".into(), stack_id: None, parent_pull: None }).await;
     assert!(!matches!(created, Response::Error { .. }), "{created:?}");
     let merged = match call(&sock, Request::MergePull { repo: "app".into(), number: 1, strategy: neutrino_proto::MergeStrategy::Merge, message: None, delete_source: false }).await {
         Response::Merged { sha } => sha,

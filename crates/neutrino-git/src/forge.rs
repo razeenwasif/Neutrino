@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 
 use gix::ObjectId;
-use neutrino_proto::{FileChange, FileDiff, LogEntry, MergeStrategy, Mergeability, Side};
+use neutrino_proto::{FileChange, FileDiff, LogEntry, MergeStrategy, Mergeability, MoveBlock, Side, TourStep};
 
 use crate::worktree::git_binary;
 use crate::{Change, Ctx, DiffCache, Error, Result, fail, root, signature, split_message, tree_changes};
@@ -127,6 +127,56 @@ pub fn compare_diff(repo: &gix::Repository, base: &str, head: &str, path: &str, 
         return fail(format!("{path} isn't changed between {base} and {head}"));
     };
     crate::change_diff(repo, c, context, cache)
+}
+
+/// Direct tree comparison between two commits without finding a merge-base
+/// (used for force-pushed or rebased PR version interdiffs).
+fn compared_direct(repo: &gix::Repository, from: &str, to: &str) -> Result<Vec<Change>> {
+    let (from, to) = (object(repo, from)?, object(repo, to)?);
+    let old = repo.find_commit(from).ctx("reading commit")?.tree().ctx("reading tree")?;
+    let new = repo.find_commit(to).ctx("reading commit")?.tree().ctx("reading tree")?;
+    tree_changes(repo, Some(&old), &new)
+}
+
+pub fn compare_direct(repo: &gix::Repository, from: &str, to: &str) -> Result<Vec<FileChange>> {
+    Ok(crate::file_list(repo, compared_direct(repo, from, to)?).0)
+}
+
+pub fn compare_direct_diff(repo: &gix::Repository, from: &str, to: &str, path: &str, context: u32, cache: &DiffCache) -> Result<FileDiff> {
+    let Some(c) = compared_direct(repo, from, to)?.into_iter().find(|c| c.path == path) else {
+        return fail(format!("{path} isn't changed between {from} and {to}"));
+    };
+    crate::change_diff(repo, c, context, cache)
+}
+
+fn analysis_blob(repo: &gix::Repository, side: Option<(ObjectId, gix::object::tree::EntryMode)>) -> Vec<u8> {
+    const MAX_ANALYSIS_BYTES: u64 = 256 * 1024;
+    let Some((id, mode)) = side else { return Vec::new() };
+    if mode.is_commit() || !repo.has_object(id) {
+        return Vec::new();
+    }
+    let Ok(header) = repo.find_header(id) else { return Vec::new() };
+    if header.size() > MAX_ANALYSIS_BYTES {
+        return Vec::new();
+    }
+    let Ok(mut obj) = repo.find_blob(id) else { return Vec::new() };
+    let data = obj.take_data();
+    if neutrino_diff::is_binary(&data) { Vec::new() } else { data }
+}
+
+/// Compute cross-file AST move blocks and call-graph review tour across a comparison.
+pub fn analyze_compare(repo: &gix::Repository, base: &str, head: &str, direct: bool) -> Result<(Vec<MoveBlock>, Vec<TourStep>)> {
+    let changes = if direct { compared_direct(repo, base, head)? } else { compared(repo, base, head)? };
+    let mut loaded: Vec<(String, Vec<u8>, Vec<u8>)> = Vec::new();
+    for c in changes.into_iter().take(64) {
+        let old = analysis_blob(repo, c.old);
+        let new = analysis_blob(repo, c.new);
+        loaded.push((c.path, old, new));
+    }
+    let refs: Vec<(&str, &[u8], &[u8])> = loaded.iter().map(|(p, o, n)| (p.as_str(), o.as_slice(), n.as_slice())).collect();
+    let moves = neutrino_diff::semantic::detect_cross_file_moves(&refs);
+    let tour = neutrino_diff::tour::compute_review_tour(&refs);
+    Ok((moves, tour))
 }
 
 /// Commits on `head` that aren't on `base`, oldest first, as a pull request lists them.
@@ -333,6 +383,60 @@ fn rebase(repo: &gix::Repository, t: ObjectId, s: ObjectId, source: &str, target
 /// Point `refs/pull/<number>/head` at a version, so its commits are never collected.
 pub fn keep_pull_head(repo: &gix::Repository, number: u32, sha: &str) -> Result<()> {
     ok(root(repo), &["update-ref", &format!("refs/pull/{number}/head"), sha], &[], None).map(|_| ())
+}
+
+/// Pin each uploaded PR version (`refs/pull/<number>/v<version>`) so force-pushed
+/// snapshots stay reachable for version interdiffs.
+pub fn keep_pull_version(repo: &gix::Repository, number: u32, version: u32, sha: &str) -> Result<()> {
+    ok(root(repo), &["update-ref", &format!("refs/pull/{number}/v{version}"), sha], &[], None).map(|_| ())
+}
+
+/// Bare-repo in-memory rebase of `old_base..branch` onto `new_base` via `git merge-tree` + `commit-tree`.
+/// Leaves `refs/heads/<branch>` untouched and returns `Ok(Err(conflicting_files))` on conflict.
+pub fn restack_branch(
+    repo: &gix::Repository,
+    old_base: ObjectId,
+    new_base: ObjectId,
+    branch: &str,
+    committer: &Identity,
+) -> Result<std::result::Result<ObjectId, Vec<String>>> {
+    let tip_before = branch_tip(repo, branch)?;
+    if is_ancestor(repo, new_base, tip_before)? {
+        return Ok(Ok(tip_before));
+    }
+    let list = ok(root(repo), &["rev-list", "--reverse", "--parents", &format!("{old_base}..{tip_before}")], &[], None)?;
+    if list.trim().is_empty() {
+        return Ok(Ok(tip_before));
+    }
+    let mut tip = new_base;
+    for line in list.lines() {
+        let ids: Vec<ObjectId> = line.split_whitespace().filter_map(|h| ObjectId::from_hex(h.as_bytes()).ok()).collect();
+        let (commit, parents) = ids.split_first().ok_or_else(|| Error("reading commits to restack".into()))?;
+        if parents.len() != 1 {
+            return Ok(Err(vec![format!("{branch} contains merge commits and cannot auto-rebase")]));
+        }
+        let tree = match merge_trees(repo, Some(parents[0]), tip, *commit)? {
+            Ok(tree) => tree,
+            Err(files) => return Ok(Err(files)),
+        };
+        let c = repo.find_commit(*commit).ctx("reading commit")?;
+        let message = c.message_raw_sloppy().to_string();
+        let author = c.author().ctx("reading author")?;
+        let who = Identity { name: author.name.to_string(), email: author.email.to_string() };
+        let date = author.time().ok().map(|t| {
+            let (sign, off) = if t.offset < 0 { ('-', -t.offset) } else { ('+', t.offset) };
+            format!("{} {sign}{:02}{:02}", t.seconds, off / 3600, off % 3600 / 60)
+        });
+        tip = commit_tree(repo, &tree, &[tip], &message, &who, committer, date.as_deref())?;
+    }
+    ok(
+        root(repo),
+        &["update-ref", "-m", &format!("neutrino: restack {branch}"), &format!("refs/heads/{branch}"), &tip.to_string(), &tip_before.to_string()],
+        &[],
+        None,
+    )
+    .map_err(|e| Error(format!("{branch} moved while restacking; try again ({e})")))?;
+    Ok(Ok(tip))
 }
 
 pub fn delete_branch(repo: &gix::Repository, branch: &str, expected: ObjectId) -> Result<()> {

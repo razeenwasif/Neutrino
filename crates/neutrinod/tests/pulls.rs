@@ -106,7 +106,7 @@ async fn review_and_merge() {
     assert!(push(&wc, &["push", "-q", "origin", "feature"]).await.0);
 
     // Open it; the same branches can't have two open at once.
-    let create = || Request::CreatePull { repo: id.clone(), title: "Shout".into(), body: "Louder.".into(), source: "feature".into(), target: "main".into() };
+    let create = || Request::CreatePull { repo: id.clone(), title: "Shout".into(), body: "Louder.".into(), source: "feature".into(), target: "main".into(), stack_id: None, parent_pull: None };
     let d = detail(&sock, create()).await;
     assert_eq!((d.pull.number, d.pull.versions, d.files.len(), d.commits.len()), (1, 1, 1, 1));
     assert!(matches!(call(&sock, create()).await, Response::Error { .. }));
@@ -169,7 +169,7 @@ async fn review_and_merge() {
     write(&wc, "other.txt", "y\n");
     git(&wc, &["commit", "-qam", "tweak"]);
     assert!(push(&wc, &["push", "-q", "origin", "tweak"]).await.0);
-    let d = detail(&sock, Request::CreatePull { repo: id.clone(), title: "Tweak".into(), body: String::new(), source: "tweak".into(), target: "main".into() }).await;
+    let d = detail(&sock, Request::CreatePull { repo: id.clone(), title: "Tweak".into(), body: String::new(), source: "tweak".into(), target: "main".into(), stack_id: None, parent_pull: None }).await;
     assert_eq!(d.pull.number, 2);
     git(&wc, &["checkout", "-q", "main"]);
     git(&wc, &["merge", "-q", "--ff-only", "tweak"]);
@@ -188,6 +188,202 @@ async fn review_and_merge() {
 /// Tests never touch the login Keychain.
 fn neutrino_vault_test_key() -> neutrino_vault::KeyStore {
     neutrino_vault::KeyStore::File(std::env::temp_dir().join(format!("ntr-test-vault-{}-{:?}.key", std::process::id(), std::thread::current().id())))
+}
+
+#[tokio::test]
+async fn wave2_interdiff_stacked_prs_and_semantic_diff() {
+    // SAFETY: set before any hook runs, and only read by the daemon this test starts.
+    unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let sock = root.join("s.sock");
+    let (_server, stop) = start(root.join("server"), sock.clone()).await;
+
+    let hosted = match call(&sock, Request::CreateHosted { name: "stackapp".into(), description: None }).await {
+        Response::Repo(r) => r,
+        other => panic!("{other:?}"),
+    };
+    let id = hosted.id;
+    let url = hosted.path;
+    let wc = root.join("wc");
+    std::fs::create_dir(&wc).unwrap();
+    git(&wc, &["init", "-q", "-b", "main"]);
+    write(&wc, "proto.rs", "pub struct Token {\n    pub val: i32,\n}\n");
+    write(&wc, "app.rs", "pub fn use_token(t: Token) -> i32 {\n    t.val\n}\n");
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "init"]);
+    git(&wc, &["remote", "add", "origin", &url]);
+    assert!(push(&wc, &["push", "-q", "origin", "main"]).await.0);
+
+    // PR #1 (s1 -> main): edits proto.rs and app.rs, then force-pushes v2 for interdiff.
+    git(&wc, &["checkout", "-q", "-b", "s1"]);
+    write(&wc, "proto.rs", "pub struct Token {\n    pub val: i32,\n    pub tag: &'static str,\n}\n");
+    write(&wc, "app.rs", "pub fn use_token(t: Token) -> i32 {\n    t.val + 1\n}\n");
+    git(&wc, &["commit", "-qam", "s1 v1"]);
+    assert!(push(&wc, &["push", "-q", "origin", "s1"]).await.0);
+    let d1 = detail(
+        &sock,
+        Request::CreatePull {
+            repo: id.clone(),
+            title: "Stack 1".into(),
+            body: String::new(),
+            source: "s1".into(),
+            target: "main".into(),
+            stack_id: Some("feat-chain".into()),
+            parent_pull: None,
+        },
+    )
+    .await;
+    assert_eq!(d1.pull.number, 1);
+    assert!(d1.tour.iter().position(|t| t.path == "proto.rs") < d1.tour.iter().position(|t| t.path == "app.rs"));
+
+    // Verify compare_diff returns syntax spans.
+    let diff_resp = call(
+        &sock,
+        Request::CompareDiff {
+            repo: id.clone(),
+            base: "main".into(),
+            head: d1.pull.head_sha.clone(),
+            path: "proto.rs".into(),
+            context: None,
+        },
+    )
+    .await;
+    let Response::FileDiff(fd) = diff_resp else { panic!("{diff_resp:?}") };
+    assert!(fd.hunks.iter().flat_map(|h| &h.lines).any(|l| !l.syntax.is_empty()), "expected tree-sitter spans in FileDiff");
+
+    // Note on v1 + force-push v2 -> test CompareVersions interdiff.
+    let _ = detail(&sock, Request::AddNote { repo: id.clone(), number: 1, path: "app.rs".into(), side: Side::New, line: 2, text: "Check +1".into() }).await;
+    write(&wc, "app.rs", "pub fn use_token(t: Token) -> i32 {\n    t.val + 2\n}\n");
+    git(&wc, &["commit", "-qa", "--amend", "--no-edit"]);
+    let (ok, said) = push(&wc, &["push", "--force", "origin", "s1"]).await;
+    assert!(ok && said.contains("version 2"), "{said}");
+
+    let inter = match call(&sock, Request::CompareVersions { repo: id.clone(), number: 1, from_version: 1, to_version: 2 }).await {
+        Response::VersionDiff(v) => v,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((inter.from_version, inter.to_version, inter.files.len()), (1, 2, 1));
+    assert_eq!(inter.files[0].path, "app.rs");
+    let vdiff = call(
+        &sock,
+        Request::CompareVersionDiff { repo: id.clone(), number: 1, from_version: 1, to_version: 2, path: "app.rs".into(), context: None },
+    )
+    .await;
+    assert!(matches!(vdiff, Response::FileDiff(f) if f.path == "app.rs" && f.additions == 1 && f.deletions == 1));
+
+    // Create 3-deep stack: #2 (s2 -> s1) and #3 (s3 -> s2).
+    git(&wc, &["checkout", "-q", "-b", "s2"]);
+    write(&wc, "s2.rs", "pub fn layer2() -> i32 { 2 }\n");
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "s2"]);
+    assert!(push(&wc, &["push", "-q", "origin", "s2"]).await.0);
+    let d2 = detail(
+        &sock,
+        Request::CreatePull {
+            repo: id.clone(),
+            title: "Stack 2".into(),
+            body: String::new(),
+            source: "s2".into(),
+            target: "s1".into(),
+            stack_id: None,
+            parent_pull: Some(1),
+        },
+    )
+    .await;
+    assert_eq!(d2.stack.len(), 2);
+
+    git(&wc, &["checkout", "-q", "-b", "s3"]);
+    write(&wc, "s3.rs", "pub fn layer3() -> i32 { 3 }\n");
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "s3"]);
+    assert!(push(&wc, &["push", "-q", "origin", "s3"]).await.0);
+    let d3 = detail(
+        &sock,
+        Request::CreatePull {
+            repo: id.clone(),
+            title: "Stack 3".into(),
+            body: String::new(),
+            source: "s3".into(),
+            target: "s2".into(),
+            stack_id: None,
+            parent_pull: Some(2),
+        },
+    )
+    .await;
+    assert_eq!(d3.stack.len(), 3);
+
+    // Also create a conflicting stack PR #4 (s4 -> s1 modifying proto.rs) to verify conflict recording.
+    git(&wc, &["checkout", "-q", "-b", "s4", "s1"]);
+    write(&wc, "proto.rs", "pub struct Token {\n    pub val: u64,\n}\n");
+    git(&wc, &["commit", "-qam", "s4 conflicting proto change"]);
+    assert!(push(&wc, &["push", "-q", "origin", "s4"]).await.0);
+    let d4 = detail(
+        &sock,
+        Request::CreatePull {
+            repo: id.clone(),
+            title: "Stack 4 Conflict".into(),
+            body: String::new(),
+            source: "s4".into(),
+            target: "s1".into(),
+            stack_id: Some("conflict-chain".into()),
+            parent_pull: Some(1),
+        },
+    )
+    .await;
+    let s4_before = d4.pull.head_sha.clone();
+
+    // Advance main with another conflicting edit to proto.rs so merging #1 (actually #1 cleanly merges into main, let's first modify main on proto.rs? Wait: if main conflicts #1, #1 can't merge. Instead, #1 has val+2 on app.rs cleanly, and let's have main change s4's file ONLY before merging #1!).
+    git(&wc, &["checkout", "-q", "main"]);
+    write(&wc, "proto.rs", "pub struct ConflictOnlyOnMain {}\n");
+    git(&wc, &["commit", "-qam", "conflict setup"]);
+    // Wait: if main edits proto.rs AND #1 edits proto.rs, #1 will conflict with main! Instead edit a DIFFERENT file on main OR make #4 edit another_file.txt modified on main!
+    // Reset cleanly: put the conflict on a new commit on main modifying `shared.txt`, and put `shared.txt` in #4.
+    git(&wc, &["reset", "--hard", "HEAD~1"]);
+    write(&wc, "shared.txt", "from-main\n");
+    git(&wc, &["add", "shared.txt"]);
+    git(&wc, &["commit", "-q", "-m", "main shared"]);
+    assert!(push(&wc, &["push", "-q", "origin", "main"]).await.0);
+
+    git(&wc, &["checkout", "-q", "s4"]);
+    write(&wc, "shared.txt", "from-s4\n");
+    git(&wc, &["add", "shared.txt"]);
+    git(&wc, &["commit", "-q", "-m", "s4 shared conflict"]);
+    assert!(push(&wc, &["push", "-q", "origin", "s4"]).await.0);
+    let d4 = detail(&sock, Request::Pull { repo: id.clone(), number: 4 }).await;
+    let s4_sha_pre = d4.pull.head_sha.clone();
+
+    // Merge #1 -> auto-retargets #2 to main & restacks #2 and #3 cleanly, while #4 records conflict cleanly without touching refs/heads/s4!
+    let merged = match call(
+        &sock,
+        Request::MergePull { repo: id.clone(), number: 1, strategy: MergeStrategy::Squash, message: None, delete_source: true },
+    )
+    .await
+    {
+        Response::Merged { sha } => sha,
+        other => panic!("{other:?}"),
+    };
+    let d2_after = detail(&sock, Request::Pull { repo: id.clone(), number: 2 }).await;
+    assert_eq!(d2_after.pull.target, "main");
+    assert_eq!(d2_after.pull.parent_pull, None);
+    assert!(d2_after.pull.versions >= 2, "expected auto-restack to create v2 on #2");
+    assert!(d2_after.pull.stack_conflict.is_none());
+    assert!(d2_after.mergeability.unwrap().clean);
+    let bare = Path::new(&url);
+    assert_eq!(git(bare, &["merge-base", "main", "s2"]), merged);
+
+    let d3_after = detail(&sock, Request::Pull { repo: id.clone(), number: 3 }).await;
+    assert_eq!(d3_after.pull.target, "s2");
+    assert!(d3_after.pull.versions >= 2, "expected cascading restack on #3");
+    assert!(d3_after.pull.stack_conflict.is_none());
+
+    let d4_after = detail(&sock, Request::Pull { repo: id.clone(), number: 4 }).await;
+    assert_eq!(d4_after.pull.target, "main");
+    assert!(d4_after.pull.stack_conflict.as_deref().is_some_and(|c| c.contains("shared.txt")), "{:?}", d4_after.pull.stack_conflict);
+    assert_eq!(git(bare, &["rev-parse", "s4"]), s4_sha_pre, "conflicting branch ref must stay untouched");
+
+    let _ = s4_before;
+    stop.send(()).unwrap();
 }
 
 /// Tests never touch the real Graviton: steps run as local processes.

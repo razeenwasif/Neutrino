@@ -312,3 +312,35 @@ let runLine = #"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number"
     let overview = try await demo.overview(repo: "nexus", rev: nil)
     #expect(overview.readme == "README.md")
 }
+
+@Test func wave2Wire() throws {
+    let create = try json(Wire.line(id: 1, .createPull(repo: "app", title: "Stack 2", body: "", source: "feat-b", target: "feat-a", stackId: "stk-1", parentPull: 1)))
+    #expect(create == ["id": 1, "method": "create_pull", "params": ["repo": "app", "title": "Stack 2", "body": "", "source": "feat-b", "target": "feat-a", "stack_id": "stk-1", "parent_pull": 1]] as NSDictionary)
+
+    let cv = try json(Wire.line(id: 2, .compareVersions(repo: "app", number: 3, fromVersion: 1, toVersion: 2)))
+    #expect(cv == ["id": 2, "method": "compare_versions", "params": ["repo": "app", "number": 3, "from_version": 1, "to_version": 2]] as NSDictionary)
+
+    let cvd = try json(Wire.line(id: 3, .compareVersionDiff(repo: "app", number: 3, fromVersion: 1, toVersion: 2, path: "src/lib.rs", context: nil)))
+    #expect(cvd == ["id": 3, "method": "compare_version_diff", "params": ["repo": "app", "number": 3, "from_version": 1, "to_version": 2, "path": "src/lib.rs"]] as NSDictionary)
+
+    let stacks = try json(Wire.line(id: 4, .listStacks(repo: "app")))
+    #expect(stacks == ["id": 4, "method": "list_stacks", "params": ["repo": "app"]] as NSDictionary)
+
+    let sync = try json(Wire.line(id: 5, .syncStack(repo: "app", pull: 3)))
+    #expect(sync == ["id": 5, "method": "sync_stack", "params": ["repo": "app", "pull": 3]] as NSDictionary)
+
+    let diffJson = #"{"id":1,"type":"file_diff","data":{"path":"src/lib.rs","status":"modified","binary":false,"too_large":false,"additions":1,"deletions":1,"hunks":[{"old_start":1,"old_lines":1,"new_start":1,"new_lines":1,"noise":"import_sort","lines":[{"kind":"added","old_line":null,"new_line":1,"text":"use std::io;","segments":[],"no_newline":false,"syntax":[{"start":0,"len":3,"kind":"keyword"}]}]}],"moves":[{"id":1,"symbol":"helper","kind":"function","from_path":"src/a.rs","from_line":10,"to_path":"src/lib.rs","to_line":20,"lines":5,"changed_lines":0}],"semantic_summary":{"moved_blocks":1,"formatting_hunks":0,"import_hunks":1,"changed_symbols":["helper"]}}}"#
+    guard case let .fileDiff(fd) = try Wire.decode(Data(diffJson.utf8)).1 else { Issue.record("not a file_diff"); return }
+    #expect(fd.hunks[0].noise == .importSort)
+    #expect(fd.hunks[0].lines[0].syntax == [SyntaxSpan(start: 0, len: 3, kind: .keyword)])
+    #expect(fd.moves.count == 1 && fd.moves[0].symbol == "helper")
+    #expect(fd.semanticSummary?.importHunks == 1)
+
+    let interJson = #"{"id":2,"type":"version_diff","data":{"number":3,"from_version":1,"to_version":2,"from_sha":"aaa","to_sha":"bbb","files":[{"path":"src/lib.rs","status":"modified","binary":false,"additions":2,"deletions":1}],"commits":[],"notes":[],"moves":[],"tour":[{"path":"src/lib.rs","tier":"core","reason":"referenced by 1 caller","defines":["helper"],"referenced_by":["src/main.rs"]}]}}"#
+    guard case let .versionDiff(vi) = try Wire.decode(Data(interJson.utf8)).1 else { Issue.record("not a version_diff"); return }
+    #expect(vi.fromVersion == 1 && vi.toVersion == 2 && vi.tour.first?.tier == "core")
+
+    let syncJson = #"{"id":3,"type":"stack_synced","data":{"root":1,"updated":[{"number":2,"source":"feat-b","target":"feat-a","new_sha":"ccc","conflict":null}]}}"#
+    guard case let .stackSynced(sr) = try Wire.decode(Data(syncJson.utf8)).1 else { Issue.record("not a stack_synced"); return }
+    #expect(sr.root == 1 && sr.updated.first?.newSha == "ccc")
+}

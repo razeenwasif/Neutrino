@@ -234,7 +234,7 @@ async fn runs_from_pushes_and_pull_requests() {
     assert!(push(&wc, &["push", "-q", "origin", "feature"]).await.0);
     let before = runs(&sock, &id).await.len();
     assert!(matches!(
-        call(&sock, Request::CreatePull { repo: id.clone(), title: "Change".into(), body: String::new(), source: "feature".into(), target: "main".into() }).await,
+        call(&sock, Request::CreatePull { repo: id.clone(), title: "Change".into(), body: String::new(), source: "feature".into(), target: "main".into(), stack_id: None, parent_pull: None }).await,
         Response::Pull(_)
     ));
     let after = runs(&sock, &id).await;

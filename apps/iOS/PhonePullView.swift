@@ -163,15 +163,15 @@ struct PhoneDiffView: View {
     }
 
     private func line(_ l: DiffLine) -> some View {
-        let (sign, bg): (String, Color) = switch l.kind {
-        case .added: ("+", N.ok.opacity(0.12))
-        case .removed: ("−", N.danger.opacity(0.12))
-        case .context: (" ", .clear)
+        let (sign, bg, emph): (String, Color, Color) = switch l.kind {
+        case .added: ("+", N.ok.opacity(0.12), N.ok.opacity(0.24))
+        case .removed: ("−", N.danger.opacity(0.12), N.danger.opacity(0.24))
+        case .context: (" ", .clear, .clear)
         }
         return HStack(spacing: 6) {
             Text((l.kind == .removed ? l.oldLine : l.newLine).map(String.init) ?? "").frame(width: 32, alignment: .trailing).foregroundStyle(.tertiary)
             Text(sign).foregroundStyle(l.kind == .added ? N.ok : N.danger)
-            Text(l.text.isEmpty ? " " : l.text)
+            Text(SyntaxHighlight.attributedLine(text: l.text, syntax: l.syntax, segments: l.segments, fallback: N.body, emph: emph))
         }
         .font(.system(size: 11, design: .monospaced))
         .padding(.horizontal, 6)

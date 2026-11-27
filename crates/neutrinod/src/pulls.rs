@@ -9,7 +9,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use neutrino_git::forge::{self, Identity};
 use neutrino_git::gix;
-use neutrino_proto::{BranchRule, MergeStrategy, PullDetail, PullState, RefUpdate, RepoEvent, Response, Side};
+use neutrino_proto::{
+    BranchRule, MergeStrategy, PullDetail, PullState, RefUpdate, RepoEvent, Response, Side, StackSyncOutcome, StackSyncReport, VersionInterdiff,
+};
 use neutrino_store::Store;
 
 use crate::{Daemon, hosting};
@@ -53,7 +55,17 @@ impl Daemon {
         }
     }
 
-    pub(crate) fn create_pull(&self, id: &str, title: &str, body: &str, source: &str, target: &str) -> Result<Response> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_pull(
+        &self,
+        id: &str,
+        title: &str,
+        body: &str,
+        source: &str,
+        target: &str,
+        stack_id: Option<String>,
+        parent_pull: Option<u32>,
+    ) -> Result<Response> {
         let store = self.store()?;
         let repo = self.hosted(id)?;
         if source == target {
@@ -66,8 +78,19 @@ impl Daemon {
         }
         let base = forge::merge_base(&repo, target_tip, head)?.unwrap_or(target_tip);
         let _guard = self.writes.lock().unwrap();
-        let number = store.create_pull(id, title, body, source, target, &head.to_string(), &base.to_string())?;
+        let number = store.create_pull_in_stack(
+            id,
+            title,
+            body,
+            source,
+            target,
+            &head.to_string(),
+            &base.to_string(),
+            stack_id.as_deref(),
+            parent_pull,
+        )?;
         forge::keep_pull_head(&repo, number, &head.to_string())?;
+        forge::keep_pull_version(&repo, number, 1, &head.to_string())?;
         drop(_guard);
         self.pulls_changed(id);
         let changed = self.changed_files(id, &base.to_string(), &head.to_string());
@@ -96,6 +119,11 @@ impl Daemon {
             (true, Some(_), Some(_)) => Some(forge::mergeability(&repo, &pull.target, &pull.source)?),
             _ => None,
         };
+        let (moves, tour) = forge::analyze_compare(&repo, &base, &last.head_sha, false).unwrap_or_default();
+        let stack = match &pull.stack_id {
+            Some(sid) => store.stack_members(id, sid)?,
+            None => Vec::new(),
+        };
 
         // Follow each note to where its line is in the latest version.
         let old_now = match (gix::ObjectId::from_hex(base.as_bytes()), gix::ObjectId::from_hex(last.head_sha.as_bytes())) {
@@ -121,7 +149,130 @@ impl Daemon {
             mergeability,
             files,
             commits,
+            stack,
+            tour,
+            moves,
         })))
+    }
+
+    pub(crate) fn compare_versions(&self, id: &str, number: u32, from_version: u32, to_version: u32) -> Result<Response> {
+        let store = self.store()?;
+        let repo = self.hosted(id)?;
+        let versions = store.versions(id, number)?;
+        let v_from = versions.iter().find(|v| v.version == from_version).with_context(|| format!("PR #{number} has no version {from_version}"))?;
+        let v_to = versions.iter().find(|v| v.version == to_version).with_context(|| format!("PR #{number} has no version {to_version}"))?;
+        let files = forge::compare_direct(&repo, &v_from.head_sha, &v_to.head_sha)?;
+        let commits = forge::commits_between(&repo, &v_from.head_sha, &v_to.head_sha).unwrap_or_default();
+        let (moves, tour) = forge::analyze_compare(&repo, &v_from.head_sha, &v_to.head_sha, true).unwrap_or_default();
+        let mut notes = store.notes(id, number)?;
+        for note in &mut notes {
+            let Some(nv) = versions.iter().find(|v| v.version == note.version) else { continue };
+            if note.side == Side::New {
+                note.current_line = forge::map_line(&repo, &nv.head_sha, &v_to.head_sha, &note.path, note.line).unwrap_or(None);
+            }
+        }
+        Ok(Response::VersionDiff(Box::new(VersionInterdiff {
+            number,
+            from_version,
+            to_version,
+            from_sha: v_from.head_sha.clone(),
+            to_sha: v_to.head_sha.clone(),
+            files,
+            commits,
+            notes,
+            moves,
+            tour,
+        })))
+    }
+
+    pub(crate) fn compare_version_diff(&self, id: &str, number: u32, from_version: u32, to_version: u32, path: &str, context: u32) -> Result<Response> {
+        let store = self.store()?;
+        let repo = self.hosted(id)?;
+        let versions = store.versions(id, number)?;
+        let v_from = versions.iter().find(|v| v.version == from_version).with_context(|| format!("PR #{number} has no version {from_version}"))?;
+        let v_to = versions.iter().find(|v| v.version == to_version).with_context(|| format!("PR #{number} has no version {to_version}"))?;
+        Ok(Response::FileDiff(forge::compare_direct_diff(&repo, &v_from.head_sha, &v_to.head_sha, path, context, &self.diffs)?))
+    }
+
+    pub(crate) fn list_stacks(&self, id: &str) -> Result<Response> {
+        self.registry.get(id)?;
+        Ok(Response::Stacks(self.store()?.stacks(id)?))
+    }
+
+    pub(crate) fn sync_stack(&self, id: &str, root_pull: u32) -> Result<Response> {
+        let store = self.store()?;
+        let repo = self.hosted(id)?;
+        let pull = store.pull(id, root_pull)?;
+        let versions = store.versions(id, root_pull)?;
+        let last_head = versions.last().map(|v| v.head_sha.clone()).unwrap_or_else(|| pull.head_sha.clone());
+        let old_tip = gix::ObjectId::from_hex(last_head.as_bytes()).context("invalid root PR SHA")?;
+
+        let _guard = self.writes.lock().unwrap();
+        let mut outcomes = Vec::new();
+        match pull.state {
+            PullState::Merged => {
+                let merge_sha = pull.merge_sha.as_deref().context("merged PR missing merge_sha")?;
+                let new_base = gix::ObjectId::from_hex(merge_sha.as_bytes()).context("invalid merge_sha")?;
+                self.restack_children(&repo, id, root_pull, old_tip, &pull.target, Some(pull.parent_pull), new_base, &committer(&repo, old_tip)?, &mut outcomes)?;
+            }
+            PullState::Open => {
+                let current_tip = forge::branch_tip(&repo, &pull.source)?;
+                let who = committer(&repo, current_tip)?;
+                self.restack_children(&repo, id, root_pull, old_tip, &pull.source, None, current_tip, &who, &mut outcomes)?;
+            }
+            PullState::Closed => bail!("#{root_pull} is closed"),
+        }
+        drop(_guard);
+        self.pulls_changed(id);
+        Ok(Response::StackSynced(StackSyncReport { root: root_pull, updated: outcomes }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn restack_children(
+        &self,
+        repo: &gix::Repository,
+        id: &str,
+        parent: u32,
+        old_parent_tip: gix::ObjectId,
+        new_target: &str,
+        new_parent_override: Option<Option<u32>>,
+        new_base: gix::ObjectId,
+        who: &Identity,
+        outcomes: &mut Vec<StackSyncOutcome>,
+    ) -> Result<()> {
+        let store = self.store()?;
+        let children = store.child_pulls(id, parent)?;
+        for child in children {
+            let Ok(child_old_tip) = forge::branch_tip(repo, &child.source) else { continue };
+            let next_parent = new_parent_override.unwrap_or(Some(parent));
+            let target_branch = if new_parent_override.is_some() { new_target } else { &child.target };
+            match forge::restack_branch(repo, old_parent_tip, new_base, &child.source, who)? {
+                Ok(new_child_tip) => {
+                    store.retarget_pull(id, child.number, target_branch, next_parent, None)?;
+                    let _ = self.add_version(repo, id, child.number, &child.source, target_branch)?;
+                    outcomes.push(StackSyncOutcome {
+                        number: child.number,
+                        source: child.source.clone(),
+                        target: target_branch.to_string(),
+                        new_sha: Some(new_child_tip.to_string()),
+                        conflict: None,
+                    });
+                    self.restack_children(repo, id, child.number, child_old_tip, &child.source, None, new_child_tip, who, outcomes)?;
+                }
+                Err(conflicts) => {
+                    let msg = format!("rebase conflict in {}", conflicts.join(", "));
+                    store.retarget_pull(id, child.number, target_branch, next_parent, Some(&msg))?;
+                    outcomes.push(StackSyncOutcome {
+                        number: child.number,
+                        source: child.source,
+                        target: target_branch.to_string(),
+                        new_sha: None,
+                        conflict: Some(msg),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn update_pull(&self, id: &str, number: u32, title: Option<String>, body: Option<String>, state: Option<PullState>) -> Result<Response> {
@@ -164,8 +315,9 @@ impl Daemon {
             Err(_) => head,
         };
         let added = store.add_version(id, number, &head.to_string(), &base.to_string())?;
-        if added.is_some() {
+        if let Some(version) = added {
             forge::keep_pull_head(repo, number, &head.to_string())?;
+            forge::keep_pull_version(repo, number, version, &head.to_string())?;
             let changed = self.changed_files(id, &base.to_string(), &head.to_string());
             self.trigger(id, &neutrino_ci::Event::PullRequest { number, source: source.into(), target: target.into(), sha: head.to_string() }, changed.as_deref());
         }
@@ -201,7 +353,11 @@ impl Daemon {
         let target_before = forge::branch_tip(&repo, &pull.target).ok().map(|t| t.to_string());
         let sha = forge::merge(&repo, &pull.target, &pull.source, strategy, &message, &who)?;
         store.mark_merged(id, number, &sha.to_string())?;
-        // Other open pull requests may still come from the source.
+        let mut _stack_outcomes = Vec::new();
+        if let Err(e) = self.restack_children(&repo, id, number, source_tip, &pull.target, Some(pull.parent_pull), sha, &who, &mut _stack_outcomes) {
+            eprintln!("merged #{number} but couldn't restack children: {e:#}");
+        }
+        // Other open pull requests may still come from the source (excluding already-retargeted children).
         if delete_source && store.open_pulls_from(id, &pull.source)?.is_empty() {
             if let Err(e) = forge::delete_branch(&repo, &pull.source, source_tip) {
                 eprintln!("merged #{number} but couldn't delete {}: {e:#}", pull.source);

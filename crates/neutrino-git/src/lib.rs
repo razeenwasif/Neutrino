@@ -577,10 +577,12 @@ pub(crate) fn file_list(repo: &gix::Repository, all: Vec<Change>) -> (Vec<FileCh
     (files, truncated)
 }
 
-/// Diffs already computed, keyed by both sides' blob ids and the context.
+/// Diffs already computed, keyed by both sides' blob ids, context, and syntax grammar.
 /// Blobs never change, so entries never go stale; the oldest are dropped.
+type DiffCacheKey = (Option<ObjectId>, Option<ObjectId>, u32, Option<neutrino_diff::syntax::Lang>);
+
 pub struct DiffCache {
-    inner: Mutex<(HashMap<(Option<ObjectId>, Option<ObjectId>, u32), FileDiffBody>, std::collections::VecDeque<(Option<ObjectId>, Option<ObjectId>, u32)>)>,
+    inner: Mutex<(HashMap<DiffCacheKey, FileDiffBody>, std::collections::VecDeque<DiffCacheKey>)>,
     capacity: usize,
 }
 
@@ -591,6 +593,8 @@ struct FileDiffBody {
     additions: u32,
     deletions: u32,
     hunks: Vec<neutrino_proto::Hunk>,
+    moves: Vec<neutrino_proto::MoveBlock>,
+    semantic_summary: Option<neutrino_proto::SemanticSummary>,
 }
 
 impl DiffCache {
@@ -598,11 +602,11 @@ impl DiffCache {
         DiffCache { inner: Mutex::new((HashMap::new(), Default::default())), capacity }
     }
 
-    fn get(&self, key: &(Option<ObjectId>, Option<ObjectId>, u32)) -> Option<FileDiffBody> {
+    fn get(&self, key: &DiffCacheKey) -> Option<FileDiffBody> {
         self.inner.lock().unwrap().0.get(key).cloned()
     }
 
-    fn put(&self, key: (Option<ObjectId>, Option<ObjectId>, u32), value: FileDiffBody) {
+    fn put(&self, key: DiffCacheKey, value: FileDiffBody) {
         let mut guard = self.inner.lock().unwrap();
         let (map, order) = &mut *guard;
         if map.insert(key, value).is_none() {
@@ -631,25 +635,53 @@ pub fn file_diff(repo: &gix::Repository, sha: &str, path: &str, context: u32, ca
 }
 
 pub(crate) fn change_diff(repo: &gix::Repository, c: Change, context: u32, cache: &DiffCache) -> Result<FileDiff> {
-    let key = (c.old.map(|s| s.0), c.new.map(|s| s.0), context);
+    let lang = neutrino_diff::syntax::Lang::for_path(&c.path);
+    let key = (c.old.map(|s| s.0), c.new.map(|s| s.0), context, lang);
     let body = match cache.get(&key) {
         Some(body) => body,
         None => {
             let body = match (side(repo, c.old), side(repo, c.new)) {
                 (Err(SideError::Unreadable(e)), _) | (_, Err(SideError::Unreadable(e))) => return Err(e),
-                (Ok(old), Ok(new)) if neutrino_diff::is_binary(&old) || neutrino_diff::is_binary(&new) => {
-                    FileDiffBody { binary: true, too_large: false, additions: 0, deletions: 0, hunks: Vec::new() }
-                }
+                (Ok(old), Ok(new)) if neutrino_diff::is_binary(&old) || neutrino_diff::is_binary(&new) => FileDiffBody {
+                    binary: true,
+                    too_large: false,
+                    additions: 0,
+                    deletions: 0,
+                    hunks: Vec::new(),
+                    moves: Vec::new(),
+                    semantic_summary: None,
+                },
                 (Ok(old), Ok(new)) => {
-                    let d = neutrino_diff::diff(&old, &new, context);
-                    FileDiffBody { binary: false, too_large: false, additions: d.additions, deletions: d.deletions, hunks: d.hunks }
+                    let d = neutrino_diff::diff_with_path(&c.path, &old, &new, context);
+                    FileDiffBody {
+                        binary: false,
+                        too_large: false,
+                        additions: d.additions,
+                        deletions: d.deletions,
+                        hunks: d.hunks,
+                        moves: d.moves,
+                        semantic_summary: d.semantic_summary,
+                    }
                 }
-                _ => FileDiffBody { binary: false, too_large: true, additions: 0, deletions: 0, hunks: Vec::new() },
+                _ => FileDiffBody {
+                    binary: false,
+                    too_large: true,
+                    additions: 0,
+                    deletions: 0,
+                    hunks: Vec::new(),
+                    moves: Vec::new(),
+                    semantic_summary: None,
+                },
             };
             cache.put(key, body.clone());
             body
         }
     };
+    let mut moves = body.moves;
+    for m in &mut moves {
+        m.from_path = c.path.clone();
+        m.to_path = c.path.clone();
+    }
     Ok(FileDiff {
         path: c.path,
         old_path: c.old_path,
@@ -659,6 +691,8 @@ pub(crate) fn change_diff(repo: &gix::Repository, c: Change, context: u32, cache
         additions: body.additions,
         deletions: body.deletions,
         hunks: body.hunks,
+        moves,
+        semantic_summary: body.semantic_summary,
     })
 }
 

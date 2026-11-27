@@ -328,14 +328,16 @@ public struct DiffLine: Codable, Hashable, Sendable {
     public var text: String
     public var segments: [Segment]
     public var noNewline: Bool
+    public var syntax: [SyntaxSpan]
 
-    public init(kind: LineKind, oldLine: UInt32?, newLine: UInt32?, text: String, segments: [Segment] = [], noNewline: Bool = false) {
+    public init(kind: LineKind, oldLine: UInt32?, newLine: UInt32?, text: String, segments: [Segment] = [], noNewline: Bool = false, syntax: [SyntaxSpan] = []) {
         self.kind = kind
         self.oldLine = oldLine
         self.newLine = newLine
         self.text = text
         self.segments = segments
         self.noNewline = noNewline
+        self.syntax = syntax
     }
 
     public init(from decoder: Decoder) throws {
@@ -346,6 +348,197 @@ public struct DiffLine: Codable, Hashable, Sendable {
         text = try c.decode(String.self, forKey: .text)
         segments = try c.decodeIfPresent([Segment].self, forKey: .segments) ?? []
         noNewline = try c.decodeIfPresent(Bool.self, forKey: .noNewline) ?? false
+        syntax = try c.decodeIfPresent([SyntaxSpan].self, forKey: .syntax) ?? []
+    }
+}
+
+public enum SyntaxKind: String, Codable, Hashable, Sendable {
+    case keyword
+    case type
+    case function
+    case string
+    case number
+    case comment
+    case property
+    case `operator`
+    case attribute
+    case constant
+}
+
+public struct SyntaxSpan: Codable, Hashable, Sendable {
+    public var start: UInt32
+    public var len: UInt32
+    public var kind: SyntaxKind
+
+    public init(start: UInt32, len: UInt32, kind: SyntaxKind) {
+        self.start = start
+        self.len = len
+        self.kind = kind
+    }
+}
+
+public enum NoiseKind: String, Codable, Hashable, Sendable {
+    case formatting
+    case importSort = "import_sort"
+}
+
+public struct MoveBlock: Codable, Hashable, Sendable {
+    public var id: UInt32
+    public var symbol: String
+    public var kind: String
+    public var fromPath: String
+    public var fromLine: UInt32
+    public var toPath: String
+    public var toLine: UInt32
+    public var lines: UInt32
+    public var changedLines: UInt32
+
+    public init(id: UInt32, symbol: String, kind: String, fromPath: String, fromLine: UInt32, toPath: String, toLine: UInt32, lines: UInt32, changedLines: UInt32) {
+        self.id = id
+        self.symbol = symbol
+        self.kind = kind
+        self.fromPath = fromPath
+        self.fromLine = fromLine
+        self.toPath = toPath
+        self.toLine = toLine
+        self.lines = lines
+        self.changedLines = changedLines
+    }
+}
+
+public struct SemanticSummary: Codable, Hashable, Sendable {
+    public var movedBlocks: UInt32
+    public var formattingHunks: UInt32
+    public var importHunks: UInt32
+    public var changedSymbols: [String]
+
+    public init(movedBlocks: UInt32 = 0, formattingHunks: UInt32 = 0, importHunks: UInt32 = 0, changedSymbols: [String] = []) {
+        self.movedBlocks = movedBlocks
+        self.formattingHunks = formattingHunks
+        self.importHunks = importHunks
+        self.changedSymbols = changedSymbols
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        movedBlocks = try c.decodeIfPresent(UInt32.self, forKey: .movedBlocks) ?? 0
+        formattingHunks = try c.decodeIfPresent(UInt32.self, forKey: .formattingHunks) ?? 0
+        importHunks = try c.decodeIfPresent(UInt32.self, forKey: .importHunks) ?? 0
+        changedSymbols = try c.decodeIfPresent([String].self, forKey: .changedSymbols) ?? []
+    }
+}
+
+public struct TourStep: Codable, Hashable, Sendable {
+    public var path: String
+    public var tier: String
+    public var reason: String
+    public var defines: [String]
+    public var referencedBy: [String]
+
+    public init(path: String, tier: String, reason: String, defines: [String] = [], referencedBy: [String] = []) {
+        self.path = path
+        self.tier = tier
+        self.reason = reason
+        self.defines = defines
+        self.referencedBy = referencedBy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        tier = try c.decode(String.self, forKey: .tier)
+        reason = try c.decode(String.self, forKey: .reason)
+        defines = try c.decodeIfPresent([String].self, forKey: .defines) ?? []
+        referencedBy = try c.decodeIfPresent([String].self, forKey: .referencedBy) ?? []
+    }
+}
+
+public struct StackMember: Codable, Hashable, Identifiable, Sendable {
+    public var number: UInt32
+    public var title: String
+    public var source: String
+    public var target: String
+    public var state: PullState
+    public var parentPull: UInt32?
+    public var stackConflict: String?
+
+    public var id: UInt32 { number }
+
+    public init(number: UInt32, title: String, source: String, target: String, state: PullState, parentPull: UInt32? = nil, stackConflict: String? = nil) {
+        self.number = number
+        self.title = title
+        self.source = source
+        self.target = target
+        self.state = state
+        self.parentPull = parentPull
+        self.stackConflict = stackConflict
+    }
+}
+
+public struct StackInfo: Codable, Hashable, Identifiable, Sendable {
+    public var stackId: String
+    public var members: [StackMember]
+
+    public var id: String { stackId }
+
+    public init(stackId: String, members: [StackMember]) {
+        self.stackId = stackId
+        self.members = members
+    }
+}
+
+public struct StackSyncOutcome: Codable, Hashable, Identifiable, Sendable {
+    public var number: UInt32
+    public var source: String
+    public var target: String
+    public var newSha: String?
+    public var conflict: String?
+
+    public var id: UInt32 { number }
+
+    public init(number: UInt32, source: String, target: String, newSha: String? = nil, conflict: String? = nil) {
+        self.number = number
+        self.source = source
+        self.target = target
+        self.newSha = newSha
+        self.conflict = conflict
+    }
+}
+
+public struct StackSyncReport: Codable, Hashable, Sendable {
+    public var root: UInt32
+    public var updated: [StackSyncOutcome]
+
+    public init(root: UInt32, updated: [StackSyncOutcome]) {
+        self.root = root
+        self.updated = updated
+    }
+}
+
+public struct VersionInterdiff: Codable, Hashable, Sendable {
+    public var number: UInt32
+    public var fromVersion: UInt32
+    public var toVersion: UInt32
+    public var fromSha: String
+    public var toSha: String
+    public var files: [FileChange]
+    public var commits: [LogEntry]
+    public var notes: [Note]
+    public var moves: [MoveBlock]
+    public var tour: [TourStep]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        number = try c.decode(UInt32.self, forKey: .number)
+        fromVersion = try c.decode(UInt32.self, forKey: .fromVersion)
+        toVersion = try c.decode(UInt32.self, forKey: .toVersion)
+        fromSha = try c.decode(String.self, forKey: .fromSha)
+        toSha = try c.decode(String.self, forKey: .toSha)
+        files = try c.decode([FileChange].self, forKey: .files)
+        commits = try c.decode([LogEntry].self, forKey: .commits)
+        notes = try c.decode([Note].self, forKey: .notes)
+        moves = try c.decodeIfPresent([MoveBlock].self, forKey: .moves) ?? []
+        tour = try c.decodeIfPresent([TourStep].self, forKey: .tour) ?? []
     }
 }
 
@@ -355,15 +548,17 @@ public struct Hunk: Codable, Hashable, Sendable {
     public var newStart: UInt32
     public var newLines: UInt32
     public var lines: [DiffLine]
+    public var noise: NoiseKind?
 
     public var header: String { "@@ -\(oldStart),\(oldLines) +\(newStart),\(newLines) @@" }
 
-    public init(oldStart: UInt32, oldLines: UInt32, newStart: UInt32, newLines: UInt32, lines: [DiffLine]) {
+    public init(oldStart: UInt32, oldLines: UInt32, newStart: UInt32, newLines: UInt32, lines: [DiffLine], noise: NoiseKind? = nil) {
         self.oldStart = oldStart
         self.oldLines = oldLines
         self.newStart = newStart
         self.newLines = newLines
         self.lines = lines
+        self.noise = noise
     }
 }
 
@@ -376,8 +571,10 @@ public struct FileDiff: Codable, Hashable, Sendable {
     public var additions: UInt32
     public var deletions: UInt32
     public var hunks: [Hunk]
+    public var moves: [MoveBlock]
+    public var semanticSummary: SemanticSummary?
 
-    public init(path: String, oldPath: String? = nil, status: ChangeStatus, binary: Bool = false, tooLarge: Bool = false, additions: UInt32, deletions: UInt32, hunks: [Hunk]) {
+    public init(path: String, oldPath: String? = nil, status: ChangeStatus, binary: Bool = false, tooLarge: Bool = false, additions: UInt32, deletions: UInt32, hunks: [Hunk], moves: [MoveBlock] = [], semanticSummary: SemanticSummary? = nil) {
         self.path = path
         self.oldPath = oldPath
         self.status = status
@@ -386,6 +583,22 @@ public struct FileDiff: Codable, Hashable, Sendable {
         self.additions = additions
         self.deletions = deletions
         self.hunks = hunks
+        self.moves = moves
+        self.semanticSummary = semanticSummary
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        oldPath = try c.decodeIfPresent(String.self, forKey: .oldPath)
+        status = try c.decode(ChangeStatus.self, forKey: .status)
+        binary = try c.decodeIfPresent(Bool.self, forKey: .binary) ?? false
+        tooLarge = try c.decodeIfPresent(Bool.self, forKey: .tooLarge) ?? false
+        additions = try c.decode(UInt32.self, forKey: .additions)
+        deletions = try c.decode(UInt32.self, forKey: .deletions)
+        hunks = try c.decode([Hunk].self, forKey: .hunks)
+        moves = try c.decodeIfPresent([MoveBlock].self, forKey: .moves) ?? []
+        semanticSummary = try c.decodeIfPresent(SemanticSummary.self, forKey: .semanticSummary)
     }
 }
 
@@ -535,7 +748,7 @@ public enum Request: Sendable, Equatable {
     case createHosted(name: String, description: String?)
     case deleteHosted(repo: String)
     case listPulls(repo: String)
-    case createPull(repo: String, title: String, body: String, source: String, target: String)
+    case createPull(repo: String, title: String, body: String, source: String, target: String, stackId: String? = nil, parentPull: UInt32? = nil)
     case pull(repo: String, number: UInt32)
     case updatePull(repo: String, number: UInt32, title: String?, body: String?, state: PullState?)
     case addNote(repo: String, number: UInt32, path: String, side: Side, line: UInt32, text: String)
@@ -543,6 +756,10 @@ public enum Request: Sendable, Equatable {
     case mergePull(repo: String, number: UInt32, strategy: MergeStrategy, message: String?, deleteSource: Bool)
     case compare(repo: String, base: String, head: String)
     case compareDiff(repo: String, base: String, head: String, path: String, context: UInt32?)
+    case compareVersions(repo: String, number: UInt32, fromVersion: UInt32, toVersion: UInt32)
+    case compareVersionDiff(repo: String, number: UInt32, fromVersion: UInt32, toVersion: UInt32, path: String, context: UInt32?)
+    case listStacks(repo: String)
+    case syncStack(repo: String, pull: UInt32)
     case branchRules(repo: String)
     case setBranchRule(repo: String, rule: BranchRule)
     case deleteBranchRule(repo: String, pattern: String)
@@ -601,6 +818,9 @@ public enum Response: Sendable, Equatable {
     case pull(PullDetail)
     case merged(sha: String)
     case compare([FileChange])
+    case versionDiff(VersionInterdiff)
+    case stacks([StackInfo])
+    case stackSynced(StackSyncReport)
     case rules([BranchRule])
     case overrides([RuleOverride])
     case runs([Run])
@@ -667,7 +887,7 @@ public enum Wire {
     private struct HostParam: Encodable { var name: String; var description: String? }
     private struct PairParam: Encodable { var code: String; var device: String }
     private struct AuthParam: Encodable { var token: String }
-    private struct CreatePullParam: Encodable { var repo: String; var title: String; var body: String; var source: String; var target: String }
+    private struct CreatePullParam: Encodable { var repo: String; var title: String; var body: String; var source: String; var target: String; var stackId: String?; var parentPull: UInt32? }
     private struct PullParam: Encodable { var repo: String; var number: UInt32 }
     private struct UpdatePullParam: Encodable { var repo: String; var number: UInt32; var title: String?; var body: String?; var state: PullState? }
     private struct NoteParam: Encodable { var repo: String; var number: UInt32; var path: String; var side: Side; var line: UInt32; var text: String }
@@ -675,6 +895,9 @@ public enum Wire {
     private struct MergeParam: Encodable { var repo: String; var number: UInt32; var strategy: MergeStrategy; var message: String?; var deleteSource: Bool }
     private struct CompareParam: Encodable { var repo: String; var base: String; var head: String }
     private struct CompareDiffParam: Encodable { var repo: String; var base: String; var head: String; var path: String; var context: UInt32? }
+    private struct CompareVersionsParam: Encodable { var repo: String; var number: UInt32; var fromVersion: UInt32; var toVersion: UInt32 }
+    private struct CompareVersionDiffParam: Encodable { var repo: String; var number: UInt32; var fromVersion: UInt32; var toVersion: UInt32; var path: String; var context: UInt32? }
+    private struct SyncStackParam: Encodable { var repo: String; var pull: UInt32 }
     private struct RuleParam: Encodable { var repo: String; var rule: BranchRule }
     private struct PatternParam: Encodable { var repo: String; var pattern: String }
     private struct ListRunsParam: Encodable { var repo: String; var pull: UInt32?; var limit: UInt32? }
@@ -743,8 +966,8 @@ public enum Wire {
         case let .createHosted(name, description): try line(id, "create_hosted", HostParam(name: name, description: description))
         case let .deleteHosted(repo): try line(id, "delete_hosted", RepoParam(repo: repo))
         case let .listPulls(repo): try line(id, "list_pulls", RepoParam(repo: repo))
-        case let .createPull(repo, title, body, source, target):
-            try line(id, "create_pull", CreatePullParam(repo: repo, title: title, body: body, source: source, target: target))
+        case let .createPull(repo, title, body, source, target, stackId, parentPull):
+            try line(id, "create_pull", CreatePullParam(repo: repo, title: title, body: body, source: source, target: target, stackId: stackId, parentPull: parentPull))
         case let .pull(repo, number): try line(id, "pull", PullParam(repo: repo, number: number))
         case let .updatePull(repo, number, title, body, state):
             try line(id, "update_pull", UpdatePullParam(repo: repo, number: number, title: title, body: body, state: state))
@@ -756,6 +979,12 @@ public enum Wire {
         case let .compare(repo, base, head): try line(id, "compare", CompareParam(repo: repo, base: base, head: head))
         case let .compareDiff(repo, base, head, path, context):
             try line(id, "compare_diff", CompareDiffParam(repo: repo, base: base, head: head, path: path, context: context))
+        case let .compareVersions(repo, number, fromVersion, toVersion):
+            try line(id, "compare_versions", CompareVersionsParam(repo: repo, number: number, fromVersion: fromVersion, toVersion: toVersion))
+        case let .compareVersionDiff(repo, number, fromVersion, toVersion, path, context):
+            try line(id, "compare_version_diff", CompareVersionDiffParam(repo: repo, number: number, fromVersion: fromVersion, toVersion: toVersion, path: path, context: context))
+        case let .listStacks(repo): try line(id, "list_stacks", RepoParam(repo: repo))
+        case let .syncStack(repo, pull): try line(id, "sync_stack", SyncStackParam(repo: repo, pull: pull))
         case let .branchRules(repo): try line(id, "branch_rules", RepoParam(repo: repo))
         case let .setBranchRule(repo, rule): try line(id, "set_branch_rule", RuleParam(repo: repo, rule: rule))
         case let .deleteBranchRule(repo, pattern): try line(id, "delete_branch_rule", PatternParam(repo: repo, pattern: pattern))
@@ -838,6 +1067,9 @@ public enum Wire {
         case "pull": .pull(try data(PullDetail.self))
         case "merged": .merged(sha: try data(MergedSha.self).sha)
         case "compare": .compare(try data([FileChange].self))
+        case "version_diff": .versionDiff(try data(VersionInterdiff.self))
+        case "stacks": .stacks(try data([StackInfo].self))
+        case "stack_synced": .stackSynced(try data(StackSyncReport.self))
         case "rules": .rules(try data([BranchRule].self))
         case "overrides": .overrides(try data([RuleOverride].self))
         case "runs": .runs(try data([Run].self))

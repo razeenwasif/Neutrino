@@ -188,7 +188,16 @@ pub fn blob(repo: &gix::Repository, rev: Option<&str>, path: &str) -> Result<Blo
         ));
     }
     let size = repo.find_header(id).ctx("reading blob header")?.size();
-    let mut out = BlobContent { commit: commit.id().to_string(), path: clean, size, binary: false, too_large: false, text: None, lines: 0 };
+    let mut out = BlobContent {
+        commit: commit.id().to_string(),
+        path: clean,
+        size,
+        binary: false,
+        too_large: false,
+        text: None,
+        lines: 0,
+        syntax: Vec::new(),
+    };
     if size > MAX_BLOB_BYTES {
         out.too_large = true;
         return Ok(out);
@@ -199,6 +208,7 @@ pub fn blob(repo: &gix::Repository, rev: Option<&str>, path: &str) -> Result<Blo
         return Ok(out);
     }
     out.lines = line_count(&data);
+    out.syntax = neutrino_diff::syntax::highlight_lines(&out.path, &data);
     out.text = Some(String::from_utf8_lossy(&data).into_owned());
     Ok(out)
 }

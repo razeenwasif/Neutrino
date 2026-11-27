@@ -273,12 +273,74 @@ struct PullHeader: View {
             }
             .font(.system(size: 12))
             .foregroundStyle(N.muted)
+
+            if !detail.stack.isEmpty {
+                stackChainBar(current: p, members: detail.stack)
+            }
         }
         .padding(.horizontal, 28)
         .padding(.top, 22)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $editing) { EditPullSheet(pull: p) }
+    }
+
+    private func stackChainBar(current: PullRequest, members: [StackMember]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Text("STACK")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(N.faint)
+                    .padding(.trailing, 2)
+                ForEach(Array(members.enumerated()), id: \.element.id) { idx, m in
+                    if idx > 0 {
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(N.faint)
+                    }
+                    let isHere = m.number == current.number
+                    Button {
+                        if !isHere { Task { await model.select(pull: m.number) } }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text("#\(m.number)")
+                                .font(N.mono(11, weight: .semibold))
+                            Text(m.source)
+                                .font(.system(size: 11, weight: isHere ? .semibold : .regular))
+                                .lineLimit(1)
+                            if m.stackConflict != nil {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(N.rose)
+                            }
+                        }
+                        .foregroundStyle(isHere ? N.text : N.muted)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            isHere ? N.indigo.opacity(0.20) : N.surfaceSubtle,
+                            in: Capsule()
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help(m.stackConflict ?? m.title)
+                }
+                if members.contains(where: { $0.state == .open }) {
+                    Button {
+                        Task { await model.syncStack() }
+                    } label: {
+                        Label(model.pullBusy == "Syncing stack" ? "Syncing…" : "Sync stack", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(N.sky)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .background(N.sky.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.pullBusy != nil)
+                }
+            }
+        }
     }
 }
 
@@ -583,48 +645,100 @@ struct PullFiles: View {
     @State private var draft = ""
 
     var body: some View {
+        let shownFiles = model.orderedFiles(for: detail)
+        let activeMoves = model.pullInterdiff?.moves ?? detail.moves
         HStack(spacing: 0) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 2) {
-                    ForEach(detail.files) { f in
-                        let notes = detail.notes.filter { $0.path == f.path && !$0.resolved }.count
-                        let isSelected = model.pullFile == f.path
-                        Button {
-                            composing = nil
-                            Task { await model.select(pullFile: f.path) }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Text(f.status.letter)
-                                    .font(N.mono(10.5, weight: .semibold))
-                                    .foregroundStyle(N.status(f.status))
-                                    .frame(width: 12)
-                                Text((f.path as NSString).lastPathComponent)
-                                    .font(.system(size: 12.5, weight: isSelected ? .medium : .regular))
-                                    .foregroundStyle(isSelected ? N.text : N.body)
-                                    .lineLimit(1)
-                                Spacer(minLength: 4)
-                                if notes > 0 {
-                                    Image(systemName: "text.bubble")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(N.amber)
-                                }
-                                if !f.binary { StatCounts(additions: f.additions, deletions: f.deletions) }
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
-                            .background(isSelected ? N.surfaceActive : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(spacing: 0) {
+                if !(model.pullInterdiff?.tour ?? detail.tour).isEmpty {
+                    HStack(spacing: 2) {
+                        FilterPillButton(title: "Tour", isSelected: model.pullOrder == .tour) {
+                            model.pullOrder = .tour
                         }
-                        .buttonStyle(.plain)
-                        .help(f.oldPath.map { "\($0) → \(f.path)" } ?? f.path)
+                        FilterPillButton(title: "Path", isSelected: model.pullOrder == .path) {
+                            model.pullOrder = .path
+                        }
                     }
+                    .padding(2)
+                    .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.horizontal, 10)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
                 }
-                .padding(10)
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 2) {
+                        ForEach(shownFiles) { f in
+                            let notes = (model.pullInterdiff?.notes ?? detail.notes).filter { $0.path == f.path && !$0.resolved }.count
+                            let isSelected = model.pullFile == f.path
+                            let tour = model.pullOrder == .tour ? model.tourStep(for: f.path, detail: detail) : nil
+                            Button {
+                                composing = nil
+                                Task { await model.select(pullFile: f.path) }
+                            } label: {
+                                HStack(spacing: 7) {
+                                    if let (stepNum, step) = tour {
+                                        Text("\(stepNum)")
+                                            .font(N.mono(10, weight: .semibold))
+                                            .foregroundStyle(step.tier == "core" ? N.indigo : N.muted)
+                                            .frame(width: 16, height: 16)
+                                            .background(N.surfaceSubtle, in: Circle())
+                                    }
+                                    Text(f.status.letter)
+                                        .font(N.mono(10.5, weight: .semibold))
+                                        .foregroundStyle(N.status(f.status))
+                                        .frame(width: 12)
+                                    Text((f.path as NSString).lastPathComponent)
+                                        .font(.system(size: 12.5, weight: isSelected ? .medium : .regular))
+                                        .foregroundStyle(isSelected ? N.text : N.body)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    if notes > 0 {
+                                        Image(systemName: "text.bubble")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(N.amber)
+                                    }
+                                    if !f.binary { StatCounts(additions: f.additions, deletions: f.deletions) }
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 30)
+                                .background(isSelected ? N.surfaceActive : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .help([f.oldPath.map { "\($0) → \(f.path)" } ?? f.path, tour?.1.reason].compactMap { $0 }.joined(separator: " · "))
+                        }
+                    }
+                    .padding(10)
+                }
             }
-            .frame(width: 230)
+            .frame(width: 245)
             .background(N.inspector)
 
-            diff
+            VStack(spacing: 0) {
+                if !activeMoves.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.left.and.right.square")
+                                .font(.system(size: 11))
+                                .foregroundStyle(N.sky)
+                            Text("Moved across PR:")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(N.muted)
+                            ForEach(activeMoves.prefix(6), id: \.id) { m in
+                                TagPill(
+                                    text: "\(m.symbol) (\((m.fromPath as NSString).lastPathComponent)→\((m.toPath as NSString).lastPathComponent))",
+                                    textColor: N.sky,
+                                    background: N.sky.opacity(0.12),
+                                    monospaced: true
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 6)
+                    }
+                    .background(N.surfaceSubtle)
+                }
+                diff
+            }
         }
     }
 
@@ -639,6 +753,41 @@ struct PullFiles: View {
                         .lineLimit(1)
                         .truncationMode(.head)
                     StatCounts(additions: d.additions, deletions: d.deletions)
+                    let noiseCount = d.hunks.filter { $0.noise != nil }.count
+                    if noiseCount > 0 {
+                        FilterPillButton(
+                            title: model.hideFormatting ? "Show formatting (\(noiseCount))" : "Hide formatting (\(noiseCount))",
+                            isSelected: model.hideFormatting
+                        ) {
+                            model.hideFormatting.toggle()
+                        }
+                    }
+                }
+                if detail.versions.count > 1, let latest = detail.versions.last {
+                    Menu {
+                        Button("Latest (vs \(detail.pull.target))") {
+                            Task { await model.selectInterdiff(from: nil, to: nil) }
+                        }
+                        Divider()
+                        ForEach(detail.versions.dropLast()) { v in
+                            Button("Interdiff v\(v.version) → v\(latest.version)") {
+                                Task { await model.selectInterdiff(from: v.version, to: latest.version) }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock.arrow.2.circlepath")
+                                .font(.system(size: 11))
+                            Text(model.pullInterdiffFrom.map { "v\($0) → v\(model.pullInterdiffTo ?? latest.version)" } ?? "v\(latest.version)")
+                                .font(N.mono(11, weight: .medium))
+                        }
+                        .foregroundStyle(model.pullInterdiffFrom != nil ? N.indigo : N.muted)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(N.surfaceSubtle, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
                 ViewThatFits(in: .horizontal) {
                     Text("Click a line to leave a note")
@@ -674,10 +823,10 @@ struct PullFiles: View {
                     } else if d.hunks.isEmpty {
                         EmptyState(icon: "doc.text", title: "No line changes", message: d.oldPath != nil ? "Renamed without changes." : "Only the file's mode changed.")
                     } else {
-                        DiffBody(diff: d, layout: model.layout, onPick: { line in
+                        DiffBody(diff: d, layout: model.layout, hideFormatting: model.hideFormatting, onPick: model.pullInterdiffFrom == nil ? { line in
                             composing = line
                             draft = ""
-                        }, pickContext: true, footer: { line in footer(for: line, path: d.path) })
+                        } : nil, pickContext: true, footer: { line in footer(for: line, path: d.path) })
                     }
                 } else if let error = model.pullDiffError {
                     EmptyState(icon: "exclamationmark.triangle", title: "Can't show this diff", message: error)
@@ -832,10 +981,15 @@ struct NewPullSheet: View {
     @State private var branches: [Branch] = []
     @State private var source = ""
     @State private var target = ""
+    @State private var parentPull: UInt32? = nil
     @State private var title = ""
     @State private var bodyText = ""
     @State private var working = false
     @State private var error: String?
+
+    private var openParentCandidates: [PullRequest] {
+        model.pullList.filter { $0.state == .open && $0.source != source }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -846,6 +1000,26 @@ struct NewPullSheet: View {
                 Field(label: "Merge") { picker($source) }
                 Image(systemName: "arrow.right").foregroundStyle(N.faint).padding(.top, 16)
                 Field(label: "Into") { picker($target) }
+            }
+            if !openParentCandidates.isEmpty {
+                Field(label: "Stack on PR (optional)") {
+                    Picker("", selection: $parentPull) {
+                        Text("None (standalone PR)").tag(UInt32?.none)
+                        ForEach(openParentCandidates) { p in
+                            Text("#\(p.number) \(p.source) — \(p.title)").tag(UInt32?.some(p.number))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .onChange(of: parentPull) { _, new in
+                    if let new, let p = openParentCandidates.first(where: { $0.number == new }) {
+                        target = p.source
+                    } else if new == nil {
+                        let main = model.hostedDefaultBranch ?? "main"
+                        target = branches.first { $0.name == main }?.name ?? branches.first?.name ?? ""
+                    }
+                }
             }
             Field(label: "Title") {
                 TextField("", text: $title, prompt: Text("What this changes").foregroundStyle(N.faint))
@@ -911,7 +1085,7 @@ struct NewPullSheet: View {
         Task {
             defer { working = false }
             do {
-                try await model.createPull(title: title, body: bodyText, source: source, target: target)
+                try await model.createPull(title: title, body: bodyText, source: source, target: target, parentPull: parentPull)
                 dismiss()
             } catch {
                 self.error = error.localizedDescription

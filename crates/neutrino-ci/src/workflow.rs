@@ -131,10 +131,10 @@ fn nexus_placement(v: Option<&Yaml>, job: &str) -> Result<NexusPlacement, Error>
     let Some(v) = v else { return Ok(NexusPlacement::default()) };
     let Yaml::Mapping(m) = v else { return Err(Error::new(format!("jobs.{job}.nexus is {{ node, accelerator, gpu-memory }}"))) };
     let accelerator = key(m, "accelerator").and_then(text);
-    if let Some(a) = &accelerator {
-        if !["any", "cuda", "appleGPU", "cpu"].contains(&a.as_str()) {
-            return Err(Error::new(format!("jobs.{job}.nexus.accelerator: use any, cuda, appleGPU or cpu")));
-        }
+    if let Some(a) = &accelerator
+        && !["any", "cuda", "appleGPU", "cpu"].contains(&a.as_str())
+    {
+        return Err(Error::new(format!("jobs.{job}.nexus.accelerator: use any, cuda, appleGPU or cpu")));
     }
     let gpu_memory_gb = match key(m, "gpu-memory") {
         None => 0.0,
@@ -532,14 +532,14 @@ fn services(v: Option<&Yaml>, job: &str) -> Result<Vec<Service>, Error> {
             ),
             other => (text(other).ok_or_else(|| Error::new(format!("{what} is an image or {{ image, env }}")))?, BTreeMap::new(), 1, 512),
         };
-        if let Yaml::Mapping(s) = v {
-            if let Some(Yaml::Mapping(r)) = key(s, "resources") {
-                if let Some(c) = key(r, "cpus").and_then(|c| c.as_u64()) {
-                    cpus = c.clamp(1, 16) as u32;
-                }
-                if let Some(mem) = key(r, "memory").and_then(text).and_then(|s| parse_memory(&s)) {
-                    memory_mib = mem;
-                }
+        if let Yaml::Mapping(s) = v
+            && let Some(Yaml::Mapping(r)) = key(s, "resources")
+        {
+            if let Some(c) = key(r, "cpus").and_then(|c| c.as_u64()) {
+                cpus = c.clamp(1, 16) as u32;
+            }
+            if let Some(mem) = key(r, "memory").and_then(text).and_then(|s| parse_memory(&s)) {
+                memory_mib = mem;
             }
         }
         out.push(Service { name, image, env, cpus, memory_mib });
