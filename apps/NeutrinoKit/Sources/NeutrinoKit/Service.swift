@@ -53,6 +53,10 @@ public protocol NeutrinoService: Sendable {
     func commit(repo: String, message: String, amend: Bool) async throws -> (sha: String, output: String)
     func createBranch(repo: String, name: String, start: String?, checkout: Bool) async throws
     func checkout(repo: String, branch: String) async throws
+    func branchStacks(repo: String) async throws -> [BranchStackStatus]
+    func hibernateBranchStack(repo: String, branch: String) async throws -> BranchStackStatus
+    func thawBranchStack(repo: String, branch: String) async throws -> BranchStackStatus
+    func discardBranchStack(repo: String, branch: String) async throws -> BranchStackStatus
     func renameBranch(repo: String, from: String, to: String) async throws
     func deleteBranch(repo: String, name: String, force: Bool) async throws
     /// Changes to any registered repo, until the stream is dropped.
@@ -159,6 +163,30 @@ public final class SocketService: NeutrinoService {
         try await perform(.createBranch(repo: repo, name: name, start: start, checkout: checkout))
     }
     public func checkout(repo: String, branch: String) async throws { try await perform(.checkout(repo: repo, branch: branch)) }
+    public func branchStacks(repo: String) async throws -> [BranchStackStatus] {
+        guard case let .branchStacks(list) = try await call(.branchStacks(repo: repo), timeout: 15) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return list
+    }
+    public func hibernateBranchStack(repo: String, branch: String) async throws -> BranchStackStatus {
+        guard case let .branchStackUpdated(status) = try await call(.hibernateBranchStack(repo: repo, branch: branch), timeout: 300) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return status
+    }
+    public func thawBranchStack(repo: String, branch: String) async throws -> BranchStackStatus {
+        guard case let .branchStackUpdated(status) = try await call(.thawBranchStack(repo: repo, branch: branch), timeout: 300) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return status
+    }
+    public func discardBranchStack(repo: String, branch: String) async throws -> BranchStackStatus {
+        guard case let .branchStackUpdated(status) = try await call(.discardBranchStack(repo: repo, branch: branch), timeout: 30) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return status
+    }
     public func renameBranch(repo: String, from: String, to: String) async throws { try await perform(.renameBranch(repo: repo, from: from, to: to)) }
     public func deleteBranch(repo: String, name: String, force: Bool) async throws { try await perform(.deleteBranch(repo: repo, name: name, force: force)) }
 

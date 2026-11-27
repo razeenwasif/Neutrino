@@ -624,6 +624,31 @@ public struct StatusFile: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// Branch-bound stateful Graviton Compose stack checkpoint status (Wave 4A).
+public struct BranchStackStatus: Codable, Hashable, Identifiable, Sendable {
+    public var branch: String
+    public var key: String
+    public var project: String
+    public var hasCheckpoint: Bool
+    public var running: Bool
+    public var services: [String]
+    public var sizeBytes: UInt64
+    public var updatedAt: Int64?
+
+    public var id: String { branch }
+
+    public init(branch: String, key: String, project: String, hasCheckpoint: Bool, running: Bool, services: [String] = [], sizeBytes: UInt64 = 0, updatedAt: Int64? = nil) {
+        self.branch = branch
+        self.key = key
+        self.project = project
+        self.hasCheckpoint = hasCheckpoint
+        self.running = running
+        self.services = services
+        self.sizeBytes = sizeBytes
+        self.updatedAt = updatedAt
+    }
+}
+
 public struct WorkingStatus: Codable, Hashable, Sendable {
     public var head: Head?
     public var upstream: String?
@@ -770,6 +795,10 @@ public enum Request: Sendable, Equatable {
     case cancelRun(repo: String, id: Int64)
     case rerunRun(repo: String, id: Int64)
     case attachFrozenJob(repo: String, job: Int64)
+    case branchStacks(repo: String)
+    case hibernateBranchStack(repo: String, branch: String)
+    case thawBranchStack(repo: String, branch: String)
+    case discardBranchStack(repo: String, branch: String)
     case dispatchRun(repo: String, workflow: String, branch: String)
     case workflows(repo: String, branch: String)
     case ciInfo
@@ -828,6 +857,8 @@ public enum Response: Sendable, Equatable {
     case run(RunDetail)
     case jobLog(LogChunk)
     case frozenAttached(FrozenAttachment)
+    case branchStacks([BranchStackStatus])
+    case branchStackUpdated(BranchStackStatus)
     case ci(CiInfo)
     case workflows([WorkflowFile])
     case vault(VaultInfo)
@@ -998,6 +1029,10 @@ public enum Wire {
         case let .cancelRun(repo, run): try line(id, "cancel_run", RunParam(repo: repo, id: run))
         case let .rerunRun(repo, run): try line(id, "rerun_run", RunParam(repo: repo, id: run))
         case let .attachFrozenJob(repo, job): try line(id, "attach_frozen_job", AttachFrozenJobParam(repo: repo, job: job))
+        case let .branchStacks(repo): try line(id, "branch_stacks", RepoParam(repo: repo))
+        case let .hibernateBranchStack(repo, branch): try line(id, "hibernate_branch_stack", BranchParam(repo: repo, branch: branch))
+        case let .thawBranchStack(repo, branch): try line(id, "thaw_branch_stack", BranchParam(repo: repo, branch: branch))
+        case let .discardBranchStack(repo, branch): try line(id, "discard_branch_stack", BranchParam(repo: repo, branch: branch))
         case let .dispatchRun(repo, workflow, branch): try line(id, "dispatch_run", DispatchParam(repo: repo, workflow: workflow, branch: branch))
         case let .workflows(repo, branch): try line(id, "workflows", BranchParam(repo: repo, branch: branch))
         case .ciInfo: try line(id, "ci_info", NoParams?.none)
@@ -1080,6 +1115,8 @@ public enum Wire {
         case "run": .run(try data(RunDetail.self))
         case "job_log": .jobLog(try data(LogChunk.self))
         case "frozen_attached": .frozenAttached(try data(FrozenAttachment.self))
+        case "branch_stacks": .branchStacks(try data([BranchStackStatus].self))
+        case "branch_stack_updated": .branchStackUpdated(try data(BranchStackStatus.self))
         case "ci": .ci(try data(CiInfo.self))
         case "workflows": .workflows(try data([WorkflowFile].self))
         case "vault": .vault(try data(VaultInfo.self))

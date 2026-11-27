@@ -1353,9 +1353,9 @@
         "note": "Completed in Wave 3: snapshot-on-fail / timeout-snapshot / snapshot-retention-days in neutrino-ci, SQLite job snapshot tracking + retention/quota reaper, Graviton FreezeAndExport/RestoreFrozen integration, ntr run snapshot|attach, and Attach to Frozen VM UI in NeutrinoMac & NeutrinoIOS."
     },
     "branch-stacks-warm-ci-ntr": {
-        "status": "todo",
-        "updated": "2026-11-26T13:05:00+11:00",
-        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+        "status": "done",
+        "updated": "2026-11-27T14:50:00+11:00",
+        "note": "Completed in Wave 4: added warm-cache / setup: (with strict secrets.* parse-time rejection and secret-free setup_cx) in neutrino-ci, BranchStacks / HibernateBranchStack / ThawBranchStack / DiscardBranchStack + Checkout auto-switch orchestration in neutrino-proto & neutrinod (stacks.rs, ci/runner.rs, ci/mod.rs), ntr branch-stack [ls|hibernate|thaw|discard], NeutrinoKit RPCs, and NeutrinoMac BranchesScreen Warm VM Stack badges & controls. Verified via cargo workspace tests (incl. warm_to_commit_template_hits_on_second_commit), clippy, NeutrinoKit Swift tests, Release/Debug Xcode builds, and check-leaks."
     }
 };
   var state = {}, loaded = false, db = null, readOnly = false, writing = {};

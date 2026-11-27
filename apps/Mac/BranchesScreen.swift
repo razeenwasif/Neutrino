@@ -112,7 +112,13 @@ struct BranchList: View {
             .padding(.top, 6)
             .padding(.bottom, 6)
         ForEach(list) { b in
-            BranchRow(branch: b, scale: scale, selected: b.id == model.selectedBranch, hosted: model.source == .server)
+            BranchRow(
+                branch: b,
+                scale: scale,
+                selected: b.id == model.selectedBranch,
+                hosted: model.source == .server,
+                stack: model.source == .local && b.kind == .local ? model.branchStacks[b.name] : nil
+            )
                 .onTapGesture { model.selectedBranch = b.id }
                 .onTapGesture(count: 2) { Task { await model.showHistory(of: b) } }
         }
@@ -125,6 +131,7 @@ struct BranchRow: View {
     var selected: Bool
     /// A branch of a hosted repo: on the server itself, so there's no upstream to compare with.
     var hosted = false
+    var stack: BranchStackStatus? = nil
     @State private var hovering = false
 
     var body: some View {
@@ -141,6 +148,16 @@ struct BranchRow: View {
                     .font(N.mono(12.5, weight: branch.isHead ? .semibold : .medium))
                     .foregroundStyle(branch.kind == .remote ? N.sky : N.text)
                     .lineLimit(1)
+                if let stack, (stack.running || stack.hasCheckpoint) {
+                    TagPill(
+                        text: stack.running ? "Warm VM Stack" : "Hibernated Stack",
+                        color: N.mint,
+                        textColor: N.mint,
+                        background: N.mint.opacity(stack.running ? 0.16 : 0.10)
+                    )
+                    .fixedSize()
+                    .help(stack.running ? "Active Graviton Compose stack for \(branch.name)" : "Hibernated Graviton Compose stack checkpoint (\(ByteCountFormatter.string(fromByteCount: Int64(stack.sizeBytes), countStyle: .file)))")
+                }
                 if branch.merged == true {
                     TagPill(text: "merged", textColor: N.muted)
                         .fixedSize()
@@ -294,6 +311,46 @@ struct BranchPanel: View {
                                 .buttonStyle(PillButtonStyle(kind: b.isHead ? .primary : .secondary, height: 30))
                         }
                         pullActions(for: b)
+                    }
+
+                    if model.source == .local, b.kind == .local {
+                        let stack = model.branchStacks[b.name]
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 6) {
+                                SectionLabel("Warm VM Stack")
+                                Spacer()
+                                if let stack {
+                                    TagPill(
+                                        text: stack.running ? "Running" : (stack.hasCheckpoint ? "Hibernated" : "None"),
+                                        color: (stack.running || stack.hasCheckpoint) ? N.mint : N.muted,
+                                        textColor: (stack.running || stack.hasCheckpoint) ? N.mint : N.muted,
+                                        background: ((stack.running || stack.hasCheckpoint) ? N.mint : N.slate).opacity(0.12)
+                                    )
+                                }
+                            }
+                            if let stack, !stack.services.isEmpty || stack.sizeBytes > 0 {
+                                let detail = [
+                                    stack.services.isEmpty ? nil : stack.services.joined(separator: ", "),
+                                    stack.sizeBytes > 0 ? ByteCountFormatter.string(fromByteCount: Int64(stack.sizeBytes), countStyle: .file) : nil
+                                ].compactMap { $0 }.joined(separator: " · ")
+                                Text(detail)
+                                    .font(N.mono(11))
+                                    .foregroundStyle(N.muted)
+                            }
+                            FlowWrapLayout(horizontalSpacing: 8, verticalSpacing: 8) {
+                                Button("Hibernate") { Task { await model.hibernateBranchStack(b.name) } }
+                                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                                Button("Thaw") { Task { await model.thawBranchStack(b.name) } }
+                                    .buttonStyle(PillButtonStyle(kind: .secondary, height: 28))
+                                    .disabled(stack?.hasCheckpoint != true)
+                                if stack?.hasCheckpoint == true {
+                                    ActionPillButton(title: "Discard", systemImage: "trash", tint: N.rose) {
+                                        Task { await model.discardBranchStack(b.name) }
+                                    }
+                                }
+                            }
+                            .disabled(model.stackBusy || !model.isLive)
+                        }
                     }
 
                     if model.source == .local {

@@ -22,10 +22,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use neutrino_ci::expr::{self, Status};
-use neutrino_ci::{Event, Executor, Workflow};
+use neutrino_ci::workflow::Service;
+use neutrino_ci::{Event, Executor, Step, Workflow};
 use neutrino_proto::{CiInfo, FrozenAttachment, LogChunk, Run, RunState, WorkflowFile};
 use neutrino_store::{NewJob, NewRun, now};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Instant;
@@ -846,10 +848,13 @@ impl Daemon {
         };
         log.masker = Some(neutrino_vault::Masker::new(secrets.iter().map(|(_, v)| v.as_str())));
         let vars = store.variables_for(&run.repo, &env_name)?;
-        cx = cx
-            .with("secrets", Value::Object(secrets.iter().map(|(k, v)| (k.clone(), json!(v))).collect()))
-            .with("vars", Value::Object(vars.into_iter().map(|(k, v)| (k, json!(v))).collect()));
-        cx.root = Some(workspace.clone());
+        let mut base_cx = cx
+            .clone()
+            .with("vars", Value::Object(vars.iter().map(|(k, v)| (k.clone(), json!(v))).collect()));
+        base_cx.root = Some(workspace.clone());
+        cx = base_cx
+            .clone()
+            .with("secrets", Value::Object(secrets.iter().map(|(k, v)| (k.clone(), json!(v))).collect()));
         if let Some(e) = &q.environment {
             log.note(&format!("deploying to {e}{}", q.approved_by.as_ref().map(|b| format!(", approved by {b}")).unwrap_or_default())).await?;
         }
@@ -940,17 +945,37 @@ impl Daemon {
             a.services = services.clone();
         }
 
-        // The container.
-        let image = def.image.clone().map(|i| expr::interpolate(&i, &cx).unwrap_or(i)).unwrap_or_default();
+        // The container (with Wave 4B Warm-to-Commit template lookup when enabled).
+        let image = def.image.clone().map(|i| expr::interpolate(&i, &base_cx).unwrap_or(i)).unwrap_or_default();
+        let warm_key = if def.runs_on == Executor::Graviton {
+            def.warm_cache.as_ref().map(|wc| compute_warm_key(&image, &def.services, &wc.paths, &def.setup, &workspace))
+        } else {
+            None
+        };
         if def.runs_on == Executor::Host {
             log.note("running on this Mac, unisolated").await?;
         } else {
             log.note(&format!("starting {image} with {} CPUs and {} MiB on {}", def.cpus, def.memory_mib, runner.name())).await?;
         }
         let spec = runner::JobBox { name: name.clone(), image: image.clone(), cpus: def.cpus, memory_mib: def.memory_mib, workspace: workspace.clone() };
-        let container = tokio::select! {
-            started = runner.start(&spec) => started,
-            _ = cancelled.changed() => Err(anyhow::anyhow!("cancelled")),
+        let mut warm_hit = false;
+        let container = if let Some(ref wkey) = warm_key {
+            match runner.start_from_warm_template(wkey, &spec).await {
+                Ok(c) => {
+                    warm_hit = true;
+                    log.note(&format!("started from warm VM template {wkey} (skipping setup)")).await?;
+                    Ok(c)
+                }
+                Err(_) => tokio::select! {
+                    started = runner.start(&spec) => started,
+                    _ = cancelled.changed() => Err(anyhow::anyhow!("cancelled")),
+                },
+            }
+        } else {
+            tokio::select! {
+                started = runner.start(&spec) => started,
+                _ = cancelled.changed() => Err(anyhow::anyhow!("cancelled")),
+            }
         };
         let container = match container {
             Ok(c) => c,
@@ -1012,6 +1037,120 @@ impl Daemon {
         let mut job_error: Option<String> = None;
         let mut snapshot_info: Option<(String, Option<i32>)> = None;
         let mut already_frozen = false;
+
+        // Pre-warmed setup phase (runs ONLY with secret-free base_cx before secrets enter).
+        if !warm_hit && !def.setup.is_empty() {
+            let mut setup_env: Vec<(String, String)> = vec![
+                ("CI".into(), "true".into()),
+                ("NEUTRINO".into(), "true".into()),
+                ("NEUTRINO_EVENT".into(), run.event.clone()),
+                ("NEUTRINO_SHA".into(), run.sha.clone()),
+                ("NEUTRINO_REPOSITORY".into(), run.repo.clone()),
+                ("NEUTRINO_RUN_NUMBER".into(), run.number.to_string()),
+                ("NEUTRINO_JOB".into(), q.job_id.clone()),
+                ("NEUTRINO_WORKSPACE".into(), runner::WORKSPACE.into()),
+            ];
+            if let Some(b) = &run.branch {
+                setup_env.push(("NEUTRINO_BRANCH".into(), b.clone()));
+            }
+            if let Some(n) = run.pull {
+                setup_env.push(("NEUTRINO_PULL_REQUEST".into(), n.to_string()));
+            }
+            setup_env.extend(service_env.iter().cloned());
+            let mut base_env_cx = base_cx.values.get("env").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            for (k, v) in &def.env {
+                if !v.contains("secrets.") {
+                    let value = expr::interpolate(v, &base_cx.clone().with("env", env_list(&base_env_cx))).unwrap_or_else(|_| v.clone());
+                    base_env_cx.insert(k.clone(), json!(value));
+                }
+            }
+            for (k, v) in &base_env_cx {
+                setup_env.push((k.clone(), expr::to_text(v)));
+            }
+            base_cx = base_cx.with("env", Value::Object(base_env_cx));
+
+            for step in &def.setup {
+                if stopped {
+                    break;
+                }
+                base_cx.status = Status { failed, cancelled: false };
+                let runs = match &step.condition {
+                    Some(c) => c.holds(&base_cx).unwrap_or(false),
+                    None => !failed,
+                };
+                if !runs {
+                    continue;
+                }
+                let setup_label = step.name.clone().unwrap_or_else(|| step.label());
+                log.note(&format!("setup: {setup_label}")).await?;
+                let script = match expr::interpolate(&step.run, &base_cx) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log.note(&format!("setup step run: bad expression: {e}")).await?;
+                        failed = true;
+                        stopped = true;
+                        job_error = Some(format!("setup `{setup_label}` failed"));
+                        break;
+                    }
+                };
+                let mut step_env = setup_env.clone();
+                for (k, v) in &step.env {
+                    step_env.push((k.clone(), expr::interpolate(v, &base_cx).unwrap_or_else(|_| v.clone())));
+                }
+                let dir = step.working_directory.clone().unwrap_or_default();
+                let deadline = match step.timeout_minutes {
+                    Some(m) => job_deadline.min(Instant::now() + minute * m),
+                    None => job_deadline,
+                };
+                let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+                let r = runner.clone();
+                let c = container.clone();
+                let exec = tokio::spawn(async move { r.exec(&c, &dir, &script, &step_env, tx).await });
+                let mut why_stopped: Option<String> = None;
+                loop {
+                    tokio::select! {
+                        chunk = rx.recv() => match chunk {
+                            Some(bytes) => log.write(&bytes).await?,
+                            None => break,
+                        },
+                        _ = tokio::time::sleep_until(deadline), if why_stopped.is_none() => {
+                            why_stopped = Some("setup step timed out".into());
+                            runner.stop(&container).await;
+                        }
+                        _ = cancelled.changed(), if why_stopped.is_none() => {
+                            if *cancelled.borrow() {
+                                why_stopped = Some("cancelled".into());
+                                was_cancelled = true;
+                                runner.stop(&container).await;
+                            }
+                        }
+                    }
+                }
+                let res = exec.await?;
+                log.flush().await?;
+                if let Some(why) = why_stopped {
+                    log.note(&why).await?;
+                    stopped = true;
+                    failed = true;
+                    if !was_cancelled {
+                        job_error = Some(why);
+                    }
+                } else if !matches!(res, Ok(0)) {
+                    failed |= !step.continue_on_error;
+                    if !step.continue_on_error {
+                        stopped = true;
+                        job_error = Some(format!("setup `{setup_label}` failed"));
+                    }
+                }
+            }
+        }
+
+        if !warm_hit && !failed && !was_cancelled && let Some(ref wkey) = warm_key {
+            match runner.save_warm_template(wkey, &container).await {
+                Ok(()) => log.note(&format!("saved warm VM template {wkey}")).await?,
+                Err(e) => log.note(&format!("couldn't save warm VM template {wkey}: {e:#}")).await?,
+            }
+        }
 
         for (i, step) in def.steps.iter().enumerate() {
             let i = i as u32;
@@ -1277,6 +1416,60 @@ impl Daemon {
             deep_link: format!("graviton://container/{container_id}/terminal"),
         }))
     }
+}
+
+/// Deterministic SHA-256 template key for a secret-free pre-warmed CI VM (`warm-cache:`).
+fn compute_warm_key(image: &str, services: &[Service], paths: &[String], setup: &[Step], workspace: &Path) -> String {
+    let mut h = Sha256::new();
+    h.update(b"neutrino-warm-v1\n");
+    h.update(image.as_bytes());
+    h.update(b"\n");
+
+    let mut svcs: Vec<(&str, &str)> = services.iter().map(|s| (s.name.as_str(), s.image.as_str())).collect();
+    svcs.sort_unstable();
+    for (name, img) in svcs {
+        h.update(b"svc:");
+        h.update(name.as_bytes());
+        h.update(b"=");
+        h.update(img.as_bytes());
+        h.update(b"\n");
+    }
+
+    let mut sorted_paths: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    sorted_paths.sort_unstable();
+    for rel in sorted_paths {
+        h.update(b"file:");
+        h.update(rel.as_bytes());
+        h.update(b":");
+        let full = workspace.join(rel);
+        if let Ok(bytes) = std::fs::read(&full) {
+            h.update((bytes.len() as u64).to_le_bytes());
+            h.update(&bytes);
+        } else {
+            h.update(b"<missing>");
+        }
+        h.update(b"\n");
+    }
+
+    for step in setup {
+        h.update(b"setup:");
+        h.update(step.shell.as_deref().unwrap_or("sh").as_bytes());
+        h.update(b":");
+        h.update(step.working_directory.as_deref().unwrap_or("").as_bytes());
+        h.update(b":");
+        h.update(step.run.as_bytes());
+        h.update(b"\n");
+        for (k, v) in &step.env {
+            h.update(k.as_bytes());
+            h.update(b"=");
+            h.update(v.as_bytes());
+            h.update(b"\n");
+        }
+    }
+
+    let digest = h.finalize();
+    let hex: String = digest.iter().take(12).map(|b| format!("{b:02x}")).collect();
+    format!("ntr-warm-{hex}")
 }
 
 /// A job's log file, appended to.

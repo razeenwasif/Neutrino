@@ -17,6 +17,7 @@ mod phone;
 pub use neutrino_remote;
 mod pulls;
 mod registry;
+mod stacks;
 mod watch;
 
 use std::collections::HashMap;
@@ -369,11 +370,62 @@ impl Daemon {
                 Err(e) => Response::Error { message: format!("{e:#}") },
             };
         }
-        let this = Arc::clone(self);
-        match tokio::task::spawn_blocking(move || this.handle_blocking(request)).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(e)) => Response::Error { message: format!("{e:#}") },
-            Err(e) => Response::Error { message: format!("internal error: {e}") },
+        match request {
+            Request::BranchStacks { repo } => {
+                return match self.branch_stacks(&repo).await {
+                    Ok(list) => Response::BranchStacks(list),
+                    Err(e) => Response::Error { message: format!("{e:#}") },
+                };
+            }
+            Request::HibernateBranchStack { repo, branch } => {
+                if let Err(e) = stacks::validate_branch_name(&branch) {
+                    return Response::Error { message: format!("{e:#}") };
+                }
+                return match self.hibernate_branch_stack(&repo, &branch).await {
+                    Ok(status) => Response::BranchStackUpdated(status),
+                    Err(e) => Response::Error { message: format!("{e:#}") },
+                };
+            }
+            Request::ThawBranchStack { repo, branch } => {
+                if let Err(e) = stacks::validate_branch_name(&branch) {
+                    return Response::Error { message: format!("{e:#}") };
+                }
+                return match self.thaw_branch_stack(&repo, &branch).await {
+                    Ok(status) => Response::BranchStackUpdated(status),
+                    Err(e) => Response::Error { message: format!("{e:#}") },
+                };
+            }
+            Request::DiscardBranchStack { repo, branch } => {
+                if let Err(e) = stacks::validate_branch_name(&branch) {
+                    return Response::Error { message: format!("{e:#}") };
+                }
+                return match self.discard_branch_stack(&repo, &branch).await {
+                    Ok(status) => Response::BranchStackUpdated(status),
+                    Err(e) => Response::Error { message: format!("{e:#}") },
+                };
+            }
+            Request::Checkout { repo, branch } => {
+                let this = Arc::clone(self);
+                let repo_clone = repo.clone();
+                let branch_clone = branch.clone();
+                let res = tokio::task::spawn_blocking(move || this.checkout_branch_sync(&repo_clone, &branch_clone)).await;
+                return match res {
+                    Ok(Ok((old_branch, output))) => {
+                        self.on_branch_switch(&repo, old_branch.as_deref(), &branch).await;
+                        Response::Done { output }
+                    }
+                    Ok(Err(e)) => Response::Error { message: format!("{e:#}") },
+                    Err(e) => Response::Error { message: format!("internal error: {e}") },
+                };
+            }
+            other => {
+                let this = Arc::clone(self);
+                return match tokio::task::spawn_blocking(move || this.handle_blocking(other)).await {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(e)) => Response::Error { message: format!("{e:#}") },
+                    Err(e) => Response::Error { message: format!("internal error: {e}") },
+                };
+            }
         }
     }
 
@@ -436,7 +488,11 @@ impl Daemon {
             Request::CreateBranch { repo: id, name, start, checkout } => {
                 self.write(|| Ok(wt::create_branch(&repo(&id)?, &name, start.as_deref(), checkout)?))?
             }
-            Request::Checkout { repo: id, branch } => self.write(|| Ok(wt::checkout(&repo(&id)?, &branch)?))?,
+            Request::Checkout { .. }
+            | Request::BranchStacks { .. }
+            | Request::HibernateBranchStack { .. }
+            | Request::ThawBranchStack { .. }
+            | Request::DiscardBranchStack { .. } => bail!("stack request should have been handled asynchronously"),
             Request::RenameBranch { repo: id, from, to } => self.write(|| Ok(wt::rename_branch(&repo(&id)?, &from, &to)?))?,
             Request::DeleteBranch { repo: id, name, force } => self.write(|| Ok(wt::delete_branch(&repo(&id)?, &name, force)?))?,
 

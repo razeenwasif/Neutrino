@@ -221,6 +221,8 @@ final class AppModel {
     private(set) var branches: [Branch] = []
     private(set) var branchesError: String?
     var selectedBranch: String?
+    private(set) var branchStacks: [String: BranchStackStatus] = [:]
+    var stackBusy = false
 
     // Pull requests (methods in PullsModel.swift)
     /// The hosted repo the pull requests belong to: the selected hosted repo,
@@ -607,6 +609,7 @@ final class AppModel {
     func loadBranches() async {
         guard let repoID else {
             branches = []
+            branchStacks = [:]
             return
         }
         do {
@@ -615,9 +618,64 @@ final class AppModel {
             if selectedBranch == nil || !branches.contains(where: { $0.id == selectedBranch }) {
                 selectedBranch = branches.first?.id
             }
+            if source == .local {
+                await loadBranchStacks()
+            } else {
+                branchStacks = [:]
+            }
         } catch {
             branches = []
+            branchStacks = [:]
             branchesError = error.localizedDescription
+        }
+    }
+
+    func loadBranchStacks() async {
+        guard let repoID, source == .local else {
+            branchStacks = [:]
+            return
+        }
+        if let list = try? await service.branchStacks(repo: repoID) {
+            branchStacks = Dictionary(uniqueKeysWithValues: list.map { ($0.branch, $0) })
+        }
+    }
+
+    func hibernateBranchStack(_ branch: String) async {
+        guard let repoID else { return }
+        stackBusy = true
+        defer { stackBusy = false }
+        do {
+            let status = try await service.hibernateBranchStack(repo: repoID, branch: branch)
+            branchStacks[branch] = status
+            showToast("Hibernated stack for \(branch)")
+        } catch {
+            notice = error.localizedDescription
+        }
+    }
+
+    func thawBranchStack(_ branch: String) async {
+        guard let repoID else { return }
+        stackBusy = true
+        defer { stackBusy = false }
+        do {
+            let status = try await service.thawBranchStack(repo: repoID, branch: branch)
+            branchStacks[branch] = status
+            showToast("Thawed stack for \(branch)")
+        } catch {
+            notice = error.localizedDescription
+        }
+    }
+
+    func discardBranchStack(_ branch: String) async {
+        guard let repoID else { return }
+        stackBusy = true
+        defer { stackBusy = false }
+        do {
+            let status = try await service.discardBranchStack(repo: repoID, branch: branch)
+            branchStacks[branch] = status
+            showToast("Discarded stack checkpoint for \(branch)")
+        } catch {
+            notice = error.localizedDescription
         }
     }
 

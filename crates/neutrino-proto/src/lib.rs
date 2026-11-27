@@ -1006,6 +1006,20 @@ pub struct FrozenAttachment {
     pub deep_link: String,
 }
 
+/// Branch-bound stateful Graviton Compose stack checkpoint status (Wave 4A).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchStackStatus {
+    pub branch: String,
+    pub key: String,
+    pub project: String,
+    pub has_checkpoint: bool,
+    pub running: bool,
+    pub services: Vec<String>,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunDetail {
     pub run: Run,
@@ -1383,6 +1397,14 @@ pub enum Request {
     RerunRun { repo: String, id: i64 },
     /// Restore a failed job's frozen VM snapshot into a live debug container.
     AttachFrozenJob { repo: String, job: i64 },
+    /// List branch-bound Graviton stack checkpoint status for this repo.
+    BranchStacks { repo: String },
+    /// Hibernate the current repo's Graviton Compose stack under `branch`.
+    HibernateBranchStack { repo: String, branch: String },
+    /// Restore (thaw) a branch-bound Graviton Compose stack checkpoint.
+    ThawBranchStack { repo: String, branch: String },
+    /// Discard a branch-bound Graviton Compose stack checkpoint.
+    DiscardBranchStack { repo: String, branch: String },
     /// Start a workflow that has `workflow_dispatch` on a branch.
     DispatchRun { repo: String, workflow: String, branch: String },
     /// Check the workflow files on a branch without running them.
@@ -1517,6 +1539,8 @@ pub enum Response {
     Run(Box<RunDetail>),
     JobLog(LogChunk),
     FrozenAttached(FrozenAttachment),
+    BranchStacks(Vec<BranchStackStatus>),
+    BranchStackUpdated(BranchStackStatus),
     Ci(CiInfo),
     /// Each workflow file on a branch: its name and either its triggers or what's wrong with it.
     Workflows(Vec<WorkflowFile>),
@@ -1877,5 +1901,27 @@ mod tests {
         });
         let encoded = encode_response(14, &resp);
         assert_eq!(decode_response(&encoded).unwrap(), (14, resp));
+    }
+
+    #[test]
+    fn wave4_branch_stacks_wire() {
+        let req = Request::ThawBranchStack { repo: "app".into(), branch: "feat/auth".into() };
+        let line = encode_request(15, &req);
+        let (id, decoded_req) = decode_request(&line);
+        assert_eq!((id, decoded_req.unwrap()), (Some(15), req));
+
+        let status = BranchStackStatus {
+            branch: "feat/auth".into(),
+            key: "demo-app--feat-auth".into(),
+            project: "demo-app".into(),
+            has_checkpoint: true,
+            running: true,
+            services: vec!["db".into(), "api".into()],
+            size_bytes: 16_384,
+            updated_at: Some(1_700_000_000),
+        };
+        let resp = Response::BranchStacks(vec![status]);
+        let encoded = encode_response(15, &resp);
+        assert_eq!(decode_response(&encoded).unwrap(), (15, resp));
     }
 }

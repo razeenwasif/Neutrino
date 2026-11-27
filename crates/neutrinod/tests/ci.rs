@@ -433,3 +433,84 @@ async fn snapshot_on_fail_and_attach_frozen() {
 
     stop.send(()).ok();
 }
+
+#[tokio::test]
+async fn warm_to_commit_template_hits_on_second_commit() {
+    unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let sock = root.join("s.sock");
+    let options = neutrinod::Options {
+        role: neutrinod::Role::Server,
+        remote_port: None,
+        advertise: false,
+        ci: neutrinod::ci::CiOptions {
+            runner: neutrinod::ci::Runner::Local(Default::default()),
+            cpus: 4,
+            memory_mib: 4096,
+            minute: Duration::from_millis(500),
+            ..Default::default()
+        },
+        vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
+        ..Default::default()
+    };
+    let daemon = neutrinod::Daemon::with(&root.join("server"), options).unwrap();
+    let (stop, stop_rx) = tokio::sync::oneshot::channel();
+    let d = Arc::clone(&daemon);
+    let s = sock.clone();
+    tokio::spawn(async move {
+        neutrinod::serve(d, &s, async {
+            let _ = stop_rx.await;
+        })
+        .await
+        .unwrap()
+    });
+    while !sock.exists() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let hosted = match call(&sock, Request::CreateHosted { name: "app".into(), description: None }).await {
+        Response::Repo(r) => r,
+        other => panic!("{other:?}"),
+    };
+
+    let wc = root.join("wc");
+    std::fs::create_dir_all(wc.join(".neutrino/workflows")).unwrap();
+    git(&wc, &["init", "-q", "-b", "main"]);
+    std::fs::write(wc.join("Cargo.lock"), "# lock v1\n").unwrap();
+    std::fs::write(wc.join("app.txt"), "v1\n").unwrap();
+    std::fs::write(
+        wc.join(".neutrino/workflows/ci.yml"),
+        "on: push\njobs:\n  unit:\n    image: alpine:3.20\n    warm-cache: auto\n    setup:\n      - name: cold toolchain\n        run: echo COLD_SETUP_RAN\n    steps:\n      - name: test\n        run: echo STEP_RAN\n",
+    )
+    .unwrap();
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "commit 1"]);
+    git(&wc, &["remote", "add", "origin", &hosted.path]);
+    assert!(push(&wc, &["push", "-q", "origin", "main"]).await.0);
+
+    let r1 = runs(&sock, &hosted.id).await[0].id;
+    let d1 = finished(&sock, &hosted.id, r1).await;
+    assert_eq!(d1.run.state, RunState::Success);
+    let log1 = log(&sock, &hosted.id, d1.jobs[0].id).await;
+    assert!(log1.contains("COLD_SETUP_RAN"), "commit 1 should run cold setup:\n{log1}");
+    assert!(log1.contains("saved warm VM template"), "commit 1 should save warm template:\n{log1}");
+    assert!(log1.contains("STEP_RAN"), "{log1}");
+
+    // Second commit touches only source file (Cargo.lock unchanged -> warm template hit).
+    std::fs::write(wc.join("app.txt"), "v2\n").unwrap();
+    git(&wc, &["add", "app.txt"]);
+    git(&wc, &["commit", "-q", "-m", "commit 2"]);
+    assert!(push(&wc, &["push", "-q", "origin", "main"]).await.0);
+
+    let all_runs = runs(&sock, &hosted.id).await;
+    let r2 = all_runs[0].id;
+    assert_ne!(r2, r1);
+    let d2 = finished(&sock, &hosted.id, r2).await;
+    assert_eq!(d2.run.state, RunState::Success);
+    let log2 = log(&sock, &hosted.id, d2.jobs[0].id).await;
+    assert!(log2.contains("started from warm VM template"), "commit 2 should hit warm template:\n{log2}");
+    assert!(!log2.contains("COLD_SETUP_RAN"), "commit 2 must skip cold setup:\n{log2}");
+    assert!(log2.contains("STEP_RAN"), "{log2}");
+
+    stop.send(()).ok();
+}

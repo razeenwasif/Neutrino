@@ -9,7 +9,7 @@
 //! Graviton's wire types are mirrored here, not shared: it's a separate
 //! project with its own release cycle, and only these few shapes matter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -149,6 +149,20 @@ impl Runner {
         match self {
             Runner::Graviton(g) => g.restore_frozen(bundle_dir, name, ephemeral).await,
             Runner::Local(l) => l.restore_frozen(bundle_dir, name).await,
+        }
+    }
+
+    pub async fn save_warm_template(&self, key: &str, container: &str) -> Result<()> {
+        match self {
+            Runner::Graviton(g) => g.save_warm_template(key, container).await,
+            Runner::Local(l) => l.save_warm_template(key, container),
+        }
+    }
+
+    pub async fn start_from_warm_template(&self, key: &str, b: &JobBox) -> Result<String> {
+        match self {
+            Runner::Graviton(g) => g.start_from_warm_template(key, b).await,
+            Runner::Local(l) => l.start_from_warm_template(key, b),
         }
     }
 }
@@ -391,6 +405,37 @@ impl Graviton {
         let workdir = v["data"]["workdir"].as_str().unwrap_or(WORKSPACE).to_string();
         Ok(RestoredContainer { id, name: cname, workdir })
     }
+
+    async fn save_warm_template(&self, key: &str, container: &str) -> Result<()> {
+        let _ = self
+            .call(json!({
+                "method": "save_warm_template",
+                "params": {
+                    "key": key,
+                    "container_id": container,
+                }
+            }))
+            .await?;
+        Ok(())
+    }
+
+    async fn start_from_warm_template(&self, key: &str, b: &JobBox) -> Result<String> {
+        let v = self
+            .call(json!({
+                "method": "run_from_warm_template",
+                "params": {
+                    "key": key,
+                    "name": b.name,
+                    "workspace": b.workspace,
+                    "cpus": b.cpus,
+                    "memory_mib": b.memory_mib,
+                    "env": ["CI=true"],
+                }
+            }))
+            .await?;
+        let c: Container = serde_json::from_value(v["data"].clone()).context("reading the warm container")?;
+        Ok(c.id)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +448,8 @@ impl Graviton {
 pub struct Local {
     /// Container name → its workspace and the process groups running in it.
     boxes: Arc<Mutex<HashMap<String, (PathBuf, Vec<i32>)>>>,
+    /// Saved warm template keys (Wave 4B local test harness mirror).
+    warm_templates: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Local {
@@ -524,6 +571,21 @@ impl Local {
             name: name.to_string(),
             workdir: WORKSPACE.into(),
         })
+    }
+
+    fn save_warm_template(&self, key: &str, container: &str) -> Result<()> {
+        if !self.boxes.lock().unwrap().contains_key(container) {
+            bail!("container {container} is gone");
+        }
+        self.warm_templates.lock().unwrap().insert(key.to_string());
+        Ok(())
+    }
+
+    fn start_from_warm_template(&self, key: &str, b: &JobBox) -> Result<String> {
+        if !self.warm_templates.lock().unwrap().contains(key) {
+            bail!("warm template {key} not found");
+        }
+        Ok(self.start(b))
     }
 }
 

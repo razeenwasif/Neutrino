@@ -416,6 +416,10 @@ public final class ServerService: NeutrinoService {
     public func commit(repo _: String, message _: String, amend _: Bool) async throws -> (sha: String, output: String) { throw Self.notHere }
     public func createBranch(repo _: String, name _: String, start _: String?, checkout _: Bool) async throws { throw Self.notHere }
     public func checkout(repo _: String, branch _: String) async throws { throw Self.notHere }
+    public func branchStacks(repo _: String) async throws -> [BranchStackStatus] { [] }
+    public func hibernateBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw Self.notHere }
+    public func thawBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw Self.notHere }
+    public func discardBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw Self.notHere }
     public func renameBranch(repo _: String, from _: String, to _: String) async throws { throw Self.notHere }
     public func deleteBranch(repo _: String, name _: String, force _: Bool) async throws { throw Self.notHere }
     public func remotes(repo _: String) async throws -> [RemoteInfo] { [] }

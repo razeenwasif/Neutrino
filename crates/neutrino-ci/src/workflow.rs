@@ -122,6 +122,29 @@ pub struct Job {
     pub timeout_snapshot: bool,
     /// Retention days override for frozen failure snapshots (`1..=90`).
     pub snapshot_retention_days: Option<u32>,
+    /// Secret-free warm VM template caching across commits (`warm-cache: auto` or path list).
+    pub warm_cache: Option<WarmCache>,
+    /// Pre-warmed setup steps run before secrets are injected (`setup:`).
+    pub setup: Vec<Step>,
+}
+
+/// Default lockfiles and build manifests hashed into a warm-to-commit template key.
+pub const DEFAULT_WARM_PATHS: &[&str] = &[
+    "Cargo.lock",
+    "Cargo.toml",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "Package.resolved",
+    "go.sum",
+    "requirements.txt",
+    "poetry.lock",
+];
+
+/// Configuration for warm-to-commit Graviton CI VM templates (`warm-cache:`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarmCache {
+    pub paths: Vec<String>,
 }
 
 /// What Nexus places a job by.
@@ -585,6 +608,59 @@ fn environment(v: Option<&Yaml>, job: &str) -> Result<Option<String>, Error> {
     }
 }
 
+fn warm_cache(v: Option<&Yaml>, job: &str) -> Result<Option<WarmCache>, Error> {
+    let what = format!("jobs.{job}.warm-cache");
+    let default_paths = || DEFAULT_WARM_PATHS.iter().map(|s| (*s).to_string()).collect();
+    match v {
+        None | Some(Yaml::Null) | Some(Yaml::Bool(false)) => Ok(None),
+        Some(Yaml::Bool(true)) => Ok(Some(WarmCache { paths: default_paths() })),
+        Some(Yaml::String(s)) if s.trim().eq_ignore_ascii_case("auto") => Ok(Some(WarmCache { paths: default_paths() })),
+        Some(Yaml::Sequence(_)) => {
+            let paths = strings(v, &what)?;
+            if paths.is_empty() {
+                return Err(Error::new(format!("{what} list cannot be empty; use auto or workspace-relative lockfile paths")));
+            }
+            let paths = paths.iter().map(|p| workspace_path(p, &what)).collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(WarmCache { paths }))
+        }
+        _ => Err(Error::new(format!("{what} must be auto, true/false, or a list of workspace-relative lockfile paths"))),
+    }
+}
+
+fn contains_secrets_ref(s: &str) -> bool {
+    s.contains("secrets.")
+}
+
+fn setup_steps(v: Option<&Yaml>, job: &str) -> Result<Vec<Step>, Error> {
+    let Some(v) = v else { return Ok(Vec::new()) };
+    if matches!(v, Yaml::Null) {
+        return Ok(Vec::new());
+    }
+    let Yaml::Sequence(items) = v else {
+        return Err(Error::new(format!("jobs.{job}.setup must be a list of steps")));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let s = step(item, job, i)?;
+        let what = format!("jobs.{job}.setup[{i}]");
+        let cond_has_secrets = match item {
+            Yaml::Mapping(sm) => key(sm, "if").and_then(text).is_some_and(|c| contains_secrets_ref(&c)),
+            _ => false,
+        };
+        if contains_secrets_ref(&s.run)
+            || s.env.values().any(|val| contains_secrets_ref(val))
+            || s.working_directory.as_deref().is_some_and(contains_secrets_ref)
+            || cond_has_secrets
+        {
+            return Err(Error::new(format!(
+                "{what}: secrets.* cannot be used in warm setup steps; move secret-dependent commands to steps:"
+            )));
+        }
+        out.push(s);
+    }
+    Ok(out)
+}
+
 fn job(
     id: &str,
     v: &Yaml,
@@ -606,6 +682,7 @@ fn job(
         if ![
             "name", "runs-on", "image", "resources", "timeout-minutes", "idle-timeout-minutes", "needs", "if", "env", "strategy", "continue-on-error", "steps",
             "environment", "concurrency", "cache", "artifacts", "services", "nexus", "snapshot-on-fail", "timeout-snapshot", "snapshot-retention-days",
+            "warm-cache", "setup",
         ]
         .contains(&k.as_str())
         {
@@ -688,6 +765,8 @@ fn job(
             default_timeout_snapshot
         },
         snapshot_retention_days: retention_days(key(m, "snapshot-retention-days"), &format!("jobs.{id}.snapshot-retention-days"))?.or(default_snapshot_retention),
+        warm_cache: warm_cache(key(m, "warm-cache"), id)?,
+        setup: setup_steps(key(m, "setup"), id)?,
     })
 }
 

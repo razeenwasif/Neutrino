@@ -294,6 +294,15 @@ extension DemoService {
     }
     public func createBranch(repo _: String, name _: String, start _: String?, checkout _: Bool) async throws { throw ServiceError.daemon(Self.lineMessage) }
     public func checkout(repo _: String, branch _: String) async throws { throw ServiceError.daemon(Self.lineMessage) }
+    public func branchStacks(repo _: String) async throws -> [BranchStackStatus] {
+        [
+            BranchStackStatus(branch: "main", key: "demo-app--main", project: "demo-app", hasCheckpoint: true, running: true, services: ["db", "api"], sizeBytes: 42 * 1024 * 1024, updatedAt: Int64(Date.now.timeIntervalSince1970) - 600),
+            BranchStackStatus(branch: "feat/auth", key: "demo-app--feat-auth", project: "demo-app", hasCheckpoint: true, running: false, services: ["db", "api"], sizeBytes: 38 * 1024 * 1024, updatedAt: Int64(Date.now.timeIntervalSince1970) - 3600),
+        ]
+    }
+    public func hibernateBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw ServiceError.daemon(Self.lineMessage) }
+    public func thawBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw ServiceError.daemon(Self.lineMessage) }
+    public func discardBranchStack(repo _: String, branch _: String) async throws -> BranchStackStatus { throw ServiceError.daemon(Self.lineMessage) }
     public func renameBranch(repo _: String, from _: String, to _: String) async throws { throw ServiceError.daemon(Self.lineMessage) }
     public func deleteBranch(repo _: String, name _: String, force _: Bool) async throws { throw ServiceError.daemon(Self.lineMessage) }
     public func events() -> AsyncStream<RepoEvent> { AsyncStream { _ in } }

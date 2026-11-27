@@ -267,6 +267,17 @@ let runLine = #"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number"
     #expect(att.job == 42 && att.containerName == "ntr-dbg-42" && att.deepLink == "graviton://container/c77/terminal")
 }
 
+@Test func wave4BranchStacksWire() throws {
+    let req = try json(Wire.line(id: 10, .thawBranchStack(repo: "app", branch: "feat/auth")))
+    #expect(req == ["id": 10, "method": "thaw_branch_stack", "params": ["repo": "app", "branch": "feat/auth"]] as NSDictionary)
+
+    let respJson = #"{"id":10,"type":"branch_stacks","data":[{"branch":"feat/auth","key":"demo-app--feat-auth","project":"demo-app","has_checkpoint":true,"running":false,"services":["db","api"],"size_bytes":16384,"updated_at":1700000000}]}"#
+    guard case let .branchStacks(list) = try Wire.decode(Data(respJson.utf8)).1 else {
+        Issue.record("expected branch_stacks"); return
+    }
+    #expect(list.count == 1 && list[0].branch == "feat/auth" && list[0].hasCheckpoint && list[0].services == ["db", "api"])
+}
+
 @Test func vaultWire() throws {
     let set = try json(Wire.line(id: 1, .setSecret(scope: VaultScope(repo: "app", environment: "prod"), name: "TOKEN", value: "v")))
     #expect(set == ["id": 1, "method": "set_secret", "params": ["scope": ["repo": "app", "environment": "prod"], "name": "TOKEN", "value": "v"]] as NSDictionary)

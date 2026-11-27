@@ -120,6 +120,12 @@ enum Cmd {
     /// Server: stacked pull requests (`ntr stack [list|create|sync]`).
     #[command(subcommand)]
     Stack(StackCmd),
+    /// Branch-bound Graviton Compose stack checkpoints (`ntr branch-stack [ls|hibernate|thaw|discard]`).
+    #[command(name = "branch-stack")]
+    BranchStack {
+        #[command(subcommand)]
+        action: BranchStackCmd,
+    },
     /// Server: branch rules on a hosted repository; with no action, lists them.
     Rules {
         #[command(subcommand)]
@@ -294,6 +300,18 @@ enum EnvCmd {
     },
     /// Remove it, with its secrets and variables.
     Rm { name: String },
+}
+
+#[derive(Subcommand)]
+enum BranchStackCmd {
+    /// List local branches and any hibernated or running Graviton stack.
+    Ls,
+    /// Hibernate the repo's running Graviton Compose stack under BRANCH.
+    Hibernate { branch: String },
+    /// Restore (thaw) the Graviton Compose stack checkpoint for BRANCH.
+    Thaw { branch: String },
+    /// Discard the saved Graviton Compose stack checkpoint for BRANCH.
+    Discard { branch: String },
 }
 
 #[derive(Subcommand)]
@@ -990,6 +1008,53 @@ fn main() -> Result<()> {
         Cmd::Stack(cmd) => {
             let repo = pick_repo(&mut c, cli.repo)?;
             stack(&mut c, out, &style, repo, cmd)?;
+        }
+        Cmd::BranchStack { action } => {
+            let repo = pick_repo(&mut c, cli.repo)?;
+            match action {
+                BranchStackCmd::Ls => match c.call(Request::BranchStacks { repo })? {
+                    Response::BranchStacks(list) => {
+                        if list.is_empty() {
+                            writeln!(out, "No local branches found.")?;
+                        }
+                        for s in list {
+                            let state = if s.running {
+                                style.paint("32", "running")
+                            } else if s.has_checkpoint {
+                                style.paint("36", &format!("hibernated ({} KB)", s.size_bytes.div_ceil(1024)))
+                            } else {
+                                style.paint("2", "no checkpoint")
+                            };
+                            let svcs = if s.services.is_empty() { String::new() } else { format!(" [{}]", s.services.join(", ")) };
+                            writeln!(out, "{:<24} {state}{svcs} ({})", style.paint("1", &s.branch), s.key)?;
+                        }
+                    }
+                    r => return Err(unexpected(r)),
+                },
+                BranchStackCmd::Hibernate { branch } => match c.call(Request::HibernateBranchStack { repo, branch })? {
+                    Response::BranchStackUpdated(s) => writeln!(
+                        out,
+                        "Hibernated stack {} -> {} ({} KB)",
+                        s.branch,
+                        s.key,
+                        s.size_bytes.div_ceil(1024)
+                    )?,
+                    r => return Err(unexpected(r)),
+                },
+                BranchStackCmd::Thaw { branch } => match c.call(Request::ThawBranchStack { repo, branch })? {
+                    Response::BranchStackUpdated(s) => writeln!(
+                        out,
+                        "Thawed stack {} ({})",
+                        s.branch,
+                        if s.services.is_empty() { "0 containers".into() } else { s.services.join(", ") }
+                    )?,
+                    r => return Err(unexpected(r)),
+                },
+                BranchStackCmd::Discard { branch } => match c.call(Request::DiscardBranchStack { repo, branch })? {
+                    Response::BranchStackUpdated(s) => writeln!(out, "Discarded checkpoint {} ({})", s.branch, s.key)?,
+                    r => return Err(unexpected(r)),
+                },
+            }
         }
         Cmd::Rules { action } => {
             let repo = pick_repo(&mut c, cli.repo)?;
@@ -1888,5 +1953,9 @@ mod tests {
         assert!(matches!(cli4.command, Cmd::Run(RunCmd::Snapshot { number: 4, job: Some(ref j) }) if j == "test"));
         let cli5 = Cli::try_parse_from(["ntr", "run", "attach", "4"]).unwrap();
         assert!(matches!(cli5.command, Cmd::Run(RunCmd::Attach { number: 4, job: None })));
+        let cli6 = Cli::try_parse_from(["ntr", "branch-stack", "thaw", "feat/auth"]).unwrap();
+        assert!(matches!(cli6.command, Cmd::BranchStack { action: BranchStackCmd::Thaw { ref branch } } if branch == "feat/auth"));
+        let cli7 = Cli::try_parse_from(["ntr", "branch-stack", "ls"]).unwrap();
+        assert!(matches!(cli7.command, Cmd::BranchStack { action: BranchStackCmd::Ls }));
     }
 }

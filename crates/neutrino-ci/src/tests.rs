@@ -282,6 +282,79 @@ fn moved_repo_workflows() {
 }
 
 #[test]
+fn parses_wave4_warm_cache_and_rejects_secrets_in_setup() {
+    let valid = r#"
+on: push
+jobs:
+  test:
+    image: rust:1.86-alpine
+    warm-cache: auto
+    setup:
+      - name: fetch crates
+        run: cargo fetch
+    steps:
+      - name: test
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: cargo test
+"#;
+    let wf = Workflow::parse("ci.yml", valid).unwrap();
+    let job = &wf.jobs[0];
+    assert!(job.warm_cache.is_some());
+    assert_eq!(job.setup.len(), 1);
+    assert_eq!(job.setup[0].run, "cargo fetch");
+
+    let custom = r#"
+on: push
+jobs:
+  test:
+    image: node:22-alpine
+    warm-cache:
+      - ./package-lock.json
+      - ./pnpm-lock.yaml
+    setup:
+      - run: npm ci
+    steps:
+      - run: npm test
+"#;
+    let wf_custom = Workflow::parse("ci.yml", custom).unwrap();
+    assert_eq!(
+        wf_custom.jobs[0].warm_cache.as_ref().unwrap().paths,
+        vec!["package-lock.json".to_string(), "pnpm-lock.yaml".to_string()]
+    );
+
+    let secret_in_run = r#"
+on: push
+jobs:
+  test:
+    image: alpine:3.22
+    warm-cache: auto
+    setup:
+      - run: echo "${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+    steps:
+      - run: echo ok
+"#;
+    let err = Workflow::parse("ci.yml", secret_in_run).unwrap_err();
+    assert!(err.0.contains("secrets.*"), "{err}");
+
+    let secret_in_env = r#"
+on: push
+jobs:
+  test:
+    image: alpine:3.22
+    warm-cache: auto
+    setup:
+      - env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: echo hi
+    steps:
+      - run: echo ok
+"#;
+    let err2 = Workflow::parse("ci.yml", secret_in_env).unwrap_err();
+    assert!(err2.0.contains("secrets.*"), "{err2}");
+}
+
+#[test]
 fn parses_wave3_snapshot_on_fail_flags() {
     let yaml = r#"
 on: push
