@@ -14,7 +14,7 @@ neutrino-vault.workspace = true
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
 ring = "0.17"
-getrandom = "0.2"
+getrandom = "0.4"
 flate2 = "1"
 tar = "0.4"
 futures-util = "0.3"
