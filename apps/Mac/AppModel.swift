@@ -262,6 +262,7 @@ final class AppModel {
     var ciInfo: CiInfo?
     var runsTask: Task<Void, Never>?
     var artifactList: [Artifact] = []
+    var lastFrozenAttachment: FrozenAttachment?
 
     // Secrets (methods in SecretsModel.swift)
     var vaultInfo: VaultInfo?

@@ -49,6 +49,12 @@ struct Args {
     /// Server: days to keep finished runs' logs and artifacts.
     #[arg(long, default_value_t = 30)]
     retention_days: u32,
+    /// Server: days to keep frozen failure VM snapshots.
+    #[arg(long, default_value_t = 3)]
+    ci_snapshot_retention: u32,
+    /// Server: total disk quota for frozen failure VM snapshots (e.g. 10G).
+    #[arg(long, default_value = "10G")]
+    ci_snapshot_quota: String,
     /// Server: where nightly database snapshots go. Default `<state>/backups`;
     /// an external disk or a synced folder keeps them off this Mac.
     #[arg(long)]
@@ -121,6 +127,9 @@ async fn run(args: Args, socket: PathBuf) -> Result<()> {
             cache_mib: neutrino_ci::workflow::parse_memory(&args.ci_cache)
                 .ok_or_else(|| anyhow::anyhow!("--ci-cache {:?} should look like 512M or 10G", args.ci_cache))?,
             retention_days: args.retention_days.max(1),
+            snapshot_retention_days: args.ci_snapshot_retention.clamp(1, 90),
+            snapshot_quota_mib: neutrino_ci::workflow::parse_memory(&args.ci_snapshot_quota)
+                .ok_or_else(|| anyhow::anyhow!("--ci-snapshot-quota {:?} should look like 512M or 10G", args.ci_snapshot_quota))?,
             backup_dir: args.backup_dir.clone(),
             backups_kept: 14,
             host: args.host_executor.then(neutrinod::ci::Local::default),

@@ -357,3 +357,79 @@ async fn graviton() {
     assert_eq!(d.run.state, RunState::Success, "{text}");
     assert!(text.contains("Linux aarch64") && text.contains("from the workspace") && text.contains("true main"), "{text}");
 }
+
+#[tokio::test]
+async fn snapshot_on_fail_and_attach_frozen() {
+    unsafe { std::env::set_var("NEUTRINO_HOOK_EXE", env!("CARGO_BIN_EXE_neutrinod")) };
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let sock = root.join("s.sock");
+    let options = neutrinod::Options {
+        role: neutrinod::Role::Server,
+        remote_port: None,
+        advertise: false,
+        ci: neutrinod::ci::CiOptions {
+            runner: neutrinod::ci::Runner::Local(Default::default()),
+            cpus: 4,
+            memory_mib: 4096,
+            minute: Duration::from_millis(500),
+            snapshot_retention_days: 3,
+            ..Default::default()
+        },
+        vault: neutrino_vault::KeyStore::File(root.join("vault.key")),
+        ..Default::default()
+    };
+    let daemon = neutrinod::Daemon::with(&root.join("server"), options).unwrap();
+    let (stop, stop_rx) = tokio::sync::oneshot::channel();
+    let d = Arc::clone(&daemon);
+    let s = sock.clone();
+    tokio::spawn(async move {
+        neutrinod::serve(d, &s, async {
+            let _ = stop_rx.await;
+        })
+        .await
+        .unwrap()
+    });
+    while !sock.exists() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let hosted = match call(&sock, Request::CreateHosted { name: "app".into(), description: None }).await {
+        Response::Repo(r) => r,
+        other => panic!("{other:?}"),
+    };
+
+    let wc = root.join("wc");
+    std::fs::create_dir_all(wc.join(".neutrino/workflows")).unwrap();
+    git(&wc, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        wc.join(".neutrino/workflows/ci.yml"),
+        "on: push\nsnapshot-on-fail: true\njobs:\n  unit:\n    image: alpine:3.20\n    steps:\n      - name: boom\n        run: echo failed-marker > fail.txt && exit 42\n",
+    )
+    .unwrap();
+    git(&wc, &["add", "."]);
+    git(&wc, &["commit", "-q", "-m", "failing ci"]);
+    git(&wc, &["remote", "add", "origin", &hosted.path]);
+    assert!(push(&wc, &["push", "-q", "origin", "main"]).await.0);
+
+    let run = runs(&sock, &hosted.id).await[0].id;
+    let done = finished(&sock, &hosted.id, run).await;
+    assert_eq!(done.run.state, RunState::Failure);
+    let j = &done.jobs[0];
+    let jlog = log(&sock, &hosted.id, j.id).await;
+    let snap_path = j.frozen_snapshot_path.as_ref().unwrap_or_else(|| panic!("frozen_snapshot_path not set; job={j:?}\nlog:\n{jlog}"));
+    assert!(std::path::Path::new(snap_path).join("manifest.json").is_file());
+    assert!(j.frozen_size_bytes.unwrap_or(0) > 0);
+    assert_eq!(j.frozen_failed_step.as_deref(), Some("boom"));
+    assert_eq!(j.frozen_exit_code, Some(42));
+
+    match call(&sock, Request::AttachFrozenJob { repo: hosted.id.clone(), job: j.id }).await {
+        Response::FrozenAttached(att) => {
+            assert_eq!(att.job, j.id);
+            assert!(att.deep_link.starts_with("graviton://container/") && att.deep_link.ends_with("/terminal"));
+            assert!(att.cli_command.contains("grav exec -it "));
+        }
+        other => panic!("expected FrozenAttached, got {other:?}"),
+    }
+
+    stop.send(()).ok();
+}

@@ -161,6 +161,7 @@ fn allowed_remotely(r: &Request) -> bool {
             | Request::JobLog { .. }
             | Request::CancelRun { .. }
             | Request::RerunRun { .. }
+            | Request::AttachFrozenJob { .. }
             | Request::DispatchRun { .. }
             | Request::Workflows { .. }
             | Request::CiInfo
@@ -665,6 +666,7 @@ impl Daemon {
                 let new = self.rerun(&id, run)?;
                 Response::Run(Box::new(self.store()?.run_detail(new)?))
             }
+            Request::AttachFrozenJob { .. } => bail!("attach_frozen_job is handled asynchronously"),
             Request::DispatchRun { repo: id, workflow, branch } => {
                 let new = self.dispatch(&id, &workflow, &branch)?;
                 Response::Run(Box::new(self.store()?.run_detail(new)?))
@@ -886,6 +888,14 @@ where
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))
                 .and_then(|r| r)
+                .unwrap_or_else(|e| Response::Error { message: format!("{e:#}") });
+            let _ = tx.send(encode_response(id, &response)).await;
+            continue;
+        }
+        if let Request::AttachFrozenJob { repo, job } = &request {
+            let response = daemon
+                .attach_frozen_job(repo, *job)
+                .await
                 .unwrap_or_else(|e| Response::Error { message: format!("{e:#}") });
             let _ = tx.send(encode_response(id, &response)).await;
             continue;

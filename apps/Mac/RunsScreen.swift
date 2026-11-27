@@ -352,10 +352,17 @@ struct JobList: View {
                         HStack(spacing: 9) {
                             RunStateIcon(state: j.state)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(j.name)
-                                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                                    .foregroundStyle(N.text)
-                                    .lineLimit(1)
+                                HStack(spacing: 5) {
+                                    Text(j.name)
+                                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
+                                        .foregroundStyle(N.text)
+                                        .lineLimit(1)
+                                    if j.frozenSnapshotPath != nil {
+                                        Image(systemName: "snowflake")
+                                            .font(.system(size: 10.5))
+                                            .foregroundStyle(N.sky)
+                                    }
+                                }
                                 if !j.needs.isEmpty {
                                     Text("after \(j.needs.joined(separator: ", "))")
                                         .font(.system(size: 10.5))
@@ -425,6 +432,45 @@ struct JobLogView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 8)
+                }
+
+                if job.frozenSnapshotPath != nil {
+                    HStack(spacing: 12) {
+                        Image(systemName: "snowflake")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(N.sky)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text("Frozen Failure VM Snapshot")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(N.text)
+                                if let bytes = job.frozenSizeBytes {
+                                    Text(bytes.formatted(.byteCount(style: .file)))
+                                        .font(N.mono(11))
+                                        .foregroundStyle(N.muted)
+                                }
+                            }
+                            if let step = job.frozenFailedStep {
+                                Text("Captured at `\(step)`\(job.frozenExitCode.map { " (exit \($0))" } ?? "")")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(N.muted)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        ActionPillButton(
+                            title: model.runBusy == "Restoring VM" ? "Restoring…" : "Attach to Frozen VM",
+                            systemImage: "terminal.fill",
+                            tint: N.sky,
+                            background: N.sky.opacity(0.14),
+                            isLoading: model.runBusy == "Restoring VM"
+                        ) {
+                            Task { await model.attachFrozen(job: job) }
+                        }
+                        .disabled(model.runBusy != nil)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(N.sky.opacity(0.08))
                 }
 
                 ScrollViewReader { proxy in

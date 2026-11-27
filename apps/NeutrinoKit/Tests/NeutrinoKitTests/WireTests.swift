@@ -256,6 +256,17 @@ let runLine = #"{"id":4,"type":"run","data":{"run":{"id":7,"repo":"app","number"
     #expect(missingChecks(["ci.yml"], in: [ok]).isEmpty)
 }
 
+@Test func wave3FrozenWire() throws {
+    let req = try json(Wire.line(id: 9, .attachFrozenJob(repo: "app", job: 42)))
+    #expect(req == ["id": 9, "method": "attach_frozen_job", "params": ["repo": "app", "job": 42]] as NSDictionary)
+
+    let attJson = #"{"id":9,"type":"frozen_attached","data":{"job":42,"container_id":"c77","container_name":"ntr-dbg-42","workdir":"/workspace","failed_step":"boom","exit_code":42,"cli_command":"grav exec -it ntr-dbg-42 sh","deep_link":"graviton://container/c77/terminal"}}"#
+    guard case let .frozenAttached(att) = try Wire.decode(Data(attJson.utf8)).1 else {
+        Issue.record("expected frozen_attached"); return
+    }
+    #expect(att.job == 42 && att.containerName == "ntr-dbg-42" && att.deepLink == "graviton://container/c77/terminal")
+}
+
 @Test func vaultWire() throws {
     let set = try json(Wire.line(id: 1, .setSecret(scope: VaultScope(repo: "app", environment: "prod"), name: "TOKEN", value: "v")))
     #expect(set == ["id": 1, "method": "set_secret", "params": ["scope": ["repo": "app", "environment": "prod"], "name": "TOKEN", "value": "v"]] as NSDictionary)

@@ -102,6 +102,33 @@ public struct RunJob: Codable, Hashable, Identifiable, Sendable {
     public var startedAt: Int64?
     public var finishedAt: Int64?
     public var steps: [RunStep]
+    public var frozenSnapshotPath: String?
+    public var frozenSizeBytes: UInt64?
+    public var frozenFailedStep: String?
+    public var frozenExitCode: Int32?
+}
+
+public struct FrozenAttachment: Codable, Hashable, Sendable {
+    public var job: Int64
+    public var containerId: String
+    public var containerName: String
+    public var workdir: String
+    public var failedStep: String?
+    public var exitCode: Int32?
+    public var cliCommand: String
+    public var deepLink: String
+
+    public init(job: Int64, containerId: String, containerName: String, workdir: String,
+                failedStep: String? = nil, exitCode: Int32? = nil, cliCommand: String, deepLink: String) {
+        self.job = job
+        self.containerId = containerId
+        self.containerName = containerName
+        self.workdir = workdir
+        self.failedStep = failedStep
+        self.exitCode = exitCode
+        self.cliCommand = cliCommand
+        self.deepLink = deepLink
+    }
 }
 
 public struct RunDetail: Codable, Hashable, Sendable {
@@ -175,6 +202,7 @@ public protocol RunService: Sendable {
     func dispatch(repo: String, workflow: String, branch: String) async throws -> RunDetail
     func workflows(repo: String, branch: String) async throws -> [WorkflowFile]
     func ciInfo() async throws -> CiInfo
+    func attachFrozenJob(repo: String, job: Int64) async throws -> FrozenAttachment
 }
 
 extension ServerService: RunService {
@@ -208,6 +236,13 @@ extension ServerService: RunService {
     public func ciInfo() async throws -> CiInfo {
         guard case let .ci(info) = try await call(.ciInfo) else { throw ServiceError.unexpectedResponse }
         return info
+    }
+
+    public func attachFrozenJob(repo: String, job: Int64) async throws -> FrozenAttachment {
+        guard case let .frozenAttached(att) = try await call(.attachFrozenJob(repo: repo, job: job)) else {
+            throw ServiceError.unexpectedResponse
+        }
+        return att
     }
 }
 

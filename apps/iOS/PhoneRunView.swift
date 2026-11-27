@@ -50,6 +50,25 @@ struct PhoneRunView: View {
                             }
                         }
                         NavigationLink("Log") { PhoneLogView(repo: ref.repo, job: j) }
+                        if j.frozenSnapshotPath != nil {
+                            Button {
+                                UIPasteboard.general.string = "ntr run attach \(r.number) -j \(j.key)"
+                            } label: {
+                                HStack {
+                                    Label("Frozen VM Snapshot", systemImage: "snowflake")
+                                        .foregroundStyle(N.accent)
+                                    Spacer()
+                                    if let bytes = j.frozenSizeBytes {
+                                        Text(bytes.formatted(.byteCount(style: .file)))
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text("Copy CLI")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     } header: {
                         HStack {
                             PhoneStateIcon(state: j.state)

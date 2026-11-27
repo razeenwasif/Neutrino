@@ -341,6 +341,20 @@ enum RunCmd {
         #[arg(long, short = 'b', default_value = "main")]
         branch: String,
     },
+    /// Show details of a failed job's frozen VM snapshot.
+    Snapshot {
+        number: u32,
+        /// The job (its key, e.g. test-2). Default: the first job with a frozen snapshot.
+        #[arg(long, short = 'j')]
+        job: Option<String>,
+    },
+    /// Restore a failed job's frozen VM snapshot and print its debug attach info.
+    Attach {
+        number: u32,
+        /// The job (its key). Default: the first job with a frozen snapshot.
+        #[arg(long, short = 'j')]
+        job: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1495,6 +1509,35 @@ fn run_cmd(c: &mut Conn, out: &mut impl Write, style: &Style, repo: String, cmd:
             let d = detail(c.call(Request::DispatchRun { repo, workflow, branch })?)?;
             writeln!(out, "Started run {} ({}) on {}.", d.run.number, d.run.name, d.run.branch.unwrap_or_default())?;
         }
+        RunCmd::Snapshot { number, job } => {
+            let id = run_id(c, &repo, number)?;
+            let d = detail(c.call(Request::Run { repo, id })?)?;
+            let j = pick_frozen_job(&d, job.as_deref())?;
+            let path = j.frozen_snapshot_path.as_deref().ok_or_else(|| anyhow!("job {} in run {number} has no frozen snapshot", j.key))?;
+            let kb = j.frozen_size_bytes.unwrap_or(0).div_ceil(1024);
+            writeln!(out, "{} {}  ({} KB)", style.paint("1", &j.key), path, kb)?;
+            if let Some(step) = &j.frozen_failed_step {
+                writeln!(out, "  failed step: {step}{}", j.frozen_exit_code.map(|c| format!(" (exit {c})")).unwrap_or_default())?;
+            }
+            writeln!(out, "  attach:      ntr run attach {number} -j {}", j.key)?;
+        }
+        RunCmd::Attach { number, job } => {
+            let id = run_id(c, &repo, number)?;
+            let d = detail(c.call(Request::Run { repo: repo.clone(), id })?)?;
+            let j = pick_frozen_job(&d, job.as_deref())?;
+            match c.call(Request::AttachFrozenJob { repo, job: j.id })? {
+                Response::FrozenAttached(att) => {
+                    writeln!(out, "Restored frozen VM {} ({})", style.paint("1", &att.container_name), att.container_id)?;
+                    writeln!(out, "  workdir:  {}", att.workdir)?;
+                    if let Some(step) = &att.failed_step {
+                        writeln!(out, "  step:     {step}{}", att.exit_code.map(|c| format!(" (exit {c})")).unwrap_or_default())?;
+                    }
+                    writeln!(out, "  shell:    {}", att.cli_command)?;
+                    writeln!(out, "  deep link: {}", att.deep_link)?;
+                }
+                r => return Err(unexpected(r)),
+            }
+        }
         RunCmd::Logs { number, job, follow } => {
             let id = run_id(c, &repo, number)?;
             let d = detail(c.call(Request::Run { repo: repo.clone(), id })?)?;
@@ -1797,6 +1840,18 @@ fn done(out: &mut impl Write, r: Response) -> Result<()> {
 }
 
 
+fn pick_frozen_job<'a>(d: &'a neutrino_proto::RunDetail, job: Option<&str>) -> anyhow::Result<&'a neutrino_proto::RunJob> {
+    if let Some(k) = job {
+        return d.jobs.iter().find(|j| j.key == k || j.name == k).ok_or_else(|| anyhow::anyhow!("run {} has no job {k}", d.run.number));
+    }
+    d.jobs
+        .iter()
+        .find(|j| j.frozen_snapshot_path.is_some())
+        .or_else(|| d.jobs.iter().find(|j| j.state == neutrino_proto::RunState::Failure))
+        .or_else(|| d.jobs.first())
+        .ok_or_else(|| anyhow::anyhow!("run {} has no jobs", d.run.number))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1829,5 +1884,9 @@ mod tests {
         assert!(matches!(cli2.command, Cmd::Stack(StackCmd::Sync { pull: 1 })));
         let cli3 = Cli::try_parse_from(["ntr", "pr", "interdiff", "3", "1", "2"]).unwrap();
         assert!(matches!(cli3.command, Cmd::Pr(PrCmd::Interdiff { number: 3, from: 1, to: 2, .. })));
+        let cli4 = Cli::try_parse_from(["ntr", "run", "snapshot", "4", "-j", "test"]).unwrap();
+        assert!(matches!(cli4.command, Cmd::Run(RunCmd::Snapshot { number: 4, job: Some(ref j) }) if j == "test"));
+        let cli5 = Cli::try_parse_from(["ntr", "run", "attach", "4"]).unwrap();
+        assert!(matches!(cli5.command, Cmd::Run(RunCmd::Attach { number: 4, job: None })));
     }
 }

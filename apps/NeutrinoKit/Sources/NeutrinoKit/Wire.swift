@@ -769,6 +769,7 @@ public enum Request: Sendable, Equatable {
     case jobLog(repo: String, job: Int64, offset: UInt64)
     case cancelRun(repo: String, id: Int64)
     case rerunRun(repo: String, id: Int64)
+    case attachFrozenJob(repo: String, job: Int64)
     case dispatchRun(repo: String, workflow: String, branch: String)
     case workflows(repo: String, branch: String)
     case ciInfo
@@ -826,6 +827,7 @@ public enum Response: Sendable, Equatable {
     case runs([Run])
     case run(RunDetail)
     case jobLog(LogChunk)
+    case frozenAttached(FrozenAttachment)
     case ci(CiInfo)
     case workflows([WorkflowFile])
     case vault(VaultInfo)
@@ -903,6 +905,7 @@ public enum Wire {
     private struct ListRunsParam: Encodable { var repo: String; var pull: UInt32?; var limit: UInt32? }
     private struct RunParam: Encodable { var repo: String; var id: Int64 }
     private struct JobLogParam: Encodable { var repo: String; var job: Int64; var offset: UInt64 }
+    private struct AttachFrozenJobParam: Encodable { var repo: String; var job: Int64 }
     private struct DispatchParam: Encodable { var repo: String; var workflow: String; var branch: String }
     private struct BranchParam: Encodable { var repo: String; var branch: String }
     private struct ScopeParam: Encodable { var scope: VaultScope }
@@ -994,6 +997,7 @@ public enum Wire {
         case let .jobLog(repo, job, offset): try line(id, "job_log", JobLogParam(repo: repo, job: job, offset: offset))
         case let .cancelRun(repo, run): try line(id, "cancel_run", RunParam(repo: repo, id: run))
         case let .rerunRun(repo, run): try line(id, "rerun_run", RunParam(repo: repo, id: run))
+        case let .attachFrozenJob(repo, job): try line(id, "attach_frozen_job", AttachFrozenJobParam(repo: repo, job: job))
         case let .dispatchRun(repo, workflow, branch): try line(id, "dispatch_run", DispatchParam(repo: repo, workflow: workflow, branch: branch))
         case let .workflows(repo, branch): try line(id, "workflows", BranchParam(repo: repo, branch: branch))
         case .ciInfo: try line(id, "ci_info", NoParams?.none)
@@ -1075,6 +1079,7 @@ public enum Wire {
         case "runs": .runs(try data([Run].self))
         case "run": .run(try data(RunDetail.self))
         case "job_log": .jobLog(try data(LogChunk.self))
+        case "frozen_attached": .frozenAttached(try data(FrozenAttachment.self))
         case "ci": .ci(try data(CiInfo.self))
         case "workflows": .workflows(try data([WorkflowFile].self))
         case "vault": .vault(try data(VaultInfo.self))

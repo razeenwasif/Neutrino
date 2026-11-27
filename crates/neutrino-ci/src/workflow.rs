@@ -67,6 +67,7 @@ pub struct Step {
     /// `bash`, `sh`, `pwsh`, `powershell` or `cmd`. Default: bash where
     /// there is one, else sh (or cmd on Windows).
     pub shell: Option<String>,
+    pub snapshot_on_fail: Option<bool>,
 }
 
 impl Step {
@@ -115,6 +116,12 @@ pub struct Job {
     pub services: Vec<Service>,
     /// Where a `runs-on: nexus` job may go.
     pub nexus: NexusPlacement,
+    /// Freeze and export the job VM when a step fails (`snapshot-on-fail: true`).
+    pub snapshot_on_fail: bool,
+    /// Freeze and export the job VM on timeout/idle timeout (`timeout-snapshot: true`).
+    pub timeout_snapshot: bool,
+    /// Retention days override for frozen failure snapshots (`1..=90`).
+    pub snapshot_retention_days: Option<u32>,
 }
 
 /// What Nexus places a job by.
@@ -153,8 +160,25 @@ pub struct Workflow {
     pub concurrency: Option<Concurrency>,
     /// In file order.
     pub jobs: Vec<Job>,
+    /// Workflow-wide default for `snapshot-on-fail`.
+    pub snapshot_on_fail: bool,
+    /// Workflow-wide default for `timeout-snapshot`.
+    pub timeout_snapshot: bool,
+    /// Workflow-wide retention override for frozen failure snapshots (`1..=90`).
+    pub snapshot_retention_days: Option<u32>,
     /// Keys Neutrino read but doesn't act on yet.
     pub warnings: Vec<String>,
+}
+
+fn retention_days(v: Option<&Yaml>, what: &str) -> Result<Option<u32>, Error> {
+    match v {
+        None | Some(Yaml::Null) => Ok(None),
+        Some(Yaml::Number(n)) => match n.as_u64() {
+            Some(d) if (1..=90).contains(&d) => Ok(Some(d as u32)),
+            _ => Err(Error::new(format!("{what} must be between 1 and 90 days"))),
+        },
+        Some(_) => Err(Error::new(format!("{what} must be a number of days"))),
+    }
 }
 
 fn key<'a>(map: &'a serde_yaml::Mapping, name: &str) -> Option<&'a Yaml> {
@@ -406,12 +430,17 @@ fn step(v: &Yaml, job: &str, i: usize) -> Result<Step, Error> {
     }
     for (k, _) in m {
         let k = text(k).unwrap_or_default();
-        if !["name", "run", "env", "if", "timeout-minutes", "working-directory", "continue-on-error", "id", "shell"].contains(&k.as_str()) {
+        if !["name", "run", "env", "if", "timeout-minutes", "working-directory", "continue-on-error", "id", "shell", "snapshot-on-fail"].contains(&k.as_str()) {
             return Err(Error::new(format!("{what}: unknown key {k}")));
         }
     }
     let run = key(m, "run").and_then(text).filter(|r| !r.trim().is_empty()).ok_or_else(|| Error::new(format!("{what} needs run:")))?;
     expr::check(&run).map_err(|e| Error::new(format!("{what}.run: {e}")))?;
+    let snapshot_on_fail = if key(m, "snapshot-on-fail").is_some() {
+        Some(boolean(key(m, "snapshot-on-fail"), &format!("{what}.snapshot-on-fail"))?)
+    } else {
+        None
+    };
     Ok(Step {
         name: key(m, "name").and_then(text),
         run,
@@ -425,6 +454,7 @@ fn step(v: &Yaml, job: &str, i: usize) -> Result<Step, Error> {
             Some(sh) if ["bash", "sh", "pwsh", "powershell", "cmd"].contains(&sh.as_str()) => Some(sh),
             Some(other) => return Err(Error::new(format!("{what}.shell: {other:?} isn't a shell Neutrino knows; use bash, sh, pwsh, powershell or cmd"))),
         },
+        snapshot_on_fail,
     })
 }
 
@@ -555,7 +585,14 @@ fn environment(v: Option<&Yaml>, job: &str) -> Result<Option<String>, Error> {
     }
 }
 
-fn job(id: &str, v: &Yaml, warnings: &mut Vec<String>) -> Result<Job, Error> {
+fn job(
+    id: &str,
+    v: &Yaml,
+    default_snapshot_on_fail: bool,
+    default_timeout_snapshot: bool,
+    default_snapshot_retention: Option<u32>,
+    warnings: &mut Vec<String>,
+) -> Result<Job, Error> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') || id.starts_with('-') {
         return Err(Error::new(format!("{id:?} can't be a job id: use letters, digits, '_' and '-'")));
     }
@@ -568,7 +605,7 @@ fn job(id: &str, v: &Yaml, warnings: &mut Vec<String>) -> Result<Job, Error> {
         }
         if ![
             "name", "runs-on", "image", "resources", "timeout-minutes", "idle-timeout-minutes", "needs", "if", "env", "strategy", "continue-on-error", "steps",
-            "environment", "concurrency", "cache", "artifacts", "services", "nexus",
+            "environment", "concurrency", "cache", "artifacts", "services", "nexus", "snapshot-on-fail", "timeout-snapshot", "snapshot-retention-days",
         ]
         .contains(&k.as_str())
         {
@@ -640,6 +677,17 @@ fn job(id: &str, v: &Yaml, warnings: &mut Vec<String>) -> Result<Job, Error> {
             .collect::<Result<Vec<_>, _>>()?,
         services: services(key(m, "services"), id)?,
         nexus: nexus_placement(key(m, "nexus"), id)?,
+        snapshot_on_fail: if key(m, "snapshot-on-fail").is_some() {
+            boolean(key(m, "snapshot-on-fail"), &format!("jobs.{id}.snapshot-on-fail"))?
+        } else {
+            default_snapshot_on_fail
+        },
+        timeout_snapshot: if key(m, "timeout-snapshot").is_some() {
+            boolean(key(m, "timeout-snapshot"), &format!("jobs.{id}.timeout-snapshot"))?
+        } else {
+            default_timeout_snapshot
+        },
+        snapshot_retention_days: retention_days(key(m, "snapshot-retention-days"), &format!("jobs.{id}.snapshot-retention-days"))?.or(default_snapshot_retention),
     })
 }
 
@@ -655,18 +703,26 @@ impl Workflow {
         let mut warnings = Vec::new();
         for (k, _) in m {
             let k = text(k).unwrap_or_default();
-            if !["name", "on", "env", "jobs", "run-name", "permissions", "defaults", "concurrency"].contains(&k.as_str()) {
+            if ![
+                "name", "on", "env", "jobs", "run-name", "permissions", "defaults", "concurrency", "snapshot-on-fail", "timeout-snapshot",
+                "snapshot-retention-days",
+            ]
+            .contains(&k.as_str())
+            {
                 return Err(Error::new(format!("unknown key {k}")));
             }
             if ["permissions", "defaults", "run-name"].contains(&k.as_str()) {
                 warnings.push(format!("{k} is ignored"));
             }
         }
+        let default_snapshot_on_fail = boolean(key(m, "snapshot-on-fail"), "snapshot-on-fail")?;
+        let default_timeout_snapshot = boolean(key(m, "timeout-snapshot"), "timeout-snapshot")?;
+        let default_snapshot_retention = retention_days(key(m, "snapshot-retention-days"), "snapshot-retention-days")?;
         let Some(Yaml::Mapping(jobs_yaml)) = key(m, "jobs") else { return Err(Error::new("a workflow needs jobs:")) };
         let mut jobs = Vec::new();
         for (k, v) in jobs_yaml {
             let id = text(k).ok_or_else(|| Error::new("job ids are text"))?;
-            jobs.push(job(&id, v, &mut warnings)?);
+            jobs.push(job(&id, v, default_snapshot_on_fail, default_timeout_snapshot, default_snapshot_retention, &mut warnings)?);
         }
         if jobs.is_empty() {
             return Err(Error::new("a workflow needs at least one job"));
@@ -701,6 +757,9 @@ impl Workflow {
             env: env_map(key(m, "env"), "env")?,
             concurrency: concurrency(key(m, "concurrency"), "concurrency")?,
             jobs,
+            snapshot_on_fail: default_snapshot_on_fail,
+            timeout_snapshot: default_timeout_snapshot,
+            snapshot_retention_days: default_snapshot_retention,
             warnings,
         })
     }

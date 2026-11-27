@@ -981,6 +981,29 @@ pub struct RunJob {
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub steps: Vec<RunStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_snapshot_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_failed_step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_exit_code: Option<i32>,
+}
+
+/// Metadata returned when attaching a developer shell to a frozen CI failure VM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrozenAttachment {
+    pub job: i64,
+    pub container_id: String,
+    pub container_name: String,
+    pub workdir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub cli_command: String,
+    pub deep_link: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1358,6 +1381,8 @@ pub enum Request {
     CancelRun { repo: String, id: i64 },
     /// Run the same workflow on the same commit again.
     RerunRun { repo: String, id: i64 },
+    /// Restore a failed job's frozen VM snapshot into a live debug container.
+    AttachFrozenJob { repo: String, job: i64 },
     /// Start a workflow that has `workflow_dispatch` on a branch.
     DispatchRun { repo: String, workflow: String, branch: String },
     /// Check the workflow files on a branch without running them.
@@ -1491,6 +1516,7 @@ pub enum Response {
     Runs(Vec<Run>),
     Run(Box<RunDetail>),
     JobLog(LogChunk),
+    FrozenAttached(FrozenAttachment),
     Ci(CiInfo),
     /// Each workflow file on a branch: its name and either its triggers or what's wrong with it.
     Workflows(Vec<WorkflowFile>),
@@ -1831,5 +1857,25 @@ mod tests {
         let encoded = encode_response(13, &Response::FileDiff(fd.clone()));
         let (_, decoded) = decode_response(&encoded).unwrap();
         assert_eq!(decoded, Response::FileDiff(fd));
+    }
+
+    #[test]
+    fn wave3_frozen_snapshot_wire() {
+        let line = encode_request(14, &Request::AttachFrozenJob { repo: "app".into(), job: 77 });
+        let (id, req) = decode_request(&line);
+        assert_eq!((id, req.unwrap()), (Some(14), Request::AttachFrozenJob { repo: "app".into(), job: 77 }));
+
+        let resp = Response::FrozenAttached(FrozenAttachment {
+            job: 77,
+            container_id: "c99".into(),
+            container_name: "ntr-5-test-frozen-abc123".into(),
+            workdir: "/workspace".into(),
+            failed_step: Some("cargo test".into()),
+            exit_code: Some(101),
+            cli_command: "grav exec -it ntr-5-test-frozen-abc123 sh".into(),
+            deep_link: "graviton://container/c99/terminal".into(),
+        });
+        let encoded = encode_response(14, &resp);
+        assert_eq!(decode_response(&encoded).unwrap(), (14, resp));
     }
 }

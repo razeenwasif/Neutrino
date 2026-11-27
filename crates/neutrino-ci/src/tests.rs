@@ -280,3 +280,39 @@ fn moved_repo_workflows() {
     let prism = Workflow::parse("p.yml", include_str!("../../../docs/examples/prism/ci.yml")).unwrap();
     assert!(!prism.triggered_by(&pr("develop")), "Prism checks pull requests into main only");
 }
+
+#[test]
+fn parses_wave3_snapshot_on_fail_flags() {
+    let yaml = r#"
+on: push
+snapshot-on-fail: true
+snapshot-retention-days: 5
+jobs:
+  unit:
+    image: rust:1.85
+    steps:
+      - name: test
+        run: cargo test
+      - name: lint
+        run: cargo clippy
+        snapshot-on-fail: false
+  slow:
+    image: alpine:3.20
+    snapshot-on-fail: false
+    timeout-snapshot: true
+    snapshot-retention-days: 14
+    steps:
+      - run: sleep 10
+"#;
+    let wf = Workflow::parse("ci.yml", yaml).unwrap();
+    assert!(wf.snapshot_on_fail);
+    assert_eq!(wf.snapshot_retention_days, Some(5));
+    assert!(wf.jobs[0].snapshot_on_fail);
+    assert_eq!(wf.jobs[0].snapshot_retention_days, Some(5));
+    assert_eq!(wf.jobs[0].steps[1].snapshot_on_fail, Some(false));
+    assert!(!wf.jobs[1].snapshot_on_fail);
+    assert!(wf.jobs[1].timeout_snapshot);
+    assert_eq!(wf.jobs[1].snapshot_retention_days, Some(14));
+
+    assert!(Workflow::parse("bad.yml", "on: push\nsnapshot-retention-days: 120\njobs:\n  a:\n    image: alpine\n    steps:\n      - run: echo ok\n").is_err());
+}

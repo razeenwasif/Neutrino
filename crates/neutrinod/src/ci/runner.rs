@@ -10,7 +10,7 @@
 //! project with its own release cycle, and only these few shapes matter.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,10 +21,25 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
+use super::workspace;
+
 /// Containers Neutrino owns are named with this prefix.
 pub const CONTAINER_PREFIX: &str = "ntr-";
 /// Where the workspace appears inside a container.
 pub const WORKSPACE: &str = "/workspace";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenExport {
+    pub size_bytes: u64,
+    pub has_vm_state: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredContainer {
+    pub id: String,
+    pub name: String,
+    pub workdir: String,
+}
 
 /// What a job's container needs.
 #[derive(Debug, Clone)]
@@ -114,6 +129,26 @@ impl Runner {
         match self {
             Runner::Graviton(g) => g.owned().await,
             Runner::Local(l) => Ok(l.owned()),
+        }
+    }
+
+    pub async fn freeze_and_export(
+        &self,
+        container: &str,
+        dest_dir: &Path,
+        exit_code: Option<i32>,
+        failed_step: Option<&str>,
+    ) -> Result<FrozenExport> {
+        match self {
+            Runner::Graviton(g) => g.freeze_and_export(container, dest_dir, exit_code, failed_step).await,
+            Runner::Local(l) => l.freeze_and_export(container, dest_dir, exit_code, failed_step).await,
+        }
+    }
+
+    pub async fn restore_frozen(&self, bundle_dir: &Path, name: &str, ephemeral: bool) -> Result<RestoredContainer> {
+        match self {
+            Runner::Graviton(g) => g.restore_frozen(bundle_dir, name, ephemeral).await,
+            Runner::Local(l) => l.restore_frozen(bundle_dir, name).await,
         }
     }
 }
@@ -314,6 +349,48 @@ impl Graviton {
             .map(|c| Owned { running: c.status == "running", id: c.id, name: c.name })
             .collect())
     }
+
+    async fn freeze_and_export(
+        &self,
+        container: &str,
+        dest_dir: &Path,
+        exit_code: Option<i32>,
+        failed_step: Option<&str>,
+    ) -> Result<FrozenExport> {
+        let v = self
+            .call(json!({
+                "method": "freeze_and_export",
+                "params": {
+                    "id": container,
+                    "dest_bundle_dir": dest_dir,
+                    "keep_paused": false,
+                    "exit_code": exit_code,
+                    "failed_step": failed_step,
+                }
+            }))
+            .await?;
+        Ok(FrozenExport {
+            size_bytes: v["data"]["size_bytes"].as_u64().unwrap_or(0),
+            has_vm_state: v["data"]["has_vm_state"].as_bool().unwrap_or(false),
+        })
+    }
+
+    async fn restore_frozen(&self, bundle_dir: &Path, name: &str, ephemeral: bool) -> Result<RestoredContainer> {
+        let v = self
+            .call(json!({
+                "method": "restore_frozen",
+                "params": {
+                    "bundle_dir": bundle_dir,
+                    "name": name,
+                    "ephemeral": ephemeral,
+                }
+            }))
+            .await?;
+        let id = v["data"]["container"]["id"].as_str().context("missing container.id")?.to_string();
+        let cname = v["data"]["container"]["name"].as_str().context("missing container.name")?.to_string();
+        let workdir = v["data"]["workdir"].as_str().unwrap_or(WORKSPACE).to_string();
+        Ok(RestoredContainer { id, name: cname, workdir })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +483,60 @@ impl Local {
     pub fn workspace(&self, container: &str) -> Option<PathBuf> {
         self.boxes.lock().unwrap().get(container).map(|(w, _)| w.clone())
     }
+
+    async fn freeze_and_export(
+        &self,
+        container: &str,
+        dest_dir: &Path,
+        exit_code: Option<i32>,
+        failed_step: Option<&str>,
+    ) -> Result<FrozenExport> {
+        let src_ws = self.workspace(container).ok_or_else(|| anyhow!("container {container} is gone"))?;
+        let dest = dest_dir.to_path_buf();
+        let cname = container.to_string();
+        let step_owned = failed_step.map(String::from);
+        let size_bytes = tokio::task::spawn_blocking(move || -> Result<u64> {
+            std::fs::create_dir_all(&dest)?;
+            workspace::clone(&src_ws, &dest.join("workspace"))?;
+            let manifest = json!({
+                "version": 1,
+                "source_container_name": cname,
+                "workdir": WORKSPACE,
+                "exit_code": exit_code,
+                "failed_step": step_owned,
+            });
+            std::fs::write(dest.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+            Ok(dir_bytes(&dest))
+        })
+        .await??;
+        Ok(FrozenExport { size_bytes, has_vm_state: false })
+    }
+
+    async fn restore_frozen(&self, bundle_dir: &Path, name: &str) -> Result<RestoredContainer> {
+        if !bundle_dir.join("manifest.json").is_file() {
+            bail!("no frozen snapshot manifest at {}", bundle_dir.display());
+        }
+        let ws = bundle_dir.join("workspace");
+        let mounted = if ws.is_dir() { ws } else { bundle_dir.to_path_buf() };
+        self.boxes.lock().unwrap().insert(name.to_string(), (mounted, Vec::new()));
+        Ok(RestoredContainer {
+            id: name.to_string(),
+            name: name.to_string(),
+            workdir: WORKSPACE.into(),
+        })
+    }
+}
+
+fn dir_bytes(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return 0 };
+    if meta.is_file() {
+        return meta.len();
+    }
+    if !meta.is_dir() {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    entries.flatten().map(|e| dir_bytes(&e.path())).sum()
 }
 
 /// A launch agent's PATH is short; steps expect the usual tool folders.

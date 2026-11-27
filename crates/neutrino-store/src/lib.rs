@@ -193,6 +193,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE pulls ADD COLUMN parent_pull INTEGER;
     ALTER TABLE pulls ADD COLUMN stack_conflict TEXT;
     CREATE INDEX pulls_by_stack ON pulls (repo, stack_id);",
+    "ALTER TABLE jobs ADD COLUMN frozen_snapshot_path TEXT;
+    ALTER TABLE jobs ADD COLUMN frozen_size_bytes INTEGER;
+    ALTER TABLE jobs ADD COLUMN frozen_failed_step TEXT;
+    ALTER TABLE jobs ADD COLUMN frozen_exit_code INTEGER;
+    ALTER TABLE jobs ADD COLUMN frozen_expires_at INTEGER;",
 ];
 
 pub struct Store {

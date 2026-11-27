@@ -23,8 +23,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use neutrino_ci::expr::{self, Status};
 use neutrino_ci::{Event, Executor, Workflow};
-use neutrino_proto::{CiInfo, LogChunk, Run, RunState, WorkflowFile};
-use neutrino_store::{NewJob, NewRun};
+use neutrino_proto::{CiInfo, FrozenAttachment, LogChunk, Run, RunState, WorkflowFile};
+use neutrino_store::{NewJob, NewRun, now};
 use serde_json::{Map, Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Notify, mpsc, watch};
@@ -50,6 +50,10 @@ pub struct CiOptions {
     pub backup_dir: Option<PathBuf>,
     /// Snapshots kept.
     pub backups_kept: usize,
+    /// Days to keep frozen failure VM snapshots before pruning.
+    pub snapshot_retention_days: u32,
+    /// Maximum disk quota in MiB for frozen failure VM snapshots.
+    pub snapshot_quota_mib: u64,
     /// `runs-on: host`: steps as plain processes on this Mac, unisolated.
     /// Off unless the server is started with `--host-executor`.
     pub host: Option<Local>,
@@ -74,6 +78,8 @@ impl Default for CiOptions {
             retention_days: 30,
             backup_dir: None,
             backups_kept: 14,
+            snapshot_retention_days: 3,
+            snapshot_quota_mib: 10 * 1024,
             host: None,
             nexus: None,
         }
@@ -1001,8 +1007,11 @@ impl Daemon {
         let minute = ci.options.minute;
         let job_deadline = Instant::now() + minute * def.timeout_minutes;
         let idle = def.idle_minutes.map(|m| minute * m);
+        let retention_days = def.snapshot_retention_days.unwrap_or(ci.options.snapshot_retention_days).clamp(1, 90);
         let (mut failed, mut stopped, mut was_cancelled) = (false, false, false);
         let mut job_error: Option<String> = None;
+        let mut snapshot_info: Option<(String, Option<i32>)> = None;
+        let mut already_frozen = false;
 
         for (i, step) in def.steps.iter().enumerate() {
             let i = i as u32;
@@ -1046,6 +1055,7 @@ impl Daemon {
             let mut last_output = Instant::now();
             let mut why_stopped: Option<String> = None;
             let mut since_flush = Instant::now();
+            let step_label = step.name.clone().unwrap_or_else(|| step.label());
             loop {
                 let idle_at = idle.map(|d| last_output + d);
                 tokio::select! {
@@ -1066,10 +1076,18 @@ impl Daemon {
                         } else {
                             format!("the step ran past its {}-minute timeout", step.timeout_minutes.unwrap_or(0))
                         });
+                        if !already_frozen && (def.timeout_snapshot || step.snapshot_on_fail.unwrap_or(def.snapshot_on_fail)) {
+                            snapshot_info = Some((step_label.clone(), None));
+                            already_frozen = self.capture_frozen_snapshot(&runner, &store, run.id, q.id, &container, snapshot_info.as_ref(), retention_days, &mut log).await;
+                        }
                         runner.stop(&container).await;
                     }
                     _ = tokio::time::sleep_until(idle_at.unwrap_or(deadline)), if idle_at.is_some() && why_stopped.is_none() => {
                         why_stopped = Some(format!("the step printed nothing for {} minutes", def.idle_minutes.unwrap_or(0)));
+                        if !already_frozen && (def.timeout_snapshot || step.snapshot_on_fail.unwrap_or(def.snapshot_on_fail)) {
+                            snapshot_info = Some((step_label.clone(), None));
+                            already_frozen = self.capture_frozen_snapshot(&runner, &store, run.id, q.id, &container, snapshot_info.as_ref(), retention_days, &mut log).await;
+                        }
                         runner.stop(&container).await;
                     }
                     _ = cancelled.changed(), if why_stopped.is_none() => {
@@ -1108,8 +1126,13 @@ impl Daemon {
                 }
             };
             store.finish_step(q.id, i, state, result.as_ref().ok().copied(), log.offset)?;
-            if state == RunState::Failure && !step.continue_on_error {
-                failed = true;
+            if state == RunState::Failure {
+                if !step.continue_on_error {
+                    failed = true;
+                }
+                if snapshot_info.is_none() && step.snapshot_on_fail.unwrap_or(def.snapshot_on_fail) {
+                    snapshot_info = Some((step_label, result.as_ref().ok().copied()));
+                }
             }
             self.runs_changed(&run.repo);
         }
@@ -1121,6 +1144,10 @@ impl Daemon {
         } else {
             RunState::Success
         };
+
+        if state == RunState::Failure && !was_cancelled && !already_frozen && snapshot_info.is_some() {
+            self.capture_frozen_snapshot(&runner, &store, run.id, q.id, &container, snapshot_info.as_ref(), retention_days, &mut log).await;
+        }
 
         // Artifacts, whatever the steps did (a failed build's logs are worth keeping); not after a cancel.
         if !def.artifacts.is_empty() && !was_cancelled {
@@ -1170,6 +1197,85 @@ impl Daemon {
         let _ = tokio::task::spawn_blocking(move || workspace::compress_log(&lp)).await;
         store.finish_job(q.id, state, job_error.as_deref())?;
         Ok(())
+    }
+
+    fn snapshots_dir(&self) -> PathBuf {
+        self.state_dir.join("ci-snapshots")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn capture_frozen_snapshot(
+        &self,
+        runner: &Runner,
+        store: &neutrino_store::Store,
+        run_id: i64,
+        job_id: i64,
+        container: &str,
+        info: Option<&(String, Option<i32>)>,
+        retention_days: u32,
+        log: &mut Log,
+    ) -> bool {
+        let Some((step_name, exit_code)) = info else { return false };
+        let bundle_dir = self.snapshots_dir().join(format!("run-{run_id}-job-{job_id}"));
+        match runner.freeze_and_export(container, &bundle_dir, *exit_code, Some(step_name.as_str())).await {
+            Ok(exported) => {
+                let expires_at = now() + i64::from(retention_days) * 86_400;
+                let path_str = bundle_dir.to_string_lossy().into_owned();
+                if let Err(e) = store.set_job_frozen_snapshot(job_id, &path_str, exported.size_bytes, Some(step_name), *exit_code, expires_at) {
+                    let _ = log.note(&format!("froze VM but couldn't record snapshot metadata: {e:#}")).await;
+                    return false;
+                }
+                let _ = log
+                    .note(&format!(
+                        "froze failed VM snapshot ({} KB, vm_state={}) at {} (kept {retention_days}d)",
+                        exported.size_bytes.div_ceil(1024),
+                        exported.has_vm_state,
+                        bundle_dir.display()
+                    ))
+                    .await;
+                true
+            }
+            Err(e) => {
+                let _ = log.note(&format!("couldn't freeze failed VM snapshot: {e:#}")).await;
+                false
+            }
+        }
+    }
+
+    pub(crate) async fn attach_frozen_job(&self, repo: &str, job_id: i64) -> Result<neutrino_proto::Response> {
+        let ci = self.ci()?;
+        let store = self.store()?;
+        let job = store.job(job_id)?;
+        let run = store.run(job.run)?;
+        if run.repo != repo {
+            bail!("job {job_id} isn't in {repo}");
+        }
+        let Some(raw_path) = job.frozen_snapshot_path.clone() else {
+            bail!("job {} has no frozen VM snapshot", job.key);
+        };
+        let snap_root = self.snapshots_dir();
+        std::fs::create_dir_all(&snap_root)?;
+        let root_canon = snap_root.canonicalize().context("resolving snapshots directory")?;
+        let bundle_canon = Path::new(&raw_path)
+            .canonicalize()
+            .with_context(|| format!("frozen snapshot is gone from disk ({raw_path})"))?;
+        if !bundle_canon.starts_with(&root_canon) {
+            bail!("refusing frozen snapshot outside ci-snapshots");
+        }
+        let debug_name = format!("ntr-dbg-r{}-j{}-{}", run.number, job.id, now() % 10000);
+        let restored = ci.options.runner.restore_frozen(&bundle_canon, &debug_name, true).await?;
+        let container_id = restored.id.clone();
+        let container_name = restored.name.clone();
+        Ok(neutrino_proto::Response::FrozenAttached(FrozenAttachment {
+            job: job_id,
+            container_id: container_id.clone(),
+            container_name: container_name.clone(),
+            workdir: restored.workdir,
+            failed_step: job.frozen_failed_step,
+            exit_code: job.frozen_exit_code,
+            cli_command: format!("grav exec -it {container_name} sh"),
+            deep_link: format!("graviton://container/{container_id}/terminal"),
+        }))
     }
 }
 

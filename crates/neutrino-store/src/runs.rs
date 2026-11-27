@@ -120,10 +120,14 @@ fn job_row(db: &Connection, r: &Row<'_>) -> Result<RunJob> {
         environment: r.get(12)?,
         approved_by: r.get(13)?,
         steps: steps_of(db, id)?,
+        frozen_snapshot_path: r.get(14)?,
+        frozen_size_bytes: r.get::<_, Option<i64>>(15)?.map(|n| n.max(0) as u64),
+        frozen_failed_step: r.get(16)?,
+        frozen_exit_code: r.get(17)?,
     })
 }
 
-const JOB_COLUMNS: &str = "id, run, key, name, executor, image, state, error, needs, attempt, started_at, finished_at, environment, approved_by";
+const JOB_COLUMNS: &str = "id, run, key, name, executor, image, state, error, needs, attempt, started_at, finished_at, environment, approved_by, frozen_snapshot_path, frozen_size_bytes, frozen_failed_step, frozen_exit_code";
 
 impl Store {
     /// A run with its jobs, all queued; or, with `error`, a run that failed before starting.
@@ -521,6 +525,48 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn set_job_frozen_snapshot(
+        &self,
+        job: i64,
+        path: &str,
+        size_bytes: u64,
+        failed_step: Option<&str>,
+        exit_code: Option<i32>,
+        expires_at: i64,
+    ) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE jobs SET frozen_snapshot_path = ?1, frozen_size_bytes = ?2, frozen_failed_step = ?3, frozen_exit_code = ?4, frozen_expires_at = ?5 WHERE id = ?6",
+            params![path, size_bytes as i64, failed_step, exit_code, expires_at, job],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_job_frozen_snapshot(&self, job: i64) -> Result<()> {
+        let db = self.db.lock().unwrap();
+        db.execute(
+            "UPDATE jobs SET frozen_snapshot_path = NULL, frozen_size_bytes = NULL, frozen_failed_step = NULL, frozen_exit_code = NULL, frozen_expires_at = NULL WHERE id = ?1",
+            params![job],
+        )?;
+        Ok(())
+    }
+
+    pub fn expired_frozen_snapshots(&self, before: i64) -> Result<Vec<(i64, String)>> {
+        let db = self.db.lock().unwrap();
+        Ok(db
+            .prepare("SELECT id, frozen_snapshot_path FROM jobs WHERE frozen_snapshot_path IS NOT NULL AND frozen_expires_at IS NOT NULL AND frozen_expires_at <= ?1 ORDER BY frozen_expires_at")?
+            .query_map(params![before], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn frozen_snapshots_oldest_first(&self) -> Result<Vec<(i64, String, u64)>> {
+        let db = self.db.lock().unwrap();
+        Ok(db
+            .prepare("SELECT id, frozen_snapshot_path, COALESCE(frozen_size_bytes, 0) FROM jobs WHERE frozen_snapshot_path IS NOT NULL ORDER BY COALESCE(finished_at, id), id")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?.max(0) as u64)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// The minute a schedule last fired, so a restart doesn't fire it twice.
     pub fn schedule_mark(&self, repo: &str, workflow: &str, cron: &str) -> Result<Option<i64>> {
         let db = self.db.lock().unwrap();
@@ -641,5 +687,27 @@ mod tests {
         assert_eq!(s.runs("app", Some(3), 10).unwrap().len(), 2);
         assert_eq!(s.runs("app", Some(4), 10).unwrap().len(), 0);
         assert_eq!(s.run(bad).unwrap().number, 2);
+    }
+
+    #[test]
+    fn frozen_snapshot_lifecycle() {
+        let s = Store::in_memory().unwrap();
+        let run = s.create_run(&new("ci.yml", "push", None, None), &[job("build", &[]), job("test", &[])]).unwrap();
+        let ids: Vec<i64> = s.queued_jobs().unwrap().iter().map(|q| q.id).collect();
+        s.set_job_frozen_snapshot(ids[0], "/tmp/ci-snapshots/run-1-job-1", 4096, Some("cargo test"), Some(101), 1_000).unwrap();
+        s.set_job_frozen_snapshot(ids[1], "/tmp/ci-snapshots/run-1-job-2", 8192, Some("clippy"), Some(1), 5_000).unwrap();
+
+        let j0 = s.job(ids[0]).unwrap();
+        assert_eq!(j0.frozen_snapshot_path.as_deref(), Some("/tmp/ci-snapshots/run-1-job-1"));
+        assert_eq!(j0.frozen_size_bytes, Some(4096));
+        assert_eq!(j0.frozen_failed_step.as_deref(), Some("cargo test"));
+        assert_eq!(j0.frozen_exit_code, Some(101));
+
+        assert_eq!(s.expired_frozen_snapshots(2_000).unwrap(), vec![(ids[0], "/tmp/ci-snapshots/run-1-job-1".into())]);
+        assert_eq!(s.frozen_snapshots_oldest_first().unwrap().len(), 2);
+        s.clear_job_frozen_snapshot(ids[0]).unwrap();
+        assert!(s.job(ids[0]).unwrap().frozen_snapshot_path.is_none());
+        assert_eq!(s.frozen_snapshots_oldest_first().unwrap().len(), 1);
+        let _ = run;
     }
 }

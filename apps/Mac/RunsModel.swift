@@ -1,3 +1,4 @@
+import AppKit
 import NeutrinoKit
 import SwiftUI
 
@@ -197,6 +198,25 @@ extension AppModel {
     func rerun() async {
         guard let id = runID else { return }
         await runAction("Starting") { s, repo in try await s.rerun(repo: repo, id: id) }
+    }
+
+    func attachFrozen(job: RunJob) async {
+        guard let service = runService, let hosted = pullRepo, runBusy == nil else { return }
+        runBusy = "Restoring VM"
+        defer { runBusy = nil }
+        do {
+            let att = try await service.attachFrozenJob(repo: hosted, job: job.id)
+            lastFrozenAttachment = att
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(att.cliCommand, forType: .string)
+            if let url = URL(string: att.deepLink), NSWorkspace.shared.open(url) {
+                notice = "Opened \(att.containerName) in Graviton (CLI command also copied)."
+            } else {
+                notice = "Restored \(att.containerName); copied `\(att.cliCommand)`."
+            }
+        } catch {
+            notice = error.localizedDescription
+        }
     }
 
     func dispatch(workflow: String, branch: String) async throws {

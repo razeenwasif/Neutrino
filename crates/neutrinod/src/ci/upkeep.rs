@@ -79,6 +79,22 @@ impl Daemon {
             store.drop_cache(&repo, &key)?;
             total = total.saturating_sub(size);
         }
+        let now_ts = now();
+        for (job_id, path) in store.expired_frozen_snapshots(now_ts)? {
+            let _ = super::workspace::remove_tree(&PathBuf::from(&path));
+            store.clear_job_frozen_snapshot(job_id)?;
+        }
+        let snaps = store.frozen_snapshots_oldest_first()?;
+        let mut snap_total: u64 = snaps.iter().map(|(_, _, s)| s).sum();
+        let snap_cap = ci.options.snapshot_quota_mib * 1024 * 1024;
+        for (job_id, path, size) in snaps {
+            if snap_total <= snap_cap {
+                break;
+            }
+            let _ = super::workspace::remove_tree(&PathBuf::from(&path));
+            store.clear_job_frozen_snapshot(job_id)?;
+            snap_total = snap_total.saturating_sub(size);
+        }
         self.compress_finished_logs();
         let _ = store.optimize();
         Ok(())
