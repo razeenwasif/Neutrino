@@ -8,7 +8,7 @@ edition.workspace = true
 neutrino-proto.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+rusqlite = { version = "0.43", features = ["bundled", "backup"] }
 
 [dev-dependencies]
 tempfile.workspace = true
