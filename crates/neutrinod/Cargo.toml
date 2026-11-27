@@ -24,7 +24,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["process"] }
-notify = "8"
+notify = "9"
 
 [dev-dependencies]
 base64 = "0.22"
