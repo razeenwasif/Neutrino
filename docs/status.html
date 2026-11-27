@@ -1,0 +1,1549 @@
+<title>Neutrino Status &amp; Plan</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one reading column under a sticky section bar, like the other Status & Plan pages.
+     Neutrino's own look: Velvet near-black with a violet cast, the icon's branch and particle, lavender as the one accent. */
+  :root {
+    --ground: #0b0a10;
+    --glow-a: rgba(185, 166, 245, 0.13);
+    --glow-b: rgba(70, 50, 120, 0.28);
+    --paper: #15131c;
+    --paper-2: #0f0e15;
+    --raise: #221f2c;
+    --ink: #eeeaf6;
+    --dim: #c3bccf;
+    --mute: #a39cb4;
+    --line: rgba(220, 210, 255, 0.08);
+    --line-strong: rgba(220, 210, 255, 0.18);
+    --accent: #b9a6f5;
+    --on-accent: #120e1c;
+    --trail: linear-gradient(90deg, rgba(185, 166, 245, 0), rgba(185, 166, 245, 0.45) 60%, #e4dcff 100%);
+    --ok: #8fd8b5; --ok-soft: rgba(143, 216, 181, 0.12);
+    --doing: #b9a6f5; --doing-soft: rgba(185, 166, 245, 0.14);
+    --warn: #eac58a; --warn-soft: rgba(234, 197, 138, 0.12);
+    --crit: #ee9a9a; --crit-soft: rgba(238, 154, 154, 0.12);
+    --depth: inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 -30px 40px -32px rgba(0, 0, 0, 0.6);
+    --shadow: 0 3px 6px -2px rgba(0, 0, 0, 0.45), 0 16px 26px -12px rgba(0, 0, 0, 0.65), 0 38px 64px -30px rgba(0, 0, 0, 0.85);
+    --lift: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 6px 14px -8px rgba(0, 0, 0, 0.7);
+    --well: inset 0 1px 2px rgba(0, 0, 0, 0.6), inset 0 -1px 0 rgba(255, 255, 255, 0.03);
+    --legend-rim: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 -3px 8px -3px rgba(0, 0, 0, 0.6);
+    --bar-bg: rgba(11, 10, 16, 0.96);
+    --icon-plate: #15121d; --track: #463d60; --branch: #6c5f92; --node: #8c7fb0;
+    --body: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --ground: #f3f1f8; --glow-a: rgba(120, 90, 220, 0.10); --glow-b: rgba(180, 165, 230, 0.22);
+      --paper: #fdfcff; --paper-2: #efecf6; --raise: #e5e1ef;
+      --ink: #17131f; --dim: #3e3850; --mute: #5e5772;
+      --line: rgba(50, 30, 100, 0.10); --line-strong: rgba(50, 30, 100, 0.22);
+      --accent: #6b52d6; --on-accent: #ffffff;
+      --trail: linear-gradient(90deg, rgba(107, 82, 214, 0), rgba(107, 82, 214, 0.45) 60%, #6b52d6 100%);
+      --ok: #16774b; --ok-soft: rgba(22, 119, 75, 0.1); --doing: #6b52d6; --doing-soft: rgba(107, 82, 214, 0.1);
+      --warn: #85570a; --warn-soft: rgba(133, 87, 10, 0.1); --crit: #ad2f45; --crit-soft: rgba(173, 47, 69, 0.1);
+      --depth: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      --shadow: 0 1px 2px rgba(30, 20, 70, 0.08), 0 10px 24px -12px rgba(30, 20, 70, 0.2), 0 30px 50px -30px rgba(30, 20, 70, 0.22);
+      --lift: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 4px 10px -6px rgba(30, 20, 70, 0.28);
+      --well: inset 0 1px 2px rgba(30, 20, 70, 0.14);
+      --legend-rim: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 -3px 8px -4px rgba(30, 20, 70, 0.14);
+      --bar-bg: rgba(243, 241, 248, 0.96);
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --ground: #f3f1f8; --glow-a: rgba(120, 90, 220, 0.10); --glow-b: rgba(180, 165, 230, 0.22);
+    --paper: #fdfcff; --paper-2: #efecf6; --raise: #e5e1ef;
+    --ink: #17131f; --dim: #3e3850; --mute: #5e5772;
+    --line: rgba(50, 30, 100, 0.10); --line-strong: rgba(50, 30, 100, 0.22);
+    --accent: #6b52d6; --on-accent: #ffffff;
+    --trail: linear-gradient(90deg, rgba(107, 82, 214, 0), rgba(107, 82, 214, 0.45) 60%, #6b52d6 100%);
+    --ok: #16774b; --ok-soft: rgba(22, 119, 75, 0.1); --doing: #6b52d6; --doing-soft: rgba(107, 82, 214, 0.1);
+    --warn: #85570a; --warn-soft: rgba(133, 87, 10, 0.1); --crit: #ad2f45; --crit-soft: rgba(173, 47, 69, 0.1);
+    --depth: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    --shadow: 0 1px 2px rgba(30, 20, 70, 0.08), 0 10px 24px -12px rgba(30, 20, 70, 0.2), 0 30px 50px -30px rgba(30, 20, 70, 0.22);
+    --lift: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 4px 10px -6px rgba(30, 20, 70, 0.28);
+    --well: inset 0 1px 2px rgba(30, 20, 70, 0.14);
+    --legend-rim: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 -3px 8px -4px rgba(30, 20, 70, 0.14);
+    --bar-bg: rgba(243, 241, 248, 0.96);
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: calc(env(safe-area-inset-top, 0px) + 72px); }
+  body {
+    background:
+      radial-gradient(1100px 640px at 10% -8%, var(--glow-a), transparent 62%),
+      radial-gradient(900px 700px at 100% 40%, var(--glow-b), transparent 60%),
+      var(--ground);
+    background-attachment: fixed;
+    color: var(--ink);
+    font: 15px/1.6 var(--body);
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 30; background: var(--bar-bg); }
+  .gutter { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .column { max-width: 1080px; margin: 0 auto; display: grid; gap: 64px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+  h1, h2, h3, h4, h5 { margin: 0; text-wrap: balance; }
+  p { margin: 0; }
+  ul, ol { margin: 0; padding: 0; list-style: none; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+  code { font-family: var(--mono); font-size: 0.86em; overflow-wrap: anywhere; }
+  .mono { font-family: var(--mono); font-size: 0.92em; }
+  .tab-num { font-variant-numeric: tabular-nums; }
+  .eyebrow { font-size: 11.5px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--mute); }
+  .display { font-weight: 650; letter-spacing: -0.035em; }
+  .mark { display: block; flex: none; }
+  .mark .plate { fill: var(--icon-plate); stroke: var(--line-strong); }
+  .mark .trk { stroke: var(--track); fill: none; stroke-linecap: round; }
+  .mark .brn { stroke: var(--branch); fill: none; stroke-linecap: round; }
+  .mark .nd { fill: var(--icon-plate); stroke: var(--node); }
+  .mark .pt { fill: #e4dcff; }
+  .mark .halo { fill: #b9a6f5; opacity: 0.22; }
+
+  .paper { position: relative; background: var(--paper); border-radius: 18px; box-shadow: var(--depth), var(--shadow); }
+  .legend { position: absolute; top: -10px; left: 20px; max-width: calc(100% - 40px); display: inline-flex; align-items: center; gap: 8px; padding: 0 10px; background: var(--paper); border-radius: 8px 8px 0 0; box-shadow: var(--legend-rim); font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+
+  .bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--bar-bg); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); border-bottom: 1px solid var(--line); }
+  .bar-inner { display: flex; align-items: center; gap: 18px; min-height: 58px; max-width: 1080px; margin: 0 auto; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); flex: none; }
+  .brand b { font-weight: 650; font-size: 19px; letter-spacing: -0.03em; }
+  .sections { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; min-width: 0; padding: 6px 2px; }
+  .sections::-webkit-scrollbar { display: none; }
+  .sections a { flex: none; text-decoration: none; color: var(--dim); font-weight: 600; font-size: 13.5px; padding: 7px 14px; border-radius: 999px; white-space: nowrap; }
+  .sections a:hover { color: var(--ink); background: var(--raise); }
+  .sections a[aria-current="true"] { color: var(--ink); background: var(--raise); box-shadow: var(--lift); }
+  .sections a[aria-current="true"]::after { content: ""; display: block; height: 2px; margin-top: 3px; border-radius: 2px; background: var(--trail); }
+  .sync-my-server { margin-left: auto; font-size: 12px; color: var(--mute); white-space: nowrap; flex: none; }
+
+  main { padding-block: 40px 72px; }
+  .part { display: grid; gap: 28px; min-width: 0; scroll-margin-top: 72px; grid-template-columns: minmax(0, 1fr); }
+  .part-head { display: grid; gap: 10px; max-width: 72ch; }
+  .part-head h2 { font-size: clamp(28px, 4vw, 40px); line-height: 1.1; }
+  .part-head p { color: var(--dim); }
+  .kicker { display: inline-flex; align-items: center; gap: 10px; }
+  .kicker::before { content: ""; width: 34px; height: 3px; border-radius: 2px; background: var(--trail); }
+
+  header.hero { display: grid; gap: 16px; }
+  .hero-title { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  header.hero h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.02; }
+  header.hero h1 .amp { color: var(--accent); }
+  .lede { color: var(--dim); max-width: 66ch; font-size: 16.5px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--mute); font-size: 13px; }
+  .facts b { color: var(--dim); font-weight: 600; }
+  .vitals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 10px; align-items: start; }
+  .vital { padding: 22px 18px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+  .vital .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .vital .big { font-size: 24px; font-weight: 650; letter-spacing: -0.03em; line-height: 1.15; }
+  .vital p { color: var(--dim); font-size: 13px; line-height: 1.5; }
+  .vital .when { font-size: 11.5px; color: var(--mute); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 11.5px; font-weight: 650; padding: 2px 9px; border-radius: 999px; }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.ok { color: var(--ok); background: var(--ok-soft); }
+  .pill.crit { color: var(--crit); background: var(--crit-soft); }
+  .pill.warn { color: var(--warn); background: var(--warn-soft); }
+  .pill.info { color: var(--doing); background: var(--doing-soft); }
+  .pill.muted { color: var(--dim); background: var(--paper-2); box-shadow: var(--well); }
+
+  .plan-head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px 28px; }
+  .progress { display: grid; gap: 6px; width: 300px; max-width: 100%; flex: none; }
+  .progress .label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--dim); }
+  .progress .track { height: 6px; border-radius: 3px; background: var(--paper-2); box-shadow: var(--well); overflow: hidden; display: flex; }
+  .progress .track i { display: block; height: 100%; }
+  .p-done { background: var(--ok); }
+  .p-doing { background: var(--doing); }
+  .sync { font-size: 12px; color: var(--mute); }
+  .sync.err { color: var(--crit); }
+  .sizes { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--mute); }
+  .sizes b { color: var(--dim); font-weight: 600; font-family: var(--mono); }
+  #phases { display: grid; gap: 44px; grid-template-columns: minmax(0, 1fr); }
+  .phase { display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr); }
+  .phase-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .phase-head h3 { font-size: 23px; font-weight: 650; letter-spacing: -0.03em; }
+  .phase-sub { color: var(--mute); font-size: 13.5px; }
+  .phase-count { margin-left: auto; color: var(--mute); font-size: 12.5px; }
+  .steps { display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr); }
+  .step { display: grid; grid-template-columns: minmax(0, 1fr) 184px; gap: 6px 20px; padding: 24px 20px 18px; scroll-margin-top: 80px; }
+  .step.is-next { box-shadow: var(--depth), var(--shadow), 0 0 0 1.5px var(--accent); }
+  .step.is-done .title, .step.is-skipped .title { color: var(--dim); }
+  .step.is-skipped .title { text-decoration: line-through; text-decoration-color: var(--mute); }
+  .step.is-done .legend::after { content: "✓"; color: var(--ok); letter-spacing: 0; }
+  .step-body { display: grid; gap: 9px; min-width: 0; }
+  .title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .title { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.35; }
+  .next-tag { font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--on-accent); background: var(--accent); padding: 2px 8px; border-radius: 999px; }
+  .why { color: var(--dim); font-size: 14.5px; max-width: 80ch; overflow-wrap: anywhere; }
+  .covers { display: grid; gap: 4px; font-size: 13.5px; color: var(--dim); max-width: 80ch; }
+  .covers li { position: relative; padding-left: 18px; overflow-wrap: anywhere; }
+  .covers li::before { content: "–"; color: var(--mute); position: absolute; left: 0; }
+  .done-when { font-size: 13.5px; color: var(--dim); max-width: 80ch; }
+  .done-when span { color: var(--ink); font-weight: 650; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--mute); }
+  .tag { font-family: var(--mono); font-size: 11.5px; color: var(--dim); line-height: 1.5; background: var(--paper-2); box-shadow: var(--well); border-radius: 6px; padding: 1px 7px; overflow-wrap: anywhere; }
+  .tag.who { font-family: var(--body); font-weight: 600; }
+  .tag.who.you { color: var(--warn); }
+  .note { font-size: 13px; color: var(--ink); background: var(--paper-2); box-shadow: var(--well); border-radius: 10px; padding: 9px 12px; }
+  .note::before { content: "Note  "; color: var(--mute); font-weight: 650; }
+  .ctl { display: grid; gap: 6px; align-content: start; }
+  .state { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; padding: 6px 11px; border-radius: 10px; color: var(--mute); background: var(--paper-2); box-shadow: var(--well); }
+  .state::before { content: ""; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; flex: none; }
+  .state.s-doing { color: var(--doing); background: var(--doing-soft); box-shadow: none; }
+  .state.s-doing::before { background: currentColor; animation: pulse 1.4s ease-in-out infinite; }
+  .state.s-done { color: var(--ok); background: var(--ok-soft); box-shadow: none; }
+  .state.s-done::before { background: currentColor; }
+  .state.s-skipped { box-shadow: none; outline: 1px dashed var(--line-strong); outline-offset: -1px; }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+  .ctl label { font-size: 11.5px; color: var(--mute); }
+  .ctl select { font: inherit; font-size: 13px; color: var(--ink); background: var(--raise); border: 0; box-shadow: var(--lift); border-radius: 10px; padding: 6px 9px; width: 100%; }
+  .ctl select:disabled { opacity: 0.55; }
+  .ctl time { font-size: 11.5px; color: var(--mute); }
+  .plan-foot { color: var(--mute); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 16px; }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+  .count { font-size: 13px; color: var(--mute); }
+  .search { font: 500 14.5px var(--body); color: var(--ink); background: var(--paper-2); box-shadow: var(--well); border: 0; border-radius: 999px; padding: 10px 18px; width: min(100%, 380px); }
+  .search::placeholder { color: var(--mute); }
+  .empty { color: var(--mute); font-size: 14px; }
+
+  .bl-grid { columns: 2 440px; column-gap: 18px; }
+  .bl-cell { display: inline-block; width: 100%; vertical-align: top; break-inside: avoid; padding-top: 30px; }
+  .bl-group { padding: 22px 20px 8px; }
+  .bl-intro { font-size: 13px; color: var(--mute); padding-bottom: 6px; }
+  .bl-list { display: grid; }
+  .bl-item { padding: 12px 0; border-top: 1px solid var(--line); display: grid; gap: 6px; min-width: 0; }
+  .bl-item.firstv { border-top: 0; }
+  .bl-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 9px; }
+  .bl-head h5 { margin: 0; flex: 1 1 220px; font-size: 15px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+  .bl-text { font-size: 13.5px; color: var(--dim); overflow-wrap: anywhere; }
+
+  .guide { display: grid; gap: 52px; grid-template-columns: minmax(0, 1fr); }
+  .g-block { display: grid; gap: 18px; min-width: 0; scroll-margin-top: 80px; grid-template-columns: minmax(0, 1fr); }
+  .g-block > h3 { font-weight: 650; font-size: 25px; letter-spacing: -0.03em; }
+  .g-block > p { color: var(--dim); max-width: 72ch; }
+  .g-start { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 26px 16px; counter-reset: start; }
+  .g-start li { padding: 24px 18px 18px; display: grid; gap: 6px; align-content: start; min-width: 0; counter-increment: start; }
+  .g-start li::before { content: counter(start); font-family: var(--mono); font-size: 26px; line-height: 1; color: var(--accent); }
+  .g-start b { font-size: 15.5px; }
+  .g-start p { color: var(--dim); font-size: 14px; }
+  .g-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 30px 18px; }
+  .g-card { padding: 24px 20px 18px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .g-card > p { color: var(--dim); font-size: 14.5px; }
+  .g-card > p b { color: var(--ink); font-weight: 650; }
+  .how { font: 12px/1.65 var(--mono); color: var(--dim); background: var(--paper-2); box-shadow: var(--well); border-radius: 10px; padding: 10px 12px; overflow-x: auto; white-space: pre; }
+  .how .a { color: var(--accent); } .how .o { color: var(--ok); } .how .w { color: var(--warn); }
+
+  figure.g-diagram { margin: 0; padding: 30px 16px 18px; display: grid; gap: 20px; }
+  .g-diagram .scroll { overflow-x: auto; border-radius: 12px; }
+  .g-diagram svg { display: block; width: 100%; height: auto; min-width: 720px; }
+  .g-diagram figcaption { color: var(--dim); font-size: 13.5px; max-width: 80ch; padding-inline: 6px; }
+  .g-diagram figcaption b { color: var(--ink); font-weight: 650; }
+  .dg-zone { fill: var(--paper-2); stroke: var(--line-strong); }
+  .dg-zone-plan { fill: var(--paper-2); stroke: var(--mute); stroke-width: 1.2; stroke-dasharray: 5 4; }
+  .dg-box { fill: var(--raise); stroke: var(--line-strong); }
+  .dg-box-a { fill: var(--doing-soft); stroke: var(--accent); stroke-width: 1.3; }
+  .dg-plan { fill: var(--paper); stroke: var(--mute); stroke-width: 1.2; stroke-dasharray: 4 3; }
+  .dg-wire { fill: none; stroke: var(--mute); stroke-width: 1.4; }
+  .dg-wire-p { fill: none; stroke: var(--mute); stroke-width: 1.4; stroke-dasharray: 4 3; }
+  .dg-head { fill: var(--mute); }
+  .dg-hdm { fill: var(--ink); font: 600 12.5px var(--body); text-anchor: middle; }
+  .dg-sm { fill: var(--mute); font: 500 10.5px var(--body); }
+  .dg-smm { fill: var(--mute); font: 500 10.5px var(--body); text-anchor: middle; }
+  .dg-monom { fill: var(--dim); font: 400 11px var(--mono); text-anchor: middle; }
+  .dg-zl { fill: var(--mute); font: 600 10.5px var(--body); letter-spacing: 0.12em; }
+
+  .table-card { padding: 22px 0 6px; min-width: 0; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11.5px; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; color: var(--mute); }
+  td { color: var(--dim); }
+  tr:last-child td { border-bottom: 0; }
+  .perf-table { min-width: 560px; }
+  .perf-table td:first-child { font-weight: 650; color: var(--ink); }
+  .perf-table td.n { font-family: var(--mono); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .cheat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; align-items: start; }
+  .cheat-col { display: grid; gap: 30px; padding-top: 10px; min-width: 0; grid-template-columns: minmax(0, 1fr); align-content: start; }
+  .cheat { padding: 22px 0 6px; min-width: 0; }
+  .cheat table { font-size: 13.5px; }
+  .cheat td { padding: 7px 16px; }
+  .cheat td.k { width: 48%; color: var(--ink); }
+  .cheat td.k code { color: var(--ink); background: var(--paper-2); box-shadow: var(--well); border-radius: 6px; padding: 1px 6px; overflow-wrap: anywhere; }
+  .cheat tr.lastv td { border-bottom: 0; }
+  kbd { display: inline-block; font-family: var(--mono); font-size: 0.8em; line-height: 1.5; font-weight: 500; padding: 0 6px; border-radius: 6px; color: var(--ink); background: var(--raise); box-shadow: var(--lift); white-space: nowrap; vertical-align: 0.06em; }
+
+  @media (max-width: 900px) { .vitals { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 860px) { .cheat-grid { grid-template-columns: minmax(0, 1fr); gap: 30px; } }
+  @media (max-width: 760px) { .bl-grid { columns: 1; } }
+  @media (max-width: 640px) {
+    main { padding-block: 28px 56px; }
+    .column { gap: 52px; }
+    .bar-inner { gap: 10px; min-height: 52px; }
+    .brand b, .sync-my-server { display: none; }
+    .vitals { grid-template-columns: minmax(0, 1fr); }
+    .step { grid-template-columns: minmax(0, 1fr); padding: 22px 16px 16px; }
+    .ctl { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 10px; }
+    .ctl label { display: none; }
+    .ctl time { grid-column: 1 / -1; }
+    .progress { width: 100%; }
+    .g-card, .g-start li, .bl-group { padding: 22px 16px 16px; }
+    .cheat td { padding: 7px 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .state.s-doing::before { animation: none; } }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } .sections a { transition: background 0.15s ease, color 0.15s ease; } }
+</style>
+
+<nav class="bar gutter" aria-label="Sections">
+  <div class="bar-inner">
+    <a class="brand" href="#top">
+      <svg class="mark" width="28" height="28" viewBox="0 0 1024 1024" aria-hidden="true"><rect class="plate" x="8" y="8" width="1008" height="1008" rx="230" stroke-width="16"/><g transform="translate(40 50)"><path class="trk" d="M222 802 L802 222" stroke-width="44"/><path class="brn" d="M362 662 C250 470 470 250 662 362" stroke-width="40"/><circle class="nd" cx="362" cy="662" r="50" stroke-width="32"/><circle class="nd" cx="662" cy="362" r="50" stroke-width="32"/><circle class="halo" cx="491" cy="341" r="130"/><circle class="pt" cx="491" cy="341" r="62"/></g></svg>
+      <b>Neutrino</b>
+    </a>
+    <div class="sections">
+      <a href="#plan" data-spy="plan">Plan</a>
+      <a href="#architecture" data-spy="architecture">Architecture</a>
+      <a href="#backlog" data-spy="backlog">Backlog</a>
+      <a href="#guide" data-spy="guide">Guide</a>
+      <a href="#cheatsheet" data-spy="cheatsheet">Cheatsheet</a>
+    </div>
+    <span class="sync-my-server" id="sync-my-server" aria-hidden="true"></span>
+  </div>
+</nav>
+
+<main class="gutter" id="top">
+  <div class="column">
+
+  <header class="hero">
+    <span class="eyebrow">Neutrino · status, plan and guide</span>
+    <div class="hero-title">
+      <svg class="mark" width="80" height="80" viewBox="0 0 1024 1024" role="img" aria-label="Neutrino's icon: a branch leaving a main track and merging back, with a commit in flight on it"><rect class="plate" x="8" y="8" width="1008" height="1008" rx="230" stroke-width="10"/><g transform="translate(40 50)"><path class="trk" d="M222 802 L802 222" stroke-width="30"/><path class="brn" d="M362 662 C250 470 470 250 662 362" stroke-width="26"/><circle class="nd" cx="362" cy="662" r="44" stroke-width="24"/><circle class="nd" cx="662" cy="362" r="44" stroke-width="24"/><circle class="halo" cx="491" cy="341" r="140"/><circle class="pt" cx="491" cy="341" r="52"/></g></svg>
+      <h1 class="display">Neutrino Status <span class="amp">&amp;</span> Plan</h1>
+    </div>
+    <p class="lede">Where Neutrino stands, the order we build the rest in, how the pieces fit, and how to run it. Neutrino is a self-hosted replacement for the parts of GitHub you pay for: repositories, branches, pull requests, diff review, CI/CD and secrets. A Rust engine reads git in-process with gitoxide; SwiftUI apps show it; the server and CI run on build-server, with jobs in Graviton containers. Each step's status updates here as it lands.</p>
+    <div class="facts">
+      <span>main <b class="mono">cbc1c48</b> · server at protocol 8 · hardened &amp; widgets live</span>
+      <span>origin is the server; it mirrors to GitHub</span>
+      <span>Apple silicon · macOS 27</span>
+      <span>Updated <b>27 Nov</b>, after every piece of work</span>
+    </div>
+    <section class="vitals" aria-label="Vitals">
+      <div class="vital paper">
+        <span class="legend">Repository</span>
+        <div class="head"><span class="big tab-num">34 commits</span><span class="pill ok">Pushed</span></div>
+        <p>On main. 7b5ba3b is milestone 1: the five crates (wire types, diffs, the git engine, the daemon, <code>ntr</code>), NeutrinoKit and the Mac app, the architecture doc and the icon. a311151 is milestone 2: working-copy status, staging by file, hunk and line, discards, commits, branch actions, live refresh and the Changes screen, plus this page's source in <code>docs/status.html</code>. 3c3858c is milestone 3: the server role, pairing over TLS, remotes, fetch and push, and the app's pairing and publishing. 8d846f3 is milestone 4: pull requests, branch rules and the server's database. 70b2c41 is milestone 5: CI on Graviton. cd56969 is milestone 6: the vault and the rest of CI. 592471c is milestone 7: the host and Nexus executors. 436a344 is milestone 8: the iPhone app. 65eb75b is milestone 9: moving in from GitHub. Since then: five repos' CI moved and merged, <code>ntr</code> as one command with git, the menu bar item, the Code page, the safer mirror, every repo moved to build-server, and deploys that build a commit and say which one runs. <code>origin</code> is the hosted repo on build-server, which copies every push to GitHub.</p>
+        <span class="when">As of 27 Nov</span>
+      </div>
+      <div class="vital paper">
+        <span class="legend">Speed</span>
+        <div class="head"><span class="big tab-num">3–41 ms</span><span class="pill ok">Under target</span></div>
+        <p>Working-copy status on seven of your repos, over the socket, release build; it listed exactly the paths <code>git status</code> did on every one. History: the first 100 commits of git.git (78,000 commits) in 8 ms warm, 48 ms cold; every branch and tag in 73 ms; search in 21 ms. Paging 20,000 commits deep takes 230 ms, a known limit.</p>
+        <span class="when">Measured 14 Nov on this Mac</span>
+      </div>
+      <div class="vital paper">
+        <span class="legend">Tests</span>
+        <div class="head"><span class="big tab-num">132 of 132</span><span class="pill ok">All pass</span></div>
+        <p>42 in Rust. New with milestone 2: status checked against <code>git status --porcelain</code>; staging and unstaging by file, by hunk and by single line (one half of a change, part of a new file); discards that keep a recoverable copy; commits and amends with a hook's output; branch create, switch, rename and delete, with git refusing a switch that would lose work and an unmerged delete; a merge conflict; an unborn repo; and a socket test where editing a file reaches a subscriber. Milestone 3 added: pairing, single-use codes, hashed tokens kept across restarts, revocation and the lockout after wrong codes; and a server and a workstation daemon side by side, where a working copy is published, pushed through the hooks, read back on the server, and a device pairs over TLS, reads hosted repos and is refused everything else. 52 in Rust, 15 in Swift; three more drive live daemons, one pairing the Swift client with a real server over pinned TLS. Milestone 5 added: the workflow parser and expressions; run tables; and a CI test where pushes and a pull request start runs, needs and a matrix plan out, failure() and always() run, a failed need skips what follows, logs line up with their steps, a run is cancelled and another times out, a broken file and an over-budget job fail with reasons, a required check blocks a merge, and workspaces are gone afterwards; plus a live test that runs a job in a real Graviton VM. Milestone 4 added: the database on disk; files and commits from the merge base; each merge strategy on a bare repo, fast-forward refusal, conflicts, and failed merges that move nothing; lines followed through edits; and a server test where a pull request is opened, revised by a push, noted, guarded by a rule that refuses a direct push and a delete but takes a recorded override, merged with its branch deleted, a second one merged by a push, and pushes refused while the daemon is down. Milestone 6 added: the vault (sealing, moved values, recovery, masking across chunks), cron, hashFiles(), scoped secrets and variables, caches and artifacts on disk, and a test where secrets reach steps masked, a deploy waits and is approved or turned down, a branch is refused an environment, caches go cold, warm and restore by prefix, artifacts download, groups take turns or cancel, a schedule fires once and a snapshot opens. Milestone 7 added path filters and the host and Nexus executors against a fake coordinator. Milestone 8 added: device keys that can be set only once, push settings, the Inbox, an APNs token signed with a .p8 key, and a phone test over TLS where unsigned, forged, stale, replayed and tampered approvals are refused and a signed one is credited to the device. Milestone 9 and after added: import, mirrors and copied snapshots; a test that parses and plans each translated workflow and checks it fires when the original did; and the Code page's tree listings, last commit per entry, file contents and overview, all on bare repos, with their wire shapes pinned in Rust and Swift. 112 in Rust and 20 in Swift now.</p>
+        <span class="when">Run 20 Nov</span>
+      </div>
+      <div class="vital paper">
+        <span class="legend">Mac app</span>
+        <div class="head"><span class="big">Every screen seen</span><span class="pill ok">Seen</span></div>
+        <p>Seen on screen: Changes, pull requests, Runs, the Code page, the scrolling sidebar and the header in the title bar's row, and on 20 Nov the rest: the Pair sheet (the server found over Bonjour, its fingerprint, the code), the Publish sheet, and Secrets with its sheets and scopes. End to end, a secret saved from the app was used by a production run approved in the app, and the log showed *** for it. Fixed from looking: Publish offered for repos already on the server, names wrapping mid-word, unlabelled sheets, and a repo's page showing the previous repo's latest run. The menu bar icon itself still hasn't been seen, where a menu bar manager hides new items.</p>
+        <span class="when">Seen 20 Nov</span>
+      </div>
+    </section>
+  </header>
+
+  <section class="part" id="plan" aria-labelledby="plan-h">
+    <div class="plan-head">
+      <div class="part-head">
+        <span class="eyebrow kicker">Plan</span>
+        <h2 class="display" id="plan-h">Run order</h2>
+        <p>What has landed, then the milestones from the architecture doc in order. The first unfinished step is marked Next.</p>
+      </div>
+      <div class="progress" aria-live="polite">
+        <div class="label"><span id="progress-text">— done</span><span id="sync" class="sync">Loading statuses…</span></div>
+        <div class="track"><i class="p-done" id="bar-done" style="width:0%"></i><i class="p-doing" id="bar-doing" style="width:0%"></i></div>
+      </div>
+    </div>
+    <div class="sizes">
+      <span><b>S</b> an hour or two</span><span><b>M</b> about a session</span><span><b>L</b> several sessions</span>
+      <span>Sizes are rough. Tags name the commits, files and documents a step comes from.</span>
+    </div>
+    <div id="phases"></div>
+    <p class="plan-foot">Built from the architecture doc, the git log, the design canvas and the sessions' work. Statuses are shared: anyone who can edit this page can change them, and Claude updates them as steps land.</p>
+  </section>
+
+  <section class="part" id="architecture" aria-labelledby="arch-h">
+    <div class="part-head">
+      <span class="eyebrow kicker">Architecture</span>
+      <h2 class="display" id="arch-h">How Neutrino fits together</h2>
+      <p>One daemon binary in two roles. On workstation it's the workstation: working copies, history and diffs, all local and offline. On build-server, the always-on Mac my-server, it's the server: hosted repos, pull requests, CI and secrets, with every push copied back to GitHub. Storage stays plain git, so every editor and tool keeps working.</p>
+    </div>
+
+    <figure class="g-diagram paper">
+      <span class="legend">The pieces</span>
+      <div class="scroll">
+        <svg viewBox="0 0 960 340" role="img" aria-label="Diagram: on workstation, Neutrino.app and the ntr CLI talk JSON lines over a Unix socket to neutrinod in the workstation role, which reads working copies through neutrino-git. The app and the iPhone app talk paired TLS to neutrinod on build-server in the server role, which hosts bare repos, pull requests, CI and secrets, runs jobs in Graviton, on the host, or through Nexus on forge, and copies every push to GitHub.">
+          <rect class="dg-zone" x="10" y="26" width="520" height="302" rx="14"/>
+          <text class="dg-zl" x="28" y="50">WORKSTATION · BUILT</text>
+          <rect class="dg-zone" x="560" y="26" width="390" height="302" rx="14"/>
+          <text class="dg-zl" x="578" y="50">BUILD-SERVER · BUILT</text>
+
+          <rect class="dg-box" x="28" y="74" width="150" height="58" rx="10"/>
+          <text class="dg-hdm" x="103" y="99">Neutrino.app</text><text class="dg-smm" x="103" y="117">SwiftUI · NeutrinoKit</text>
+          <rect class="dg-box" x="28" y="160" width="150" height="58" rx="10"/>
+          <text class="dg-hdm" x="103" y="185">ntr</text><text class="dg-smm" x="103" y="203">CLI</text>
+
+          <rect class="dg-box-a" x="232" y="74" width="160" height="144" rx="10"/>
+          <text class="dg-hdm" x="312" y="102">neutrinod</text>
+          <text class="dg-smm" x="312" y="120">workstation role</text>
+          <text class="dg-monom" x="312" y="146">neutrino-proto</text>
+          <text class="dg-monom" x="312" y="164">neutrino-git</text>
+          <text class="dg-monom" x="312" y="182">neutrino-diff</text>
+          <text class="dg-smm" x="312" y="204">~/.neutrino</text>
+
+          <rect class="dg-box" x="232" y="250" width="160" height="58" rx="10"/>
+          <text class="dg-hdm" x="312" y="274">Working copies</text><text class="dg-smm" x="312" y="292">read in place, gitoxide</text>
+          <path class="dg-wire" d="M312 218 V242"/><polygon class="dg-head" points="307,242 312,250 317,242"/>
+
+          <path class="dg-wire" d="M178 103 H224"/><polygon class="dg-head" points="224,98 232,103 224,108"/>
+          <path class="dg-wire" d="M178 189 H224"/><polygon class="dg-head" points="224,184 232,189 224,194"/>
+          <text class="dg-sm" x="183" y="96">JSON lines</text><text class="dg-sm" x="183" y="182">Unix socket</text>
+
+          <rect class="dg-box" x="420" y="140" width="90" height="58" rx="10"/>
+          <text class="dg-hdm" x="465" y="165">git</text><text class="dg-smm" x="465" y="183">push, fetch</text>
+
+          <rect class="dg-box" x="590" y="74" width="170" height="120" rx="10"/>
+          <text class="dg-hdm" x="675" y="102">neutrinod</text>
+          <text class="dg-smm" x="675" y="120">server role</text>
+          <text class="dg-monom" x="675" y="144">forge · ci · vault</text>
+          <text class="dg-monom" x="675" y="162">SQLite · bare repos</text>
+          <text class="dg-smm" x="675" y="182">milestones 3 to 9</text>
+
+          <rect class="dg-box" x="784" y="74" width="148" height="52" rx="10"/>
+          <text class="dg-hdm" x="858" y="97">Graviton VMs</text><text class="dg-smm" x="858" y="114">Linux jobs</text>
+          <rect class="dg-box" x="784" y="138" width="148" height="52" rx="10"/>
+          <text class="dg-hdm" x="858" y="161">host executor</text><text class="dg-smm" x="858" y="178">Xcode jobs</text>
+          <rect class="dg-box" x="784" y="202" width="148" height="52" rx="10"/>
+          <text class="dg-hdm" x="858" y="225">Nexus → forge</text><text class="dg-smm" x="858" y="242">Windows, GPU</text>
+          <rect class="dg-box" x="590" y="226" width="170" height="58" rx="10"/>
+          <text class="dg-hdm" x="675" y="250">iPhone app</text><text class="dg-smm" x="675" y="268">milestone 8</text>
+          <rect class="dg-box" x="784" y="266" width="148" height="52" rx="10"/>
+          <text class="dg-hdm" x="858" y="289">GitHub</text><text class="dg-smm" x="858" y="306">a copy after each push</text>
+
+          <path class="dg-wire" d="M392 120 C470 120 520 100 582 100"/><polygon class="dg-head" points="582,95 590,100 582,105"/>
+          <text class="dg-sm" x="470" y="108">paired TLS</text>
+          <path class="dg-wire" d="M392 260 C440 260 440 198 456 198"/>
+          <path class="dg-wire" d="M510 169 H582"/><polygon class="dg-head" points="582,164 590,169 582,174"/>
+          <path class="dg-wire" d="M760 100 H776"/><polygon class="dg-head" points="776,95 784,100 776,105"/>
+          <path class="dg-wire" d="M760 160 H776"/><polygon class="dg-head" points="776,155 784,160 776,165"/>
+          <path class="dg-wire" d="M760 180 C770 180 770 228 776 228"/><polygon class="dg-head" points="776,223 784,228 776,233"/>
+          <path class="dg-wire" d="M675 226 V202"/><polygon class="dg-head" points="670,202 675,194 680,202"/>
+          <path class="dg-wire" d="M760 188 C772 188 768 292 776 292"/><polygon class="dg-head" points="776,287 784,292 776,297"/>
+        </svg>
+      </div>
+      <figcaption>Every part shown runs today. Requests carry an id, so the app keeps several in flight on one connection and a stale one (you scrolled past a diff) can be cancelled. <code>neutrino-proto</code> defines the wire once; <code>NeutrinoKit/Wire.swift</code> mirrors it, and tests on both sides pin the JSON. The full design, with the decisions and their reasons, is <code>docs/ARCHITECTURE.md</code>.</figcaption>
+    </figure>
+
+    <div class="g-cards">
+      <article class="g-card paper"><span class="legend">Storage</span>
+        <div class="bl-head"><h5>Plain git, read in-process</h5><span class="pill ok">Built</span></div>
+        <p>No new VCS format: repos stay git, so editors, scripts and GitHub itself still work and you can leave any time. The engine opens repos with <b>gitoxide</b> and never forks <code>git</code> for reads; packs are memory-mapped and each repo's handle is kept open.</p>
+      </article>
+      <article class="g-card paper"><span class="legend">History</span>
+        <div class="bl-head"><h5>The graph is laid out in the engine</h5><span class="pill ok">Built</span></div>
+        <p>The walk is newest first by commit time; each row carries its lane and the segments above and below the dot, coloured by lane. The client only draws, so the app, <code>ntr log</code> and later the phone share one layout.</p>
+      </article>
+      <article class="g-card paper"><span class="legend">Diffs</span>
+        <div class="bl-head"><h5>Histogram lines, then words</h5><span class="pill ok">Built</span></div>
+        <p>imara-diff's histogram algorithm with git's hunk sliding. Inside each changed block, removed and added lines pair up, and pairs that share at least 40% of their visible text are diffed again by word. Results are cached by both blobs' ids, so they never go stale.</p>
+<div class="how">→ <span class="a">{"id":14,"method":"file_diff","params":{"repo":"flux","sha":"f85c23b","path":"Cargo.lock"}}</span>
+← {"id":14,"type":"file_diff","data":{"additions":4,"deletions":2,"hunks":[…]}}
+→ <span class="a">{"id":15,"method":"cancel","params":{"id":13}}</span>
+← <span class="w">{"id":13,"type":"cancelled"}</span></div>
+      </article>
+      <article class="g-card paper"><span class="legend">Browsing</span>
+        <div class="bl-head"><h5>Files at any commit, on either machine</h5><span class="pill ok">Built</span></div>
+        <p>The Code page lists a directory at a branch or tag, then asks for the newest commit touching each entry (first-parent, at most 2,000 commits back), the README and an overview: commit and contributor counts, files, and languages by extension, leaving vendored and generated code out. Files come back as text up to 1 MiB. Protocol 8; an older server gets a plain message.</p>
+<div class="how">→ <span class="a">{"id":7,"method":"tree","params":{"repo":"flux","rev":"main","path":"src"}}</span>
+← {"id":7,"type":"tree","data":{"commit":"…","path":"src","entries":[…]}}</div>
+      </article>
+      <article class="g-card paper"><span class="legend">Working copy</span>
+        <div class="bl-head"><h5>Writes go through git's own rules</h5><span class="pill ok">Built</span></div>
+        <p>Status is read in-process with gitoxide. Staging, partial staging (a patch built from the picked lines, applied with <code>git apply --cached</code>), commits and branch changes run the stock <code>git</code> binary, as the architecture doc allows, so hooks, signing and config behave exactly as in a terminal.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="part" id="backlog" aria-labelledby="backlog-h">
+    <div class="part-head">
+      <span class="eyebrow kicker">Backlog</span>
+      <h2 class="display" id="backlog-h">What's left after the plan</h2>
+      <p>The known limits of what's built, and ideas that aren't scheduled. Items leave here when they land.</p>
+    </div>
+    <div class="filters">
+      <input class="search" id="bl-filter" type="search" placeholder="Filter: try “diff”, “history” or “build-server”" aria-label="Filter the backlog" autocomplete="off" spellcheck="false">
+      <span class="count" id="bl-count" aria-live="polite"></span>
+    </div>
+    <p class="empty" id="bl-empty" hidden>Nothing open matches.</p>
+    <div class="bl-grid">
+      <div class="bl-cell"><div class="bl-group paper"><span class="legend">Known gaps</span><p class="bl-intro">Rough edges in what's built.</p><ul class="bl-list">
+        <li class="bl-item"><div class="bl-head"><h5>Deep paging re-walked history</h5><span class="pill ok">Fixed</span></div><p class="bl-text">Each page used to walk from the newest commit again. Since b45c9e1 the walk and its graph rows are kept per repository and exact tips, growing by doubling: scrolling 201 pages of a 25,000-commit history went from 8.7 s to 0.36 s, and a page 20,000 deep from 91 ms to 0.5 ms. Searches still walk.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>The pairing and publish sheets hadn't been seen</h5><span class="pill ok">Fixed</span></div><p class="bl-text">Seen on 20 Nov, with the Secrets screen and a run approved from the app (b16f719 has what looking found). The window still stopped being capturable twice after a while, until the app restarted; whether that's the app or macOS isn't known.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>No way to delete a hosted repo</h5><span class="pill ok">Fixed</span></div><p class="bl-text"><code>ntr unhost NAME --yes</code>, or "Delete from build-server…" on a hosted repo's menu in the app (b45c9e1, ab89489). The repo moves to <code>~/.neutrino/deleted/</code>, nothing erased, and it's refused while CI runs. Its pull requests and runs stay in the database, so a new repo with the same name would show them.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Deploys built from the working tree</h5><span class="pill ok">Fixed</span></div><p class="bl-text"><code>scripts/deploy-server.sh</code> used to build whatever was in the checkout, uncommitted work included; on 20 Nov that sent another session's unfinished mirror change to build-server for a minute. Since efb2994 it builds a clean worktree of a commit, and <code>ntr info</code> names the commit that runs.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>The Code page's commit bar is the repo's</h5><span class="pill warn">Open</span></div><p class="bl-text">Inside a folder, the bar above the files still shows the newest commit of the whole branch, not of that folder. Each row's own last commit is right.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>The menu bar icon hasn't been seen in place</h5><span class="pill muted">Check</span></div><p class="bl-text">The glyph and the panel were checked in a preview window. A menu bar manager on workstation hides new items behind its arrow, so the icon itself hasn't been looked at in the bar.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Line staging skips git's clean filters</h5><span class="pill warn">Open</span></div><p class="bl-text">Picked lines are taken from the working tree's bytes as they are, so files that rely on LFS or CRLF conversion should be staged whole. Whole-file staging goes through <code>git add</code> and is unaffected.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>The watcher skips build folders by name</h5><span class="pill muted">By design for now</span></div><p class="bl-text"><code>target</code>, <code>node_modules</code>, <code>.build</code>, <code>DerivedData</code> and a few others are ignored by name, not by reading <code>.gitignore</code>. A tracked file inside such a folder won't trigger a refresh until something else does.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>No syntax highlighting in diffs</h5><span class="pill warn">Open</span></div><p class="bl-text">Diffs and the Code page's files show no code colours. Planned: tree-sitter in the engine, cached per blob id, sent as spans with each line.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Merge commits show the first parent only</h5><span class="pill muted">By design for now</span></div><p class="bl-text">A merge's file list and diffs compare with its first parent, like GitHub. A combined view (what the merge itself resolved) would need a second diff per file.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>The diff cache lives in memory</h5><span class="pill muted">Idea</span></div><p class="bl-text">512 diffs, dropped when the daemon restarts. The design calls for an LRU on disk, which only matters once diffs are big or the daemon restarts often.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Partial clones can't diff unfetched files</h5><span class="pill muted">By design</span></div><p class="bl-text">A blobless clone has no file contents until fetched. Neutrino says so instead of fetching behind your back.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Wide graphs are cut at ten lanes</h5><span class="pill muted">Idea</span></div><p class="bl-text">git.git's merge-heavy branches open twenty lanes; the app draws ten and the rest are hidden. Collapsing long-running lanes, as some git clients do, would keep it readable.</p></li>
+      </ul></div></div>
+      <div class="bl-cell"><div class="bl-group paper"><span class="legend">Later</span><p class="bl-intro">Ideas that aren't scheduled.</p><ul class="bl-list">
+        <li class="bl-item"><div class="bl-head"><h5>A shared Rust build cache (sccache)</h5><span class="pill muted">Idea</span></div><p class="bl-text">The one idea from Google's ABFS worth borrowing at this size: content-addressed build caching. Rust CI jobs keep a <code>target/</code> cache per repo, keyed on <code>Cargo.lock</code>; sccache on build-server's disk would also reuse work when the lockfile changes and across branches and repos (mamba, onyx, Neutron, flux). Needs a cache folder that outlives jobs and is shared across repos (a new kind of Neutrino cache), a Linux sccache in the containers, and a few lines per workflow. ABFS itself doesn't fit: a Linux kernel module, its own Ninja and remote cache servers, made for Android.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Blame and file history</h5><span class="pill muted">Idea</span></div><p class="bl-text">Who changed a line and when, and a file's history across renames. gitoxide has blame; the History screen would gain a path filter.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Image and notebook diffs</h5><span class="pill muted">Idea</span></div><p class="bl-text">Side-by-side images with a swipe, and Jupyter notebooks diffed by cell rather than by JSON.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>A bundled daemon</h5><span class="pill muted">Idea</span></div><p class="bl-text">Ship neutrinod inside Neutrino.app and have the app install the launch agent itself, as Graviton's release script does.</p></li>
+        <li class="bl-item"><div class="bl-head"><h5>Issues and pull requests from GitHub</h5><span class="pill muted">Idea</span></div><p class="bl-text"><code>ntr import</code> brings the code over (milestone 9); a repo's open issues and pull requests still live only on GitHub. A one-shot import of those would finish the move.</p></li>
+      </ul></div></div>
+    </div>
+  </section>
+
+  <section class="part" id="guide" aria-labelledby="guide-h">
+    <div class="part-head">
+      <span class="eyebrow kicker">Guide</span>
+      <h2 class="display" id="guide-h">Using what's built</h2>
+      <p>Everything here runs on workstation. Reads stay in-process; writes go through git.</p>
+    </div>
+    <div class="guide">
+      <div class="g-block">
+        <h3>Start in four steps</h3>
+        <ol class="g-start">
+          <li class="paper"><b>Run the daemon</b><p><code>scripts/dev-neutrinod.sh</code> builds and runs it in a terminal. <code>scripts/install-launch-agent.sh</code> runs it at login instead.</p></li>
+          <li class="paper"><b>Register a repo</b><p><code>ntr repo add ~/code/myrepo</code>, or ⌘O in the app. Any folder inside a working copy works; nothing in it changes.</p></li>
+          <li class="paper"><b>Open the app</b><p><code>cd apps &amp;&amp; xcodegen generate &amp;&amp; open Neutrino.xcodeproj</code>, then run NeutrinoMac. It connects on its own once the daemon is up.</p></li>
+          <li class="paper"><b>Work</b><p>Code shows a repo's files and README; Changes stages and commits; History shows the graph; Branches switches, creates, renames or deletes branches. Repos on build-server sit under the server in the sidebar.</p></li>
+        </ol>
+      </div>
+      <div class="g-block">
+        <h3>Committing</h3>
+        <div class="g-cards">
+          <article class="g-card paper"><span class="legend">Pick lines</span><p>In Changes, pick a file, then click lines in its diff. <b>Stage N lines</b> (⌘⇧S) stages just those; in the staged view the same button unstages them. Each hunk header has its own Stage hunk button.</p></article>
+          <article class="g-card paper"><span class="legend">Safe discards</span><p>Discarding keeps a copy of the file in the repo, listed in <code>~/.neutrino/discarded.log</code>; <code>git cat-file -p &lt;sha&gt;</code> gets it back. Untracked files go to the Trash.</p></article>
+          <article class="g-card paper"><span class="legend">Real git</span><p>Commits, switches and branch deletes run the <code>git</code> binary, so hooks, signing and your identity apply, and git refuses what it always refuses. A hook's output shows under the commit.</p></article>
+        </div>
+      </div>
+      <div class="g-block">
+        <h3>Day to day with ntr</h3>
+        <p>Every repo's <code>origin</code> is its hosted copy on build-server, and GitHub is a mirror that build-server updates after each push. Use <code>ntr</code> where you used <code>git</code>: what ntr doesn't know runs as git, and server commands go to build-server over SSH.</p>
+        <ol class="g-start">
+          <li class="paper"><b>Start from main</b><p><code>ntr switch main</code>, <code>ntr pull</code>, then <code>ntr switch -c fix-login</code>.</p></li>
+          <li class="paper"><b>Work and commit</b><p><code>ntr status</code>, <code>ntr diff</code>, <code>ntr add -p</code> or the app's Changes screen, then <code>ntr commit -m "Fix the login redirect"</code>.</p></li>
+          <li class="paper"><b>Push to build-server</b><p><code>ntr push -u origin fix-login</code>. The push starts the branch's workflows, and build-server copies the branch to GitHub.</p></li>
+          <li class="paper"><b>Open a pull request</b><p><code>ntr pr create fix-login --title "Fix the login redirect"</code>, then <code>ntr pr show 7</code> for its files, commits and whether it merges.</p></li>
+          <li class="paper"><b>Watch the checks</b><p><code>ntr runs --pr 7</code>, then <code>ntr run logs 12 -f</code>. If a check fails, fix it, commit and <code>ntr push</code>: that adds a version to the pull request and runs the checks again.</p></li>
+          <li class="paper"><b>Merge</b><p><code>ntr pr merge 7 -s squash -d</code> squashes, merges and deletes the branch. Main's push workflows run, deploys included.</p></li>
+          <li class="paper"><b>Approve a deploy</b><p><code>ntr inbox</code> lists what's waiting; <code>ntr run approve 13</code> lets it go, or approve it on the iPhone with Face ID.</p></li>
+          <li class="paper"><b>Tidy up</b><p><code>ntr switch main</code>, <code>ntr pull</code>, <code>ntr branch -d fix-login</code>.</p></li>
+        </ol>
+        <div class="g-cards">
+          <article class="g-card paper"><span class="legend">Code</span><p><code>ntr switch -c fix</code>, <code>ntr status</code>, <code>ntr commit -am "…"</code>, <code>ntr push -u origin fix</code>. Never push to the <code>github</code> remote; build-server copies there.</p></article>
+          <article class="g-card paper"><span class="legend">Review and CI</span><p><code>ntr pr create fix --title "…"</code>, <code>ntr pr list</code>, <code>ntr pr merge 3</code>. <code>ntr runs</code>, <code>ntr run logs 12 -f</code>, <code>ntr run approve 12</code> for a protected environment.</p></article>
+          <article class="g-card paper"><span class="legend">Secrets</span><p><code>ntr secret set NAME --env production &lt; file</code>, <code>ntr var set</code>, <code>ntr env list</code>. Values stay on build-server, in the vault.</p></article>
+          <article class="g-card paper"><span class="legend">The mirror</span><p><code>ntr mirror</code> shows how each repo's last copy went. If someone pushed to GitHub, the mirror refuses to overwrite it: <code>ntr pull github main</code>, then <code>ntr push</code>, and the next copy goes through.</p></article>
+          <article class="g-card paper"><span class="legend">A new repo</span><p><code>ntr host NAME</code>, then <code>ntr mirror set -r NAME</code> with its GitHub URL. Clone it anywhere with <code>ntr clone ssh://my-server~/.neutrino/repos/NAME.git</code>.</p></article>
+        </div>
+      </div>
+      <div class="g-block">
+        <h3>Working on build-server from workstation</h3>
+        <p>Github and Research live on build-server, the Mac my-server. workstation, the MacBook, is the window onto them: editors, Claude, agy, builds and ntr all run on build-server over SSH, so workstation stays light and the work is there whichever screen you sit at. <code>kagutsuchi</code> goes over Tailscale, so it works away from home too (<code>my-server</code> is the same host, kept because every repo's <code>origin</code> uses it).</p>
+        <ol class="g-start">
+          <li class="paper"><b>Connect</b><p><code>ssh kagutsuchi</code>, then <code>cd ~/Github/Applications/Neutrino</code>. If Tailscale is off at home, <code>ssh kagutsuchi-lan</code>.</p></li>
+          <li class="paper"><b>Edit</b><p><code>nvim</code> there, with the same config and plugins. Proton can't open files over SSH yet, so Proton is for the few repos kept on workstation.</p></li>
+          <li class="paper"><b>Claude</b><p>In the Claude app, start a new session, pick <b>SSH</b> in the place picker, add <code>kagutsuchi</code> and choose the project folder; save it as a preset to come back to. In a terminal, <code>claude</code> after <code>ssh kagutsuchi</code>.</p></li>
+          <li class="paper"><b>Antigravity</b><p><code>agy</code> after <code>ssh kagutsuchi</code> and <code>cd</code> into the project. It has no SSH mode of its own; it runs where the files are.</p></li>
+          <li class="paper"><b>Push and CI</b><p><code>ntr</code> and <code>git</code> work in repos on build-server as on workstation; there, <code>my-server</code> is build-server itself.</p></li>
+          <li class="paper"><b>Files you collect</b><p><code>relay</code> copies workstation's Downloads, Documents, Desktop and Pictures to the same folders on build-server each night at 2:00 (never deleting, never overwriting newer files there); delete them from workstation once they're across. <code>relay diff</code> shows what's waiting, <code>relay sync</code> sends it now.</p></li>
+        </ol>
+        <div class="g-cards">
+          <article class="g-card paper"><span class="legend">Kept on workstation</span><p>Xcode can't open a project over SSH, so the Apple apps (Neutrino's, Graviton's, boxtube, Fairy's iPhone app) keep a clone on workstation for the Simulator and running the Mac apps. <code>origin</code> is on build-server either way.</p></article>
+          <article class="g-card paper"><span class="legend">Fairy</span><p>Fairy's desktop app runs on build-server under its keep-alive agent and finds projects at <code>~/Github</code> there, so she needs no SSH setup.</p></article>
+          <article class="g-card paper"><span class="legend">Not yet</span><p>The Mac app's Changes screen reads working copies through workstation's daemon, so it doesn't see work on build-server; use <code>ntr status</code> and <code>ntr diff</code> there.</p></article>
+        </div>
+      </div>
+      <div class="g-block">
+        <h3>Speed, measured</h3>
+        <p>Release build on workstation, warm cache unless it says cold.</p>
+        <div class="table-card paper"><span class="legend">History</span><div class="table-wrap"><table class="perf-table">
+          <thead><tr><th>What</th><th>Time</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>git.git, first 100 commits</td><td class="n">8 ms</td><td>48 ms cold; 78,000 commits in all</td></tr>
+            <tr><td>git.git, every branch and tag</td><td class="n">73 ms</td><td>first 12 rows, about twenty lanes</td></tr>
+            <tr><td>git.git, search</td><td class="n">21 ms</td><td>first 20 hits for “fsmonitor”</td></tr>
+            <tr><td>git.git, skip 20,000</td><td class="n">230 ms</td><td>the known paging limit</td></tr>
+            <tr><td>Your repos</td><td class="n">&lt; 3 ms</td><td>Graviton, Oracle, flux, up to 1,300 commits</td></tr>
+          </tbody>
+        </table></div></div>
+      </div>
+      <div class="g-block">
+        <h3>When something's off</h3>
+        <div class="g-cards">
+          <article class="g-card paper"><span class="legend">Demo data</span><p>The pill at the top right says <b>Demo data</b> when the app can't reach neutrinod. Start the daemon; the app notices within four seconds.</p></article>
+          <article class="g-card paper"><span class="legend">Socket path</span><p>Unix socket paths are limited to 104 bytes. The default <code>~/.neutrino/neutrinod.sock</code> is fine; set <code>NEUTRINO_SOCKET</code> to something short if you move it.</p></article>
+          <article class="g-card paper"><span class="legend">Live view</span><p>Neutrino watches each registered repo and refreshes within a fraction of a second. Changes inside build folders such as <code>target</code> and <code>node_modules</code> are ignored on purpose. ⌘R reloads everything.</p></article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="part" id="cheatsheet" aria-labelledby="cheat-h">
+    <div class="part-head">
+      <span class="eyebrow kicker">Cheatsheet</span>
+      <h2 class="display" id="cheat-h">Commands and keys</h2>
+    </div>
+    <div class="filters">
+      <input class="search" id="cheat-filter" type="search" placeholder="Filter: try “history” or “mirror”" aria-label="Filter the cheatsheet" autocomplete="off" spellcheck="false">
+      <span class="count" id="cheat-count" aria-live="polite"></span>
+    </div>
+    <p class="empty" id="cheat-empty" hidden>Nothing matches.</p>
+    <div class="cheat-grid">
+      <div class="cheat-col">
+        <div class="cheat paper"><span class="legend">Machines</span><table><tbody>
+          <tr><td class="k"><code>ssh kagutsuchi</code></td><td>The Mac my-server, over Tailscale; where Github and Research live (<code>my-server</code> is the same host)</td></tr>
+          <tr><td class="k"><code>ssh kagutsuchi-lan</code></td><td>The same, by its LAN address, when Tailscale is off</td></tr>
+          <tr><td class="k"><code>ssh amaterasu</code> · <code>ssh amaterasu-linux</code></td><td>The 4090 PC over Tailscale, booted into Windows or Linux; each has its own host key</td></tr>
+          <tr><td class="k"><code>ssh forge</code> · <code>ssh raijin</code></td><td>The 4090 PC and raijin by LAN address, at home</td></tr>
+          <tr><td class="k"><code>claude</code> · <code>agy</code> · <code>nvim</code></td><td>Run on build-server after <code>ssh kagutsuchi</code> and <code>cd</code> into a project</td></tr>
+          <tr><td class="k"><code>relay diff</code> · <code>relay sync</code></td><td>What of Downloads, Documents, Desktop and Pictures waits to go to build-server; send it now</td></tr>
+          <tr><td class="k"><code>relay status</code> · <code>relay history</code></td><td>build-server reachable, its free space, the nightly time and last syncs</td></tr>
+        </tbody></table></div>
+        <div class="cheat paper"><span class="legend">ntr</span><table><tbody>
+          <tr><td class="k"><code>ntr ping</code> · <code>ntr info</code></td><td>Is the daemon up, and which version</td></tr>
+          <tr><td class="k"><code>ntr repos</code></td><td>Registered repos and their HEADs</td></tr>
+          <tr><td class="k"><code>ntr repo add [PATH]</code> · <code>repo rm</code></td><td>Register the repo containing PATH (default here), or forget it; its files are untouched</td></tr>
+          <tr><td class="k"><code>ntr history [REV] -n 30 --all</code></td><td>History with an ASCII graph, read by neutrinod</td></tr>
+          <tr><td class="k"><code>ntr history -q TEXT</code></td><td>Search messages, authors and hashes</td></tr>
+          <tr><td class="k"><code>ntr branches</code></td><td>Branches, upstreams, ahead and behind</td></tr>
+          <tr><td class="k"><code>ntr unstage</code> · <code>discard PATH…</code></td><td>Whole files; discard keeps a copy</td></tr>
+          <tr><td class="k"><code>ntr watch</code></td><td>Print change events as they happen</td></tr>
+          <tr><td class="k"><code>ntr status</code>, <code>commit</code>, <code>switch</code>, <code>rebase</code>…</td><td>Anything ntr doesn't know runs as git</td></tr>
+          <tr><td class="k"><code>ntr import NAME --from URL</code></td><td>A hosted repo from a GitHub one, copied back after every push</td></tr>
+          <tr><td class="k"><code>ntr mirror</code> · <code>backups</code></td><td>How each copy to GitHub went; the database snapshots</td></tr>
+          <tr><td class="k"><code>ntr pr</code> · <code>runs</code> · <code>run</code> · <code>inbox</code></td><td>Server commands; from workstation they go over SSH to build-server</td></tr>
+          <tr><td class="k"><code>--repo ID</code></td><td>Pick a repo; default is the one you're in</td></tr>
+        </tbody></table></div>
+        <div class="cheat paper"><span class="legend">Every day (git through ntr)</span><table><tbody>
+          <tr><td class="k"><code>ntr switch main</code> · <code>ntr pull</code></td><td>Get up to date with build-server</td></tr>
+          <tr><td class="k"><code>ntr switch -c NAME</code></td><td>Start a branch</td></tr>
+          <tr><td class="k"><code>ntr status</code> · <code>ntr diff</code></td><td>What changed</td></tr>
+          <tr><td class="k"><code>ntr add -p</code> · <code>ntr add .</code></td><td>Stage parts of files, or everything</td></tr>
+          <tr><td class="k"><code>ntr commit -m "…"</code> · <code>ntr commit --amend</code></td><td>Commit, or fix the last commit</td></tr>
+          <tr><td class="k"><code>ntr push -u origin NAME</code></td><td>First push of a branch to build-server; then just <code>ntr push</code></td></tr>
+          <tr><td class="k"><code>ntr log --oneline</code> · <code>ntr history</code></td><td>git's log, or neutrinod's faster graph</td></tr>
+          <tr><td class="k"><code>ntr stash</code> · <code>ntr rebase main</code></td><td>Any other git command works the same way</td></tr>
+          <tr><td class="k"><code>ntr branch -d NAME</code></td><td>Delete a merged branch here</td></tr>
+          <tr><td class="k"><code>ntr clone ssh://my-server~/.neutrino/repos/NAME.git</code></td><td>A fresh clone from build-server</td></tr>
+        </tbody></table></div>
+        <div class="cheat paper"><span class="legend">Pull requests</span><table><tbody>
+          <tr><td class="k"><code>ntr pr create NAME --title "…"</code></td><td>Open one into the default branch (add a target to pick another)</td></tr>
+          <tr><td class="k"><code>ntr pr list</code></td><td>Open and recent pull requests</td></tr>
+          <tr><td class="k"><code>ntr pr show N</code></td><td>Versions, files, commits, notes and whether it merges</td></tr>
+          <tr><td class="k"><code>ntr pr note N PATH LINE "…"</code></td><td>A note on a line of the latest version</td></tr>
+          <tr><td class="k"><code>ntr pr merge N -s squash -d</code></td><td>Merge (merge, squash, rebase or ff) and delete the branch</td></tr>
+          <tr><td class="k"><code>ntr pr close N</code> · <code>reopen N</code></td><td>Close without merging, or reopen</td></tr>
+          <tr><td class="k"><code>ntr rules set main --check ci</code></td><td>Guard a branch: no direct pushes, and ci must pass to merge</td></tr>
+          <tr><td class="k"><code>ntr inbox</code></td><td>What needs you: deploys to approve, pull requests ready to merge</td></tr>
+        </tbody></table></div>
+      </div>
+      <div class="cheat-col">
+        <div class="cheat paper"><span class="legend">Mac app</span><table><tbody>
+          <tr><td class="k"><kbd>⌘K</kbd></td><td>Go to a screen, repo, branch, pull request or run, or Fetch, Push and the rest</td></tr>
+          <tr><td class="k"><kbd>⌘⇧F</kbd></td><td>Filter the sidebar's repositories</td></tr>
+          <tr><td class="k"><kbd>⌘O</kbd></td><td>Add a repository</td></tr>
+          <tr><td class="k"><kbd>⌘R</kbd></td><td>Reload</td></tr>
+          <tr><td class="k"><kbd>⌘0</kbd> · <kbd>⌘1</kbd> · <kbd>⌘2</kbd> · <kbd>⌘3</kbd></td><td>Code · Changes · History · Branches</td></tr>
+          <tr><td class="k"><kbd>⌘4</kbd> · <kbd>⌘5</kbd> · <kbd>⌘6</kbd></td><td>Pull requests · Runs · Secrets</td></tr>
+          <tr><td class="k"><kbd>⌘⇧S</kbd></td><td>Stage (or unstage) the picked lines, or the file</td></tr>
+          <tr><td class="k"><kbd>⌘⇧A</kbd></td><td>Stage all</td></tr>
+          <tr><td class="k"><kbd>⌘↩</kbd></td><td>Commit</td></tr>
+          <tr><td class="k"><kbd>⌘F</kbd></td><td>Search history</td></tr>
+          <tr><td class="k"><kbd>↑</kbd> <kbd>↓</kbd></td><td>Previous and next commit</td></tr>
+          <tr><td class="k"><kbd>⌘⇧D</kbd></td><td>Diff at full width, and back</td></tr>
+          <tr><td class="k"><kbd>⌥⌘U</kbd> · <kbd>⌥⌘S</kbd></td><td>Unified · split diff</td></tr>
+        </tbody></table></div>
+        <div class="cheat paper"><span class="legend">CI runs</span><table><tbody>
+          <tr><td class="k"><code>ntr runs</code> · <code>ntr runs --pr N</code></td><td>Recent runs, or one pull request's</td></tr>
+          <tr><td class="k"><code>ntr run show N</code></td><td>A run's jobs and steps</td></tr>
+          <tr><td class="k"><code>ntr run logs N -f</code></td><td>Follow a job's output until it finishes; <code>-j JOB</code> picks the job</td></tr>
+          <tr><td class="k"><code>ntr run approve N</code> · <code>reject N</code></td><td>Let a deploy waiting on its environment run, or turn it down</td></tr>
+          <tr><td class="k"><code>ntr run cancel N</code> · <code>rerun N</code></td><td>Stop a run, or run it again on the same commit</td></tr>
+          <tr><td class="k"><code>ntr run start WORKFLOW -b main</code></td><td>Start a workflow that has workflow_dispatch</td></tr>
+          <tr><td class="k"><code>ntr run artifacts N</code> · <code>download N JOB/PATH</code></td><td>Files a run kept, and saving one</td></tr>
+          <tr><td class="k"><code>ntr workflows -b NAME</code></td><td>Check the workflow files on a branch</td></tr>
+          <tr><td class="k"><code>ntr ci</code></td><td>What CI is doing, and whether Graviton answers</td></tr>
+        </tbody></table></div>
+        <div class="cheat paper"><span class="legend">Secrets and environments</span><table><tbody>
+          <tr><td class="k"><code>ntr secret set NAME</code></td><td>Typed without echo, or <code>&lt; file</code>; values never come back out</td></tr>
+          <tr><td class="k"><code>ntr secret set NAME --env production</code></td><td>Only for jobs deploying to that environment; <code>--global</code> for every repo</td></tr>
+          <tr><td class="k"><code>ntr var set NAME VALUE</code></td><td>A plain variable, <code>vars.NAME</code> in workflows</td></tr>
+          <tr><td class="k"><code>ntr secret list</code> · <code>ntr var list</code></td><td>Names and where they apply</td></tr>
+          <tr><td class="k"><code>ntr env set production --approval --branch main</code></td><td>Deploys wait for approval and only main may deploy</td></tr>
+          <tr><td class="k"><code>ntr env list</code></td><td>A repo's environments</td></tr>
+        </tbody></table></div>
+        <div class="cheat paper"><span class="legend">Repos and the mirror</span><table><tbody>
+          <tr><td class="k"><code>ntr host NAME</code></td><td>A new empty repo on build-server</td></tr>
+          <tr><td class="k"><code>ntr unhost NAME --yes</code></td><td>Stop hosting it; it moves to <code>~/.neutrino/deleted/</code></td></tr>
+          <tr><td class="k"><code>ntr mirror set URL -r NAME</code></td><td>Copy it to a GitHub repo after every push</td></tr>
+          <tr><td class="k"><code>ntr import NAME --from URL</code></td><td>Move a GitHub repo in, mirrored back</td></tr>
+          <tr><td class="k"><code>ntr mirror</code></td><td>How each repo's last copy to GitHub went</td></tr>
+          <tr><td class="k"><code>ntr mirror now</code></td><td>Copy this repo now, and wait</td></tr>
+          <tr><td class="k"><code>ntr pull github main</code> · <code>ntr push</code></td><td>Someone pushed to GitHub: bring it in, and the mirror goes through again</td></tr>
+          <tr><td class="k"><code>ntr remote -v</code></td><td><code>origin</code> is build-server, <code>github</code> the mirror; never push to <code>github</code></td></tr>
+        </tbody></table></div>
+        <div class="cheat paper"><span class="legend">Development</span><table><tbody>
+          <tr><td class="k"><code>cargo test --workspace</code></td><td>Rust tests; builds repos with git in temp folders</td></tr>
+          <tr><td class="k"><code>swift test --package-path apps/NeutrinoKit</code></td><td>Swift tests</td></tr>
+          <tr><td class="k"><code>NEUTRINO_LIVE=1 swift test …</code></td><td>Also drive a running daemon</td></tr>
+          <tr><td class="k"><code>NEUTRINO_HOME</code> · <code>NEUTRINO_SOCKET</code></td><td>Move the state folder or the socket</td></tr>
+          <tr><td class="k"><code>NTR_TIMING=1 ntr history</code></td><td>Print how long the request took</td></tr>
+          <tr><td class="k"><code>scripts/deploy-server.sh</code></td><td>Build a commit (default HEAD) cleanly, sign, copy to build-server, restart, and check build-server runs that commit. <code>scripts/deploy-server.sh my-server abc1234</code> deploys another one</td></tr>
+          <tr><td class="k"><code>scripts/install-launch-agent.sh</code></td><td>Rebuild and restart this Mac's own daemon</td></tr>
+        </tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var PHASES = [
+    { id: "landed", name: "Landed", sub: "The design and the prototype" },
+    { id: "m1", name: "Milestone 1 · Read path", sub: "Browse real repos on this Mac" },
+    { id: "m2", name: "Milestone 2 · Working copy", sub: "Status, staging, commits and branches" },
+    { id: "m3", name: "Milestone 3 · Server on build-server", sub: "Hosted repos, pairing, push and fetch" },
+    { id: "m4", name: "Milestone 4 · Pull requests", sub: "Review and merge on build-server" },
+    { id: "m5", name: "Milestone 5 · CI", sub: "Workflows on Graviton runners" },
+    { id: "m6", name: "Milestone 6 · Vault and the rest of CI", sub: "Secrets, environments, caches, artifacts, schedules" },
+    { id: "m7", name: "Milestone 7 · Other executors", sub: "macOS on build-server, and forge through Nexus" },
+    { id: "m8", name: "Milestone 8 · iPhone", sub: "Approvals and reviews away from the Mac" },
+    { id: "m9", name: "Milestone 9 · Moving in", sub: "Your repos on build-server, with GitHub kept as a copy" },
+    { id: "after", name: "Since milestone 9", sub: "Browsing, the menu bar, and every repo moved in" },
+    { id: "m10", name: "Milestone 10 · Structural Code Review", sub: "Tree-sitter AST move-aware diffs, syntax highlighting, PR interdiffs & stacked PRs" },
+    { id: "m11", name: "Milestone 11 · Zero-Trust Provenance & AI-Era Ergonomics", sub: "Hardware-signed SLSA provenance ledger, PR verification receipts & speculative Shadow CI" },
+    { id: "m12", name: "Milestone 12 · Graviton × Neutrino Synergy", sub: "Snapshot-on-Fail time-travel CI, branch-bound stateful stacks & warm-to-commit CI" }
+  ];
+  var STEPS = [
+    { key: "architecture", phase: "landed", title: "System design", who: "Claude", size: "M", refs: ["docs/ARCHITECTURE.md"],
+      why: "You asked for the system design before any UI.",
+      covers: ["Git-compatible storage, a Rust daemon in two roles, SwiftUI apps", "build-server as the server; CI in Graviton VMs, on the host, or through Nexus", "Secrets only in a step's environment; timeouts, the reaper, backups"],
+      done: "you approved the design and the build-server topology." },
+    { key: "prototype", phase: "landed", title: "UI prototype", who: "Claude", size: "M", refs: ["Neutrino UI prototype"],
+      why: "Seven clickable screens in the look your other apps share, before building.",
+      covers: ["Changes, History, Branches, Pull request, Runs, Secrets, Runners", "Velvet surfaces, lavender accent, pastel status colours", "Later on the canvas: the icon and the iPhone screens"],
+      done: "you picked lavender and asked for milestone 1." },
+
+    { key: "engine", phase: "m1", title: "Git engine and diffs", who: "Claude", size: "L", refs: ["neutrino-git", "neutrino-diff"],
+      why: "Everything reads through it.",
+      covers: ["History newest first, with graph lanes, paging and search", "Commits with rename detection and line counts; refs and upstreams", "Histogram diffs with word highlights, cached by blob ids"],
+      done: "it matches git's line counts on real commits." },
+    { key: "daemon", phase: "m1", title: "Daemon, wire and CLI", who: "Claude", size: "M", refs: ["neutrinod", "neutrino-proto", "ntr"],
+      why: "The app and the CLI need one engine to talk to.",
+      covers: ["JSON lines with request ids; concurrent requests and cancel", "The repo registry in ~/.neutrino", "ntr repos, add, log, show, diff, branches"],
+      done: "every request answers over the socket, tested end to end." },
+    { key: "macapp", phase: "m1", title: "Mac app on real repos", who: "Claude", size: "L", refs: ["apps/Mac", "NeutrinoKit"],
+      why: "The prototype's History and Branches, on real data.",
+      covers: ["History with the graph, the commit panel, unified and split diffs", "Branches with ahead and behind", "Demo data when the daemon isn't running"],
+      done: "it browses your repos and git.git without layout faults." },
+    { key: "commit-m1", phase: "m1", title: "Commit milestone 1", who: "You", size: "S", refs: ["7b5ba3b"],
+      why: "Milestone 1 needed your go-ahead before it was committed.",
+      covers: ["Optionally add a remote and push"],
+      done: "milestone 1 is a commit on main." },
+
+    { key: "status", phase: "m2", title: "Working-tree status", who: "Claude", size: "M", refs: ["neutrino-git"],
+      why: "The Changes screen starts from what changed.",
+      covers: ["Staged, unstaged and untracked files with rename detection, honouring .gitignore", "Conflicted files during a merge or rebase", "Diffs of the index against HEAD and of the working tree against the index"],
+      done: "status matches git status --porcelain on real repos." },
+    { key: "stage", phase: "m2", title: "Stage and unstage by file, hunk and line", who: "Claude", size: "M", refs: ["neutrino-git"],
+      why: "Committing exactly what you meant is the point of a client.",
+      covers: ["Whole files, single hunks, or selected lines, both ways", "Discard changes, after a confirmation, through git so nothing is lost silently"],
+      done: "partial staging round-trips through git diff --cached." },
+    { key: "commit", phase: "m2", title: "Commit", who: "Claude", size: "S", refs: ["git commit"],
+      why: "The end of the Changes screen.",
+      covers: ["Through the git binary so hooks, signing and your identity apply", "Amend the last commit", "Errors from hooks shown as they print"],
+      done: "a commit from the app is the same as one from a terminal." },
+    { key: "branchwrite", phase: "m2", title: "Branch operations", who: "Claude", size: "M", refs: ["Branches screen"],
+      why: "The Branches screen is read-only today.",
+      covers: ["Create, check out (refusing when it would lose changes), rename, delete merged branches", "Check out a remote branch as a tracking branch"],
+      done: "every Branches action works and refuses what git refuses." },
+    { key: "watch", phase: "m2", title: "Live updates", who: "Claude", size: "M", refs: ["FSEvents", "subscribe"],
+      why: "Editing a file elsewhere should show in the app without ⌘R.",
+      covers: ["An FSEvents watcher per working copy", "A subscribe request that pushes changes to the app"],
+      done: "saving a file in an editor updates Changes within a second." },
+    { key: "changes-ui", phase: "m2", title: "The Changes screen", who: "Claude", size: "M", refs: ["prototype: Changes"],
+      why: "The prototype's first screen, on real data.",
+      covers: ["Staged and not-staged lists, the diff with stage-hunk buttons, the commit box", "ntr status, stage, unstage, commit and branch commands"],
+      done: "you can make a commit from the app end to end." },
+
+    { key: "hosting", phase: "m3", title: "Hosted repos and hooks", who: "Claude", size: "M", refs: ["neutrinod --server", "hosting.rs"],
+      why: "Everything shared lives on build-server, in plain bare repos.",
+      covers: ["neutrinod --server hosts ~/.neutrino/repos/<name>.git and re-adopts them at start", "pre- and post-receive hooks call neutrinod hook; pushes reach subscribers", "The first branch pushed to an empty repo becomes its default; commit-graph refreshed after pushes"],
+      done: "a push lands, the hooks report it, and the server serves its history." },
+    { key: "server", phase: "m3", title: "Pairing over TLS", who: "Claude", size: "M", refs: ["neutrino-remote"],
+      why: "The Mac app (and later the phone) needs a way in that isn't a Unix socket.",
+      covers: ["A self-signed certificate devices pin; one-time codes from ntr pair; token hashes only on the server", "Bonjour as _neutrino._tcp; ntr devices and revoke", "Paired devices may read and create hosted repos, nothing else"],
+      done: "a device pairs, reads hosted repos, and loses access when revoked." },
+    { key: "remotes", phase: "m3", title: "Remotes, fetch and push", who: "Claude", size: "S", refs: ["worktree.rs"],
+      why: "Getting work from workstation to build-server and back.",
+      covers: ["List and add remotes; fetch; push with or without setting the upstream", "git over SSH with your keys, never prompting"],
+      done: "push and fetch work from ntr and the app." },
+    { key: "server-ui", phase: "m3", title: "The app and the server", who: "Claude", size: "M", refs: ["ServerViews.swift", "b16f719"],
+      why: "Pairing, publishing and browsing build-server from the Mac app.",
+      covers: ["Pair: pick the server, check its fingerprint, enter the code", "Hosted repos in the sidebar, browsed read-only; Publish; Fetch and Push in the header"],
+      done: "a working copy is published and browsed on the server from the app." },
+    { key: "deploy-the server", phase: "m3", title: "Run the server on build-server", who: "You", size: "S", refs: ["scripts/install-launch-agent.sh --server"],
+      why: "So far server and workstation have run side by side on workstation.",
+      covers: ["Turn on Remote Login on build-server and add workstation's SSH key", "Build and install with --server there, then pair the app with ntr pair"],
+      done: "workstation pushes to build-server over SSH and the app shows the hosted repo." },
+    { key: "pr-store", phase: "m4", title: "The server's database", who: "Claude", size: "S", refs: ["neutrino-store"],
+      why: "Git keeps the code; something has to keep the review around it.",
+      covers: ["SQLite on build-server: pull requests, versions, notes, branch rules, overrides", "Numbers per repo; one open pull request per branch pair; migrations by version"],
+      done: "the review survives restarts, tested on disk." },
+    { key: "pr-engine", phase: "m4", title: "Compare, merge and follow lines", who: "Claude", size: "L", refs: ["forge.rs"],
+      why: "Pull requests are made of comparisons and merges, in a repo with no working copy.",
+      covers: ["Files and commits since the source left the target (via the merge base)", "Mergeability with merge-tree; merge, squash, rebase and fast-forward in the bare repo, landing with update-ref", "A line followed from one version to the next, for notes"],
+      done: "every strategy merges a real repo and a failed merge moves nothing." },
+    { key: "pr-daemon", phase: "m4", title: "Pull requests on the server", who: "Claude", size: "M", refs: ["pulls.rs", "ntr pr"],
+      why: "The app and ntr need one place that owns pull requests.",
+      covers: ["Create, show, edit, close, note, resolve, merge; refs/pull/N/head per version", "A push to the source adds a version; a push that merges one marks it merged", "ntr pr list, create, show, note, merge, close"],
+      done: "a pull request is opened, revised, noted and merged end to end." },
+    { key: "pr-rules", phase: "m4", title: "Branch rules in the hooks", who: "Claude", size: "M", refs: ["hosting.rs"],
+      why: "Guarded branches need the server to refuse pushes, not just the app.",
+      covers: ["No direct pushes, no force-pushes, no deletes, by name or pattern", "git push -o neutrino-override=why gets past one and is recorded", "Pushes are refused while neutrinod is down if the repo has rules"],
+      done: "a direct push to a guarded main is refused, and the override is logged." },
+    { key: "pr-app", phase: "m4", title: "Pull requests in the app", who: "Claude", size: "L", refs: ["PullsScreen.swift"],
+      why: "Reviewing is something you do with your eyes.",
+      covers: ["The list, Overview with the merge box, Files with notes on lines, Commits", "New pull request and branch rules sheets; a local repo finds its hosted repo by remote"],
+      done: "a branch is reviewed and merged on build-server from the Mac app." },
+    { key: "pr-deploy", phase: "m4", title: "Deploy to build-server", who: "Claude", size: "S", refs: ["~/.neutrino/bin"],
+      why: "The server has to run the new protocol.",
+      covers: ["Protocol 4 binaries on build-server; the database created there", "A live pull request on neutrino-smoke-test"],
+      done: "ntr pr show works on build-server." },
+    { key: "ci-parser", phase: "m5", title: "Workflow files and expressions", who: "Claude", size: "M", refs: ["neutrino-ci"],
+      why: "Actions-shaped YAML you already know, without the marketplace runtime.",
+      covers: ["on: push (branch and tag filters), pull_request, workflow_dispatch; jobs, needs, if, env, matrix with include and exclude", "${{ }} with neutrino, env, matrix and needs; success() failure() always() cancelled() and friends", "Clear refusals: uses:, cycles, unknown keys, bad timeouts; later keys warned about"],
+      done: "a real workflow parses, plans its matrix and refuses what it can't run." },
+    { key: "ci-runs", phase: "m5", title: "Runs, jobs, steps and logs", who: "Claude", size: "S", refs: ["neutrino-store"],
+      why: "A run has to survive restarts, and its log has to be readable while it's written.",
+      covers: ["Runs, jobs and steps in SQLite; numbers per repo", "A plain log file per job, with each step's start and end recorded"],
+      done: "a run's history and output are there after a restart." },
+    { key: "ci-graviton", phase: "m5", title: "The Graviton executor", who: "Claude", size: "M", refs: ["ci/runner.rs"],
+      why: "Each job in its own Linux VM on your own machine.",
+      covers: ["Check out the commit, start the container with the workspace shared in, one exec per step", "Stop, remove and delete the workspace whatever happened", "A local runner for tests"],
+      done: "a job runs in a Graviton VM and leaves nothing behind." },
+    { key: "ci-scheduler", phase: "m5", title: "Scheduler, timeouts and the reaper", who: "Claude", size: "M", refs: ["ci/mod.rs"],
+      why: "build-server is small and shared; CI must stay inside its budget and clean up after itself.",
+      covers: ["Pushes and pull request versions start runs; dispatch, rerun and cancel", "A fixed budget of CPUs and memory, first come first served", "Job, step and no-output timeouts; a reaper for ntr- containers and workspaces; lost jobs retried once"],
+      done: "cancel and timeout stop a job within seconds, and nothing is left running." },
+    { key: "ci-ui", phase: "m5", title: "Runs in ntr and the app", who: "Claude", size: "M", refs: ["RunsScreen.swift", "ntr runs"],
+      why: "You read runs where you work.",
+      covers: ["ntr runs, run show, logs -f, cancel, rerun, start; workflows; ci", "The Runs screen: runs, jobs, steps with their output, following a running job", "Checks in the pull request merge box; rules can require them"],
+      done: "a failing check is visible from the pull request and blocks the merge." },
+    { key: "ci-the server", phase: "m5", title: "Graviton on build-server", who: "You", size: "S", refs: ["Graviton.app"],
+      why: "Jobs on build-server need gravitond there; today it's only on workstation.",
+      covers: ["Install Graviton on build-server and start its daemon at login", "Then a pull request's ci run passes there"],
+      done: "ntr ci on build-server says Graviton answers." },
+    { key: "vault", phase: "m6", title: "The vault", who: "Claude", size: "M", refs: ["neutrino-vault"],
+      why: "Deploys need credentials, and they mustn't sit in plain text or in logs.",
+      covers: ["XChaCha20-Poly1305 per value, bound to its name and scope; the key in build-server's Keychain; a recovery code shown once", "Scopes: every repo, one repo, one environment; the most specific wins", "Logs mask each secret, its base64 and each line, even split across chunks"],
+      done: "a secret reaches a step, never the database in clear, and shows as *** in the log." },
+    { key: "environments", phase: "m6", title: "Environments, approvals and concurrency", who: "Claude", size: "M", refs: ["ci/mod.rs"],
+      why: "A deploy should wait for a yes, and two deploys shouldn't overlap.",
+      covers: ["environment: its secrets and variables; branch limits; jobs wait until approved or turned down, recording who", "concurrency groups for workflows and jobs, with cancel-in-progress"],
+      done: "a deploy waits, runs once approved, and a newer run cancels an older one." },
+    { key: "caches", phase: "m6", title: "Caches, artifacts and services", who: "Claude", size: "M", refs: ["ci/workspace.rs"],
+      why: "Builds shouldn't start cold, and their output should outlive the VM.",
+      covers: ["Caches by key with restore-key prefixes and hashFiles(), cloned in and out on APFS, capped and evicted", "Artifacts kept per run, downloadable from ntr and the app", "Service containers beside a job at NAME_HOST"],
+      done: "the second run finds its cache warm, and the artifact downloads intact." },
+    { key: "schedules", phase: "m6", title: "Schedules, retention and backups", who: "Claude", size: "S", refs: ["ci/upkeep.rs", "cron.rs"],
+      why: "Nightly jobs, a bounded disk, and a copy of what only build-server has.",
+      covers: ["Cron lines in UTC, once per minute even across restarts", "Logs and artifacts pruned after 30 days", "A database snapshot every night, the last 14 kept"],
+      done: "a schedule fires once, and a snapshot opens on its own." },
+    { key: "vault-ui", phase: "m6", title: "Secrets in ntr and the app", who: "Claude", size: "M", refs: ["SecretsScreen.swift", "ntr secret", "b16f719"],
+      why: "You set secrets and approve deploys where you work.",
+      covers: ["ntr vault, secret, var, env, run approve/reject/artifacts/download, backup", "A Secrets screen (write-only secrets, variables, environments); approve and download in Runs"],
+      done: "a secret set from the app is used by a run you approve there." },
+    { key: "vault-the server", phase: "m6", title: "Set up the vault on build-server", who: "You", size: "S", refs: ["ntr vault setup"],
+      why: "The key is made on the server, and only you should see its recovery code.",
+      covers: ["Run ntr vault setup on build-server and keep the recovery code somewhere else", "Optionally point --backup-dir at an external disk"],
+      done: "ntr vault on build-server says it's set up." },
+    { key: "graviton-net", phase: "m6", title: "Guests that reach each other", who: "Graviton", size: "S", refs: ["Graviton"],
+      why: "A job can't use its service containers while Graviton keeps its VMs apart.",
+      covers: ["Allow VM-to-VM traffic on Graviton's network", "Then the live services test passes"],
+      done: "graviton_services sees +PONG from Redis." },
+    { key: "paths", phase: "m7", title: "Path filters", who: "Claude", size: "S", refs: ["neutrino-ci"],
+      why: "Two of Nexus's workflows only run when certain files change.",
+      covers: ["paths and paths-ignore on push and pull requests, with ! exclusions", "Changed files from the push (old..new) or the pull request (from the merge base)"],
+      done: "a docs-only push doesn't deploy." },
+    { key: "host", phase: "m7", title: "The host executor", who: "Claude", size: "S", refs: ["runs-on: host"],
+      why: "Xcode builds, signing and simulators need macOS.",
+      covers: ["Steps as processes in a fresh checkout on the server, each in its own process group", "Off unless neutrinod runs with --host-executor; the usual tool folders on the PATH"],
+      done: "a host job runs, and a server that hasn't allowed it says how." },
+    { key: "nexus-exec", phase: "m7", title: "The Nexus executor", who: "Claude", size: "M", refs: ["ci/nexus.rs", "nexus_run.py"],
+      why: "Windows builds and the GPU are only reachable through Nexus.",
+      covers: ["A snapshot with a Python driver that runs each step in its own shell and marks them", "Submit, follow the log, stop on cancel or timeout, fetch artifacts from the outputs", "No secrets to Nexus; tickets when the token is request-only"],
+      done: "against a fake coordinator: steps, exit codes, conditions and artifacts come back right." },
+    { key: "nexus-workflows", phase: "m7", title: "Nexus's workflows on Neutrino", who: "Claude", size: "S", refs: ["docs/examples/nexus"],
+      why: "The acceptance test: Nexus's own CI off GitHub.",
+      covers: ["deploy-firestore, deploy (Hosting) and desktop-windows translated", "Each parses and fires on what the original did"],
+      done: "the three files plan cleanly." },
+    { key: "nexus-live", phase: "m7", title: "Turn the executors on", who: "You", size: "S", refs: ["scripts/server-flags.sh"],
+      why: "Which Nexus token Neutrino holds, and whether host jobs are allowed, are yours to decide.",
+      covers: ["Choose the request-only token (each job a ticket) or the full one", "scripts/server-flags.sh my-server -- --host-executor --nexus-token-file …", "Host Nexus on build-server, add the workflows and variables, run the Windows build"],
+      done: "the installer comes back as a run artifact." },
+    { key: "phone-server", phase: "m8", title: "Signed approvals and the Inbox", who: "Claude", size: "M", refs: ["neutrinod/src/phone.rs", "neutrino-remote"],
+      why: "A stolen token alone mustn't be able to approve a deploy.",
+      covers: ["A device registers a P-256 public key once; approve, turn down, merge and cancel are then refused unsigned", "Signatures over the request, the time and a one-use nonce; five minutes at most", "One Inbox request: deploys waiting, pull requests ready or open, runs, what happened lately"],
+      done: "forged, stale, replayed and altered requests are refused in a test over TLS." },
+    { key: "push", phase: "m8", title: "Notifications through APNs", who: "Claude", size: "M", refs: ["phone.rs", "apps/iOSNotify"],
+      why: "A closed app only wakes through Apple's push service, so it gets as little as possible.",
+      covers: ["ES256 tokens from your .p8 key, sealed by the vault; HTTP/2 to APNs", "Pushes carry an id and \"Something needs you\"; the extension fetches the words from build-server", "Approvals waiting and failed runs, each a switch on the phone; ntr notify setup, test"],
+      done: "the extension swaps the placeholder for the real text." },
+    { key: "iphone", phase: "m8", title: "The iPhone app", who: "Claude", size: "L", refs: ["apps/iOS"],
+      why: "Approve, merge and watch runs away from the Mac.",
+      covers: ["Pairing with the fingerprint check; the key made in the Secure Enclave", "Inbox; pull requests with checks and diffs; runs with steps and logs", "Approve and turn down after Face ID; merge; cancel; notification settings"],
+      done: "a deploy is approved from the phone." },
+    { key: "push-live", phase: "m8", title: "Turn on notifications", who: "You", size: "S", refs: ["ntr notify setup"],
+      why: "Pushes need your Apple developer account's APNs key, and a real iPhone to land on.",
+      covers: ["Make an APNs key (Certificates, Identifiers & Profiles → Keys) and run ntr notify setup on build-server", "Install the app on your iPhone from Xcode and pair it", "ntr notify test, then fail a run on purpose"],
+      done: "a failed run shows on your iPhone's lock screen with its real text." },
+    { key: "import", phase: "m9", title: "Import from GitHub", who: "Claude", size: "M", refs: ["ntr import", "65eb75b"],
+      why: "Your repos live on GitHub; moving in starts with a copy on build-server.",
+      covers: ["A hosted repo from another one's branches and tags, with its default branch", "Nothing is left behind if the copy fails"],
+      done: "a GitHub repo is a hosted repo on build-server." },
+    { key: "mirrors", phase: "m9", title: "Mirror back to GitHub", who: "Claude", size: "M", refs: ["mirror.rs", "ntr mirror", "c30c24c"],
+      why: "GitHub stays a full copy off build-server, and a place others can still push.",
+      covers: ["After every push, in the background; pushes that pile up fold into one copy; retried every ten minutes, the first failure sent to the phone", "Never overwrites what only GitHub has: its branches are fetched first, moved only by fast-forward or when unchanged since the last copy, and every update is leased", "A branch made on GitHub stays; ntr mirror lists it"],
+      done: "a push to build-server reaches GitHub without erasing a push made there." },
+    { key: "backup-copies", phase: "m9", title: "Snapshots kept on workstation", who: "Claude", size: "S", refs: ["--copy-backups-from my-server", "ntr backups"],
+      why: "A copy of the server's database that isn't on the server.",
+      covers: ["The workstation copies build-server's nightly snapshots over SSH, checks them and keeps the newest 14"],
+      done: "ntr backups on workstation lists checked copies." },
+    { key: "move-in", phase: "m9", title: "Move working copies over", who: "Claude", size: "S", refs: ["scripts/move-in.sh"],
+      why: "Each working copy should push to build-server from now on.",
+      covers: ["Import a working copy's GitHub repo on the server and point origin at it", "A short summary of branches not pushed anywhere"],
+      done: "origin is build-server and GitHub is the mirror." },
+    { key: "workflows-moved", phase: "m9", title: "Your repos' CI on Neutrino", who: "Claude", size: "M", refs: ["f541c9f", "3485eb2", "2b82b65"],
+      why: "Moving in means the checks run on build-server too.",
+      covers: ["flux, Prism, Neutron, Proton and nexus translated from GitHub Actions and merged; GitHub Actions turned off in all five", "Linux jobs on Graviton with npm, pip and cargo caches; macOS and Windows jobs in a native.yml per repo (host and Nexus executors), for version tags and by hand", "nexus deploys to Firebase Hosting from build-server, with its service account in the vault's production environment", "What the move turned up: flux's IPC bench missed a field, Neutron looked for bsdtar under the wrong name on Linux, Proton's change check missed same-second edits", "Slim images, a workspace virtualenv and lighter builds so jobs fit in their VMs"],
+      done: "each repo's main passes on build-server and GitHub Actions is off." },
+    { key: "server-merges", phase: "m9", title: "Merges act like pushes", who: "Claude", size: "S", refs: ["9eb2087"],
+      why: "A merge made by the server doesn't go through the git hooks.",
+      covers: ["A merged pull request starts the target's push workflows and reaches the mirror"],
+      done: "merging into main deploys, as a push to main would." },
+    { key: "ntr-git", phase: "after", title: "ntr as one command with git", who: "Claude", size: "M", refs: ["ee6c435"],
+      why: "One command in the terminal instead of switching between ntr and git.",
+      covers: ["Anything ntr doesn't know runs as git", "repo add / repo rm and history replace the names that shadowed git's", "Server commands from a workstation go over SSH to the server origin points at"],
+      done: "ntr status and ntr commit are git's own." },
+    { key: "menubar", phase: "after", title: "Menu bar item", who: "Claude", size: "M", refs: ["a65b0d5", "MenuBar.swift"],
+      why: "A glance at your repos without opening the window.",
+      covers: ["A template glyph from the app icon, hollow when neutrinod is down, with the change count", "The selected repo's branch, sync and changes; commit, stage all, fetch, push", "Open pull requests, recent commits, every repo's status, jumps into the window"],
+      done: "the panel works with the window closed." },
+    { key: "code-page", phase: "after", title: "The Code page", who: "Claude", size: "L", refs: ["CodeScreen.swift", "browse.rs", "ee6c435", "a48b20f"],
+      why: "Browsing a repo the way you would on GitHub.",
+      covers: ["Files at a branch or tag with each entry's last commit; the README rendered; files with line numbers", "About: commits, branches, tags, contributors, files, licence, languages, open pull requests, the latest run", "neutrinod's tree, tree_commits, blob and overview requests, protocol 8"],
+      done: "local and hosted repos show their files, README and languages." },
+    { key: "mac-polish", phase: "after", title: "Sidebar and header", who: "Claude", size: "S", refs: ["089ea3b", "ea7d2f1"],
+      why: "With 73 repos on build-server the window's layout broke.",
+      covers: ["One scrolling list for the server's repos and this Mac's", "A hosted repo opens when the Mac has no working copy", "The header in the traffic lights' row"],
+      done: "nothing is pushed off screen." },
+    { key: "deploy-p8", phase: "after", title: "Protocol 8 on build-server", who: "Claude", size: "S", refs: ["scripts/deploy-server.sh"],
+      why: "Hosted repos can only be browsed once the server knows the new requests.",
+      covers: ["Deploy from a clean checkout of main", "Then the mirror change, deployed with it"],
+      done: "ntr info on build-server says protocol 8." },
+    { key: "workstation-p8", phase: "after", title: "Update workstation's daemon", who: "Claude", size: "S", refs: ["scripts/install-launch-agent.sh"],
+      why: "This Mac's own neutrinod is older than protocol 8, so its working copies can't be browsed in Code.",
+      covers: ["scripts/install-launch-agent.sh -- --copy-backups-from my-server rebuilds, copies and restarts it", "The 45 working copies on this Mac registered, so the app and the menu bar list them"],
+      done: "a working copy on this Mac shows its files in Code." },
+    { key: "all-repos-moved", phase: "after", title: "Every repo on build-server", who: "Claude", size: "M", refs: ["scripts/move-in.sh", "ntr mirror"],
+      why: "The first move took the repos in active use; the rest followed so GitHub is only ever a mirror.",
+      covers: ["72 repos hosted on build-server, each mirrored to GitHub with a record of what it copied", "Working copies' origin points at build-server; repos without a clone here were imported on the server alone", "Forks and Cricket-Analysis stay on GitHub; Oracle moved with its collaborator still pushing to GitHub, which the safe mirror keeps"],
+      done: "ntr mirror lists 72 repos, all ok." },
+    { key: "graviton-fixes", phase: "after", title: "Graviton fixes CI turned up", who: "Claude", size: "M", refs: ["Graviton a126668", "1cdc47f", "57104eb"],
+      why: "Real CI load found where Graviton broke: jobs ran out of memory, orphans piled up, and a redeploy froze the engine.",
+      covers: ["Containers on a scratch disk instead of memory; the guest agent reaps orphans; one pull per image at a time", "Push alerts read the Keychain off the engine's thread with a timeout; state saves can't collide", "scripts/deploy-remote.sh: signed with your certificate, files replaced with mv, refuses while containers run, rolls back if the new engine doesn't answer"],
+      done: "CI runs on build-server without the engine freezing or a job running out of memory." },
+    { key: "sessions-ntr", phase: "after", title: "Claude sessions use ntr", who: "Claude", size: "S", refs: ["ntr"],
+      why: "Other Claude sessions still pushed with git and might push to GitHub directly.",
+      covers: ["Each open session told: origin is build-server, ntr runs git for everything else, GitHub is the mirror and isn't pushed to"],
+      done: "the open sessions have the note." },
+    { key: "actions-left", phase: "after", title: "The rest of GitHub Actions", who: "Claude", size: "M", refs: [".github/workflows", "docs/examples"],
+      why: "Seven repos still run their checks on GitHub, so their CI hasn't moved in.",
+      covers: ["Moved, merged, Actions off: mamba, audiopulse, Vector, onyx and council (all green on the server), and boxtube, whose Xcode 27 build passes on the server's host executor for the first time anywhere (GitHub's runners stop at Xcode 26)", "Oracle: CI merged and green (lint shown, not blocking); the Firebase deploy waits for its variables and two secrets on the server, then Actions goes off", "council: moved, merged, Actions off, green on the server in under a minute. Its suite had never run in CI; fixing it restored the /plan command (.gitignore kept it out of the fork), updated 18 assertions to the Council name and stopped two tests leaking module mocks", "Kata and nvim have no live workflows; plantclef keeps GitHub Pages"],
+      done: "no repo you own needs GitHub Actions." },
+    { key: "deploy-commit", phase: "after", title: "Deploys say what they deployed", who: "Claude", size: "S", refs: ["scripts/deploy-server.sh", "efb2994", "033acb4"],
+      why: "A deploy once shipped a stale build because cargo thought it was fresh.",
+      covers: ["Build from a clean worktree of a commit", "Embed the commit in neutrinod and ntr info, and check it on build-server after the deploy"],
+      done: "ntr info on build-server names the commit that's running." },
+    { key: "work-on-kagutsuchi", phase: "after", title: "Work lives on build-server", who: "Claude", size: "M", refs: ["~/.ssh/config", "relay", "Homebrew"],
+      why: "Github and Research on the always-on Mac my-server, worked on from the MacBook wherever it is.",
+      covers: ["kagutsuchi over Tailscale (and kagutsuchi-lan); on build-server, my-server is itself, so origin and ntr work there", "Toolchains there: neovim, node, go, uv, bun, ripgrep, fd, tree-sitter, xcodegen; claude relinked; ntr on its PATH", "relay now copies Downloads, Documents, Desktop and Pictures; Github and Research are off", "Left for you: an SSH place in the Claude app, Full Disk Access for relay, then deleting workstation's copies once its sessions finish"],
+      done: "you work on build-server from workstation and workstation holds no copy of Github or Research." },
+    { key: "app-polish", phase: "after", title: "A faster, more connected Mac app", who: "Claude", size: "M", refs: ["CommandPalette.swift", "b45c9e1", "ab89489"],
+      why: "CI, branches and pull requests lived on separate screens, and 73 hosted repos made the sidebar slow to use.",
+      covers: ["⌘K palette: screens, every repo, branches, pull requests, runs, Fetch/Push and more", "CI marks on commits and branch tips, a Checks list in a commit's details", "Branches: open a pull request, see one that's open, merged badges, delete merged branches", "Sidebar filter (⌘⇧F) and Recent; deleting a hosted repo; constant-time deep history pages"],
+      done: "every one is seen working in the app." },
+    { key: "stratus-ui", phase: "after", title: "Stratus pitch-black macOS UI redesign", who: "Antigravity", size: "L", refs: ["d37a691", "apps/NeutrinoKit/Theme.swift", "apps/Mac/"],
+      why: "Elevate NeutrinoMac beyond GitHub's cluttered chrome with a pitch-black tonal Stratus design system, frameless panes, and crisp monospace metadata.",
+      covers: ["Pitch-black T3 tokens in Theme.swift and shared tonal controls across Changes, Code, History, Branches, Pull Requests, Runs, and Secrets", "Unified borderless command bar, refined diff headers, and smooth Command Palette workflows"],
+      done: "every NeutrinoMac screen renders cleanly in the Stratus visual language." },
+    { key: "collapsible-code-tree", phase: "after", title: "Collapsible root file tree in Code browser", who: "Antigravity", size: "S", refs: ["207dee0", "apps/Mac/CodeScreen.swift"],
+      why: "Large repositories with dozens of top-level files and directories pushed the README far below the fold.",
+      covers: ["LatestCommitBar disclosure toggle showing file count pill (`N files` / `Hide N`), collapsed by default at repo root", "Auto-expands when drilling into subfolders or typing in the path filter, and resets cleanly on repo switch"],
+      done: "opening any repo's Code tab puts its README immediately in view with one-click file tree expansion." },
+    { key: "widgets-mac-ios", phase: "after", title: "macOS Workspace & iOS Live Inbox/Lock Screen WidgetKit widgets", who: "Antigravity", size: "L", refs: ["207dee0", "515bfd4", "e8315ff", "apps/Widget/"],
+      why: "Keep repo status, dirty counts, waiting deploy approvals, open pull requests, and CI health visible at a glance across macOS and iPhone Home/Lock Screens.",
+      covers: ["NeutrinoWidgetSnapshot + NeutrinoWidgetStore in NeutrinoKit supporting both macOS workspace snapshots and iOS Inbox snapshots", "iOS widget shares Keychain + App Group `group.dev.neutrino` to fetch live `ServerService.inbox()` updates and supports `.accessoryInline`, `.accessoryRectangular`, and `.accessoryCircular`", "Full `neutrino://pull/<repo>/<number>` and `neutrino://run/<repo>/<id>` deep linking on iOS & macOS, deployed onto physical iPhone your iPhone"],
+      done: "both dev.neutrino.mac.widget and dev.neutrino.ios.widget display live data and deep-link to PRs/Runs." },
+    { key: "security-hardening-cbc1c48", phase: "after", title: "Remote endpoint, CI sandbox, SSH transport & metadata leak hardening", who: "You", size: "L", refs: ["cbc1c48", "SECURITY.md", "scripts/check-leaks.sh", "crates/neutrino-remote", "crates/neutrinod/src/ci/"],
+      why: "Eliminate CI workspace/artifact path escapes, sanitize runner env inheritance, bound remote TLS auth/reads, and strip personal metadata from public repo files.",
+      covers: ["neutrino-remote: preauth/session semaphores, sliding-window IP auth lockout, bounded line reads", "ci/workspace.rs & ci/runner.rs: validate_rel_path + canonicalize ensure_contained guards against traversal/symlinks, strict env_clear() allowlist on local runner", "Removed team IDs/private hosts/emails into Signing.xcconfig/$(TeamIdentifierPrefix) + added scripts/check-leaks.sh & SECURITY.md"],
+      done: "check-leaks and runner traversal unit tests pass across workspace." },
+
+    { key: "semantic-move-diffs", phase: "m10", title: "AST move-aware diffs, noise folding & Tree-sitter syntax highlighting", who: "Antigravity", size: "L", refs: ["crates/neutrino-diff", "crates/neutrino-proto", "apps/Mac"],
+      why: "Raw line diffs bury real logic edits inside refactored code motion and formatting churn, and lack syntax colors.",
+      covers: ["Embed Tree-sitter grammars (Rust, Swift, TypeScript, Python, JSON/YAML/TOML) in neutrino-diff, cached per blob id", "Detect cross-file & intra-file AST symbol moves + formatting/import-only edits and surface collapsible 'Moved / Formatted' blocks with inner semantic delta", "Stream syntax token spans and semantic annotations across neutrino-proto to CodeScreen, Changes, and Pulls"],
+      done: "reordering/moving functions shows a compact move card instead of red/green walls and diffs render full syntax colors." },
+    { key: "review-tour-interdiffs-stacks", phase: "m10", title: "Call-graph review tour, PR version interdiffs & stacked PRs (`ntr stack`)", who: "Antigravity", size: "XL", refs: ["crates/neutrino-git", "crates/neutrino-store", "crates/ntr", "apps/Mac"],
+      why: "Alphabetical file order, un-diffable force-pushes, and manual rebase cascades slow down serious multi-PR code review.",
+      covers: ["Topological dependency ordering (schema/types -> core logic -> callers -> tests) in PR review mode", "PR Version Interdiff picker (`v2 -> v3`) built on refs/pull/N/head keeping line-anchored notes intact across versions", "First-class Stacked PRs (`ntr stack create|status|sync`) with server-side bare-repo merge-tree/commit-tree auto-restacking when base PRs land"],
+      done: "reviewers can step through a PR in dependency order, inspect incremental force-push interdiffs, and merge base stacked PRs with automatic child restacking." },
+
+    { key: "hardware-provenance-slsa", phase: "m11", title: "Hardware-signed Provenance Ledger (SLSA L3) & Face ID JIT secrets", who: "Antigravity", size: "L", refs: ["crates/neutrino-store", "crates/neutrino-vault", "crates/neutrinod", "apps/iOS"],
+      why: "Combine iPhone Secure Enclave approvals and Graviton VM execution isolation into verifiable, tamper-evident release provenance.",
+      covers: ["Hash-chained attestation log (`refs/neutrino/attestations`) recording reviewer DeviceKey signatures, CI VM kernel/image/commit digests, and deploy signatures", "Verification CLI/UI (`ntr provenance verify <tag>`) with SLSA L3 JSON export", "Break-glass secret reveal & short-lived JIT deploy tokens gated by Face ID / Touch ID DeviceKey signature with auto-revocation on job exit"],
+      done: "every tagged build carries an offline-verifiable hardware + VM provenance chain and vault break-glass reveals require biometric confirmation." },
+    { key: "ai-receipts-shadow-ci", phase: "m11", title: "AI-era Verification Receipts & Speculative Shadow CI", who: "Antigravity", size: "L", refs: ["crates/neutrino-diff", "crates/neutrinod/src/ci", "apps/Mac/ChangesScreen.swift"],
+      why: "High-velocity AI-assisted PRs need immediate blast-radius clarity, and local edits benefit from background verification before commit.",
+      covers: ["Automated PR Verification Receipt card summarizing public API delta, new dependencies, touched sensitive/security files, and test coverage provenance", "Opt-in debounced Shadow CI running lightweight lint/test checks inside an APFS-cloned Graviton container over uncommitted changes", "Non-blocking live green/amber/red status badge inside NeutrinoMac Changes view"],
+      done: "every PR renders a deterministic Blast Radius receipt and editing locally surfaces asynchronous Shadow CI pass/fail status prior to commit." },
+
+    { key: "snapshot-on-fail-ci", phase: "m12", title: "Snapshot-on-Fail Time-Travel CI debugging", who: "Antigravity", size: "L", refs: ["crates/neutrino-ci", "crates/neutrinod/src/ci", "apps/Mac/RunsScreen.swift"],
+      why: "Eliminate 'works locally, fails in CI' by preserving the exact failed container VM memory and disk state for instant interactive debugging.",
+      covers: ["Workflow step flag `snapshot-on-fail: true` (plus manual/policy triggers) calling Graviton Freeze & ExportFrozen on failure", "Frozen VM retention & SQLite indexing alongside existing run artifacts (`ntr run snapshot <id>`)", "One-click 'Attach to Frozen VM' button on failed steps in NeutrinoMac Runs view restoring the exact live failure state into SwiftTerm"],
+      done: "clicking 'Attach to Frozen VM' on a failed CI step opens an interactive shell in the exact frozen RAM/disk state in under 1 second." },
+    { key: "branch-stacks-warm-ci-ntr", phase: "m12", title: "Branch-bound Stateful Stacks & Warm-to-Commit CI scheduling", who: "Antigravity", size: "M", refs: ["crates/neutrinod/src/{watch.rs,ci}", "apps/Mac"],
+      why: "Synchronize git branch switches with Graviton service state and eliminate repetitive dependency/DB warmups in CI.",
+      covers: ["neutrinod branch-switch notification hook triggering Graviton StackHibernate / StackThaw so switching to PR branches brings warm DBs/services along", "Lockfile + services hash key in neutrino-ci planner selecting warm .vzsave runner templates in Graviton", "Per-run cold vs warm startup timing breakdown in RunsScreen"],
+      done: "switching branches swaps both git working tree and running Compose stack state seamlessly, and repeated CI runs skip cold toolchain/DB setup." }
+  ];
+  var LABEL = { todo: "Not started", doing: "In progress", done: "Done", skipped: "Skipped" };
+  var STORAGE_KEY = "neutrino-status-overrides-v1";
+  var INITIAL_STATE = {
+    "architecture": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "prototype": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "engine": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "daemon": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "macapp": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "commit-m1": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "status": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "stage": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "commit": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "branchwrite": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "watch": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "changes-ui": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "hosting": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "server": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "remotes": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "server-ui": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "deploy-the server": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "pr-store": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "pr-engine": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "pr-daemon": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "pr-rules": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "pr-app": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "pr-deploy": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "ci-parser": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "ci-runs": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "ci-graviton": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "ci-scheduler": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "ci-ui": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "ci-the server": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "vault": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "environments": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "caches": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "schedules": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "vault-ui": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "vault-the server": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "graviton-net": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "paths": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "host": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "nexus-exec": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "nexus-workflows": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "nexus-live": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "phone-server": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "push": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "iphone": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "push-live": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "import": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "mirrors": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "backup-copies": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "move-in": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "workflows-moved": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "server-merges": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "ntr-git": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "menubar": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "code-page": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "mac-polish": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "deploy-p8": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "workstation-p8": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "all-repos-moved": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "graviton-fixes": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "sessions-ntr": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "actions-left": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "deploy-commit": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "work-on-kagutsuchi": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "app-polish": {
+        "status": "done",
+        "updated": "2026-11-20T18:00:00+11:00"
+    },
+    "stratus-ui": {
+        "status": "done",
+        "updated": "2026-11-26T10:30:00+11:00",
+        "note": "Committed d37a691 on main (pushed to origin + github). Redesigned NeutrinoMac in the Stratus pitch-black T3 style."
+    },
+    "collapsible-code-tree": {
+        "status": "done",
+        "updated": "2026-11-26T12:00:00+11:00",
+        "note": "Committed 207dee0 on main (pushed to origin + github). Root file table collapsed by default with file count toggle pill in LatestCommitBar."
+    },
+    "widgets-mac-ios": {
+        "status": "done",
+        "updated": "2026-11-26T12:30:00+11:00",
+        "note": "Committed 207dee0, 515bfd4, and e8315ff (pushed to origin + github). Added macOS Workspace & iOS Live Inbox/Lock Screen widgets with deep links and deployed onto physical iPhone."
+    },
+    "security-hardening-cbc1c48": {
+        "status": "done",
+        "updated": "2026-11-27T11:19:19+11:00",
+        "note": "Landed in cbc1c48: bounded remote TLS auth/reads, CI validate_rel_path + ensure_contained sandbox guards, local runner env_clear(), Signing.xcconfig/TeamIdentifierPrefix scrub, SECURITY.md, and scripts/check-leaks.sh."
+    },
+    "semantic-move-diffs": {
+        "status": "todo",
+        "updated": "2026-11-26T13:05:00+11:00",
+        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+    },
+    "review-tour-interdiffs-stacks": {
+        "status": "todo",
+        "updated": "2026-11-26T13:05:00+11:00",
+        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+    },
+    "hardware-provenance-slsa": {
+        "status": "todo",
+        "updated": "2026-11-26T13:05:00+11:00",
+        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+    },
+    "ai-receipts-shadow-ci": {
+        "status": "todo",
+        "updated": "2026-11-26T13:05:00+11:00",
+        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+    },
+    "snapshot-on-fail-ci": {
+        "status": "todo",
+        "updated": "2026-11-26T13:05:00+11:00",
+        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+    },
+    "branch-stacks-warm-ci-ntr": {
+        "status": "todo",
+        "updated": "2026-11-26T13:05:00+11:00",
+        "note": "Scheduled in the Graviton \u00d7 Neutrino Breakthrough Plan."
+    }
+};
+  var state = {}, loaded = false, db = null, readOnly = false, writing = {};
+
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+  function build() {
+    var root = document.getElementById("phases");
+    PHASES.forEach(function (ph) {
+      var sec = el("section", "phase");
+      var head = el("div", "phase-head");
+      head.append(el("h3", null, ph.name), el("span", "phase-sub", ph.sub));
+      var c = el("span", "phase-count"); c.id = "count-" + ph.id; head.append(c);
+      sec.append(head);
+      var list = el("ol", "steps");
+      STEPS.filter(function (s) { return s.phase === ph.id; }).forEach(function (s) { list.append(stepRow(s)); });
+      sec.append(list); root.append(sec);
+    });
+  }
+  function stepRow(s) {
+    var li = el("li", "step paper"); li.id = "step-" + s.key;
+    li.append(el("span", "legend", s.size + " · " + s.who));
+    var body = el("div", "step-body");
+    var row = el("div", "title-row");
+    row.append(el("span", "title", s.title));
+    var next = el("span", "next-tag", "Next"); next.id = "next-" + s.key; next.hidden = true; row.append(next);
+    body.append(row, el("p", "why", s.why));
+    if (s.covers.length) { var ul = el("ul", "covers"); s.covers.forEach(function (c) { ul.append(el("li", null, c)); }); body.append(ul); }
+    var done = el("p", "done-when"); done.append(el("span", null, "Done when: "), document.createTextNode(s.done)); body.append(done);
+    var note = el("p", "note"); note.id = "note-" + s.key; note.hidden = true; body.append(note);
+    var meta = el("div", "meta");
+    meta.append(el("span", "tag who" + (s.who === "You" ? " you" : ""), s.who));
+    s.refs.forEach(function (r) { meta.append(el("span", "tag", r)); });
+    body.append(meta);
+    var ctl = el("div", "ctl");
+    var chip = el("span", "state", "—"); chip.id = "chip-" + s.key; ctl.append(chip);
+    var label = el("label", null, "Set status"); label.htmlFor = "st-" + s.key; ctl.append(label);
+    var sel = el("select"); sel.id = "st-" + s.key; sel.disabled = true;
+    Object.keys(LABEL).forEach(function (k) { var o = el("option", null, LABEL[k]); o.value = k; sel.append(o); });
+    sel.addEventListener("change", function () { setStatus(s.key, sel.value); });
+    ctl.append(sel);
+    var time = el("time"); time.id = "time-" + s.key; ctl.append(time);
+    li.append(body, ctl);
+    return li;
+  }
+  function statusOf(key) { var d = state[key]; return d && LABEL[d.status] ? d.status : "todo"; }
+  function apply() {
+    var done = 0, doing = 0, nextKey = null, perPhase = {};
+    STEPS.forEach(function (s) {
+      var st = loaded ? statusOf(s.key) : null;
+      var li = document.getElementById("step-" + s.key), chip = document.getElementById("chip-" + s.key), sel = document.getElementById("st-" + s.key), note = document.getElementById("note-" + s.key), time = document.getElementById("time-" + s.key);
+      li.classList.remove("is-done", "is-skipped", "is-next");
+      chip.className = "state" + (st ? " s-" + st : "");
+      chip.textContent = st ? LABEL[st] : "—";
+      if (st) {
+        if (document.activeElement !== sel) sel.value = st;
+        sel.disabled = readOnly;
+        if (st === "done") { li.classList.add("is-done"); done += 1; }
+        if (st === "skipped") { li.classList.add("is-skipped"); done += 1; }
+        if (st === "doing") doing += 1;
+        if (!nextKey && st !== "done" && st !== "skipped") nextKey = s.key;
+        var p = perPhase[s.phase] || (perPhase[s.phase] = { d: 0 });
+        if (st === "done" || st === "skipped") p.d += 1;
+      }
+      var d = state[s.key], noteText = d && typeof d.note === "string" ? d.note : "";
+      note.hidden = !noteText; note.textContent = noteText;
+      var when = d && typeof d.updated === "string" ? new Date(d.updated) : null;
+      if (when && !isNaN(when)) { time.dateTime = d.updated; time.textContent = "Updated " + when.toLocaleDateString(undefined, { day: "numeric", month: "short" }); } else { time.textContent = ""; }
+    });
+    STEPS.forEach(function (s) {
+      document.getElementById("next-" + s.key).hidden = s.key !== nextKey;
+      if (s.key === nextKey) document.getElementById("step-" + s.key).classList.add("is-next");
+    });
+    PHASES.forEach(function (ph) {
+      var total = STEPS.filter(function (s) { return s.phase === ph.id; }).length, p = perPhase[ph.id];
+      document.getElementById("count-" + ph.id).textContent = loaded ? (p ? p.d : 0) + " of " + total + " done" : total + (total === 1 ? " step" : " steps");
+    });
+    var total = STEPS.length;
+    document.getElementById("progress-text").textContent = loaded ? done + " of " + total + " done" : "— of " + total + " done";
+    document.getElementById("bar-done").style.width = (loaded ? (done / total) * 100 : 0) + "%";
+    document.getElementById("bar-doing").style.width = (loaded ? (doing / total) * 100 : 0) + "%";
+    document.getElementById("sync-my-server").textContent = loaded ? done + " of " + total + " steps done" : "";
+  }
+  function setSync(text, isErr) { var s = document.getElementById("sync"); s.textContent = text; s.classList.toggle("err", !!isErr); }
+  function loadOverrides() {
+    try {
+      var raw = window.localStorage && window.localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+  }
+  function saveOverrides(ov) {
+    try {
+      if (window.localStorage) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ov));
+      return true;
+    } catch (e) { return false; }
+  }
+  function setStatus(key, status) {
+    if (readOnly || !LABEL[status]) return;
+    var prev = state[key] || {};
+    if (prev.status === status) return;
+    var body = { status: status, updated: new Date().toISOString() };
+    if (typeof prev.note === "string" && prev.note) body.note = prev.note;
+    state[key] = body;
+    var ov = loadOverrides();
+    ov[key] = body;
+    var persisted = saveOverrides(ov);
+    setSync(persisted ? "Saved locally" : "Updated in view");
+    apply();
+    if (db) {
+      writing[key] = (writing[key] || Promise.resolve()).then(function () {
+        return db.collection("steps").doc(key).set(body).catch(function () {});
+      });
+    }
+  }
+  function spy() {
+    var ids = ["plan", "architecture", "backlog", "guide", "cheatsheet"], links = {};
+    document.querySelectorAll("[data-spy]").forEach(function (a) { links[a.getAttribute("data-spy")] = a; });
+    function mark() {
+      var current = null;
+      ids.forEach(function (id) { if (document.getElementById(id).getBoundingClientRect().top <= 140) current = id; });
+      ids.forEach(function (id) { links[id].setAttribute("aria-current", String(id === current)); });
+    }
+    window.addEventListener("scroll", mark, { passive: true });
+    mark();
+  }
+  build();
+  (function initState() {
+    var merged = {};
+    Object.keys(INITIAL_STATE).forEach(function (k) { merged[k] = INITIAL_STATE[k]; });
+    var ov = loadOverrides();
+    var hasLocal = false;
+    Object.keys(ov).forEach(function (k) {
+      if (ov[k] && LABEL[ov[k].status]) { merged[k] = ov[k]; hasLocal = true; }
+    });
+    state = merged;
+    loaded = true;
+    setSync(hasLocal ? "Saved locally" : "Synced · 27 Nov");
+    apply();
+  })();
+  spy();
+  if (location.hash) { var target = document.getElementById(location.hash.slice(1)); if (target) setTimeout(function () { target.scrollIntoView(); }, 0); }
+  (function connect() {
+    var c = window.claude;
+    if (!c || typeof c.use !== "function") return;
+    c.use("db").then(function (handle) {
+      if (!handle) return;
+      db = handle;
+      db.collection("steps").onSnapshot(function (snap) {
+        var next = Object.assign({}, INITIAL_STATE);
+        snap.docs.forEach(function (d) { if (d.exists) next[d.id] = d.data(); });
+        state = next; loaded = true;
+        if (!readOnly) setSync(snap.metadata && snap.metadata.fromCache ? "Syncing…" : "Live");
+        apply();
+      }, function () {});
+    }, function () {});
+  })();
+})();
+</script>
+<script>
+(function () {
+  "use strict";
+  function norm(t) { return t.toLowerCase().replace(/\s+/g, " "); }
+  function filterer(o) {
+    var input = document.getElementById(o.input), count = document.getElementById(o.count), empty = document.getElementById(o.empty);
+    var groups = [].slice.call(document.querySelectorAll(o.group)), items = [];
+    groups.forEach(function (g) {
+      var name = (g.querySelector(".legend") || {}).textContent || "";
+      [].slice.call(g.querySelectorAll(o.item)).forEach(function (it) { items.push({ el: it, g: g, text: norm(it.textContent + " " + name) }); });
+    });
+    function run() {
+      var terms = norm(input.value.trim()).split(" ").filter(Boolean), shown = 0;
+      items.forEach(function (i) { var hit = terms.every(function (t) { return i.text.indexOf(t) !== -1; }); i.el.hidden = !hit; if (hit) shown++; });
+      groups.forEach(function (g) {
+        var vis = [].filter.call(g.querySelectorAll(o.item), function (x) { return !x.hidden; });
+        (o.cell ? g.closest(o.cell) : g).hidden = vis.length === 0;
+        [].forEach.call(g.querySelectorAll(".firstv, .lastv"), function (x) { x.classList.remove("firstv", "lastv"); });
+        if (vis.length) { vis[0].classList.add("firstv"); vis[vis.length - 1].classList.add("lastv"); }
+      });
+      empty.hidden = shown !== 0;
+      count.textContent = terms.length ? shown + " of " + items.length + " shown" : items.length + " " + o.noun;
+    }
+    input.addEventListener("input", run);
+    input.addEventListener("keydown", function (e) { if (e.key === "Escape" && input.value) { e.preventDefault(); input.value = ""; run(); } });
+    run();
+  }
+  filterer({ input: "bl-filter", count: "bl-count", empty: "bl-empty", group: ".bl-group", item: ".bl-item", cell: ".bl-cell", noun: "items" });
+  filterer({ input: "cheat-filter", count: "cheat-count", empty: "cheat-empty", group: ".cheat", item: "tr", noun: "commands" });
+})();
+</script>
+
+</body></html>
